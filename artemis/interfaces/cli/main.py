@@ -22,6 +22,7 @@ from artemis.interfaces.cli.commands.batch import batch_command
 from artemis.interfaces.cli.commands.doctor import doctor_command
 from artemis.interfaces.cli.commands.helper import helper_app
 from artemis.interfaces.cli.commands.init import init_command
+from artemis.interfaces.cli.commands.llm import llm_app
 from artemis.interfaces.cli.commands.mcp import mcp_command
 from artemis.interfaces.cli.commands.run import run_command
 from artemis.interfaces.cli.commands.server import server_app
@@ -70,6 +71,7 @@ app.add_typer(
     helper_app, name="helper", help="Manage the Accessibility Helper APK on attached devices."
 )
 app.add_typer(adb_app, name="adb", help="Inspect the configured ADB server and its devices.")
+app.add_typer(llm_app, name="llm", help="Check the configured LLM endpoint and its raw errors.")
 
 # Export ADB_HOST/ADB_PORT (and rebind adbutils/uiautomator2) once per CLI process
 # so a remote ADB server configured in .env applies to every command and to the

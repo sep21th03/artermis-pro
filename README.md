@@ -356,6 +356,8 @@ uv run artemis doctor -v     # chi tiết hơn
 | `artemis: command not found` | Dùng `uv run artemis ...`, hoặc `uv tool install -e .` |
 | `No devices found` / `unauthorized` | Cắm lại cáp, bật USB debugging, bấm *Allow*; `adb kill-server && adb devices` |
 | Lỗi `API key` / `requires ...` | Điền key trong `.env`, chạy lại `artemis doctor` |
+| Provider trả JSON lỗi (`429`, `model not found`, `401`, HTML) | `uv run artemis llm check` — in nguyên văn body + gợi ý sửa |
+| `429 budget_exceeded` từ proxy 8787 | `curl -X POST http://127.0.0.1:8787/api/budget/reset` hoặc tăng `BUDGET_MAX_*` khi chạy console |
 | Model trả lỗi 404/400 | Kiểm tra `provider`/`model` trong `config/artemis.jsonc` khớp gateway (`OPENAI_BASE_URL`) |
 | Không đọc được cây UI | `uv run artemis helper install`, đặt `ARTEMIS_HIERARCHY_BACKEND=helper` |
 | Cổng 8000 bị chiếm | `uv run artemis ui -p 8080` hoặc `uv run artemis restart --force` |

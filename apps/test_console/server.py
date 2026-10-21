@@ -199,6 +199,13 @@ class Budget:
         self._completion_tokens = 0
         self._task_cost = 0.0
         self._started = 0.0
+        self._last_request_at = 0.0
+        # CLI calls that use the proxy directly share one synthetic "external"
+        # task. Without an idle reset its 480s timer expires once and then every
+        # later request is rejected with 429 forever.
+        self.external_idle_reset = float(
+            os.getenv("BUDGET_EXTERNAL_IDLE_RESET_SECONDS", "120")
+        )
         self._exceeded: str | None = None
         self._daily_spent = 0.0
         self._daily_requests = 0
@@ -264,9 +271,34 @@ class Budget:
                 },
             }
 
+    def reset(self) -> None:
+        """Clear the current task's counters and its block reason."""
+        with self._lock:
+            self._requests = 0
+            self._prompt_tokens = 0
+            self._completion_tokens = 0
+            self._task_cost = 0.0
+            self._started = time.time()
+            self._last_request_at = self._started
+            self._exceeded = None
+
+    def _reset_external_if_idle(self, now: float) -> None:
+        """Treat a quiet gap between CLI calls as a new external task."""
+        if self._task_id != "external" or not self._last_request_at:
+            return
+        if now - self._last_request_at >= self.external_idle_reset:
+            self._requests = 0
+            self._prompt_tokens = 0
+            self._completion_tokens = 0
+            self._task_cost = 0.0
+            self._started = now
+            self._exceeded = None
+
     def check(self, body: dict, raw_size: int) -> str | None:
         """Return a block reason, or None when the request may proceed."""
         with self._lock:
+            self._reset_external_if_idle(time.time())
+            self._last_request_at = time.time()
             if self._exceeded:
                 return self._exceeded
             if raw_size > self.max_request_bytes:
@@ -1034,6 +1066,13 @@ def is_local_llm() -> bool:
 @app.get("/api/budget")
 def budget_status() -> dict:
     return budget.snapshot()
+
+
+@app.post("/api/budget/reset")
+def budget_reset() -> dict:
+    """Clear the current task's spend counters and its 429 block reason."""
+    budget.reset()
+    return {"ok": True, "budget": budget.snapshot()}
 
 
 @app.api_route("/llm/v1/{path:path}", methods=["GET", "POST", "OPTIONS"])

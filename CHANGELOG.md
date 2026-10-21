@@ -1,5 +1,21 @@
 # Changelog — ARTEMIS Pro
 
+## [0.3.1] — 2026-10-21
+
+### Added
+
+- `artemis llm check [--json] [--timeout]`: gọi model một lần và in **nguyên văn body** khi lỗi
+  (401/404/429/HTML) kèm gợi ý sửa, để đọc được các "JSON error" của provider/proxy.
+- `POST /api/budget/reset` trên Test Console để gỡ trạng thái `429 budget_exceeded`.
+
+### Fixed
+
+- Test Console proxy khoá vĩnh viễn sau 480s với các lệnh CLI: mọi request CLI dùng chung một task
+  `external` và timer không bao giờ reset → sau 8 phút mọi request trả
+  `{"error":{"code":"budget_exceeded"}}`. Nay task `external` tự reset sau
+  `BUDGET_EXTERNAL_IDLE_RESET_SECONDS` (mặc định 120s) không có request.
+
+
 ## [0.3.0] — 2026-10-21
 
 ### Added
