@@ -1169,10 +1169,12 @@ def llm_test() -> JSONResponse:
             model for model in ids
             if any(tag in model.lower() for tag in ("claude", "gpt", "gemini", "qwen", "deepseek"))
         ]
-        # /models only proves the key is accepted; a 1-token chat proves quota.
+        # /models only proves the key is accepted; a tiny chat proves quota.
+        # 32 tokens (not 1): thinking models spend the budget on reasoning and
+        # would return an empty message -> misleading EMPTY_OUTPUT / 502.
         model = llm_summary()["model"]
         chat_body = json.dumps(
-            {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+            {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 32}
         ).encode("utf-8")
         chat_request = urllib.request.Request(
             f"{base}/chat/completions",
