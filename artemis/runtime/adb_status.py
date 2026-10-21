@@ -106,6 +106,11 @@ class AdbEndpointStatus:
             serials = ", ".join(device.serial for device in self.offline)
             return f"Device {serials} is offline: reconnect the USB cable on the tester machine."
         if not self.devices:
+            if self.endpoint.is_local_default:
+                return (
+                    "The ADB server is reachable but no device is attached. Plug in the phone "
+                    "and accept the 'Allow USB debugging' prompt."
+                )
             return "The ADB server is reachable but no device is attached to the tester machine."
         return None
 
