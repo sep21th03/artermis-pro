@@ -77,6 +77,9 @@ class LlmCheckResult:
     base_url: str
     key_present: bool
     key_hint: str
+    models_status: int | None = None
+    models_error: str | None = None
+    models_count: int | None = None
     chat_status: int | None = None
     chat_error: str | None = None
     reply: str | None = None
@@ -84,7 +87,14 @@ class LlmCheckResult:
     ok: bool = False
 
     def hint(self) -> str | None:
-        haystack = (self.chat_error or "").lower()
+        if self.models_status == 404 and self.chat_status in (404, 405, None):
+            return (
+                "`GET /models` trả 404: BASE URL sai (thường thiếu `/v1`) hoặc sai host. "
+                "Ví dụ Vilao: OPENAI_BASE_URL=https://api.vilao.ai/v1"
+            )
+        haystack = " ".join(
+            part.lower() for part in (self.models_error or "", self.chat_error or "") if part
+        )
         if not haystack:
             return None
         for needles, hint in _HINTS:
@@ -119,6 +129,19 @@ def _api_key() -> str:
     value = key.get_secret_value() if key is not None else os.environ.get("OPENAI_API_KEY", "")
     value = (value or "").strip()
     return "" if is_placeholder_key(value) else value
+
+
+def _get_models(base_url: str, key: str, timeout: float) -> tuple[int, str]:
+    req = request.Request(
+        f"{base_url}/models", headers={"Authorization": f"Bearer {key}"}
+    )
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            return response.status, response.read().decode("utf-8", "replace")
+    except error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
+    except Exception as exc:  # noqa: BLE001 - network failures are the point
+        return 0, f"{type(exc).__name__}: {exc}"
 
 
 def _call_chat(base_url: str, model: str, key: str, timeout: float) -> tuple[int, float, str]:
@@ -158,6 +181,18 @@ def run_llm_check(timeout: float = 45.0) -> LlmCheckResult:
         result.chat_error = "Chưa có OPENAI_API_KEY trong .env"
         return result
 
+    models_status, models_body = _get_models(base_url, key, min(timeout, 15.0))
+    result.models_status = models_status
+    if models_status == 200:
+        try:
+            result.models_count = len(json.loads(models_body).get("data") or [])
+        except ValueError:
+            result.models_count = None
+    elif models_status != 0 or not models_body:
+        result.models_error = models_body.strip()[:600] or f"HTTP {models_status}"
+    else:
+        result.models_error = models_body.strip()[:600]
+
     status, elapsed, body = _call_chat(base_url, model, key, timeout)
     result.chat_status = status
     result.elapsed_seconds = elapsed
@@ -193,7 +228,17 @@ def check_command(
     table.add_row("Model", result.model)
     table.add_row("Base URL", result.base_url)
     table.add_row("API key", f"có ({result.key_hint})" if result.key_present else "[red]thiếu[/red]")
+    if result.models_status is not None:
+        models_state = (
+            f"200 ({result.models_count} models)"
+            if result.models_status == 200
+            else f"[red]lỗi HTTP {result.models_status}[/red]"
+        )
+        table.add_row("GET /models", models_state)
     console.print(table)
+
+    if result.models_error and result.models_status != 200:
+        console.print(f"[dim]Body /models:[/dim]\n{result.models_error}")
 
     if result.ok:
         console.print(
