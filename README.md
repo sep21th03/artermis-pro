@@ -46,6 +46,7 @@
 14. [Cấu trúc thư mục](#14-cấu-trúc-thư-mục)
 15. [Giấy phép & ghi công](#15-giấy-phép--ghi-công)
 16. [Test Console tiếng Việt](#16-test-console-tiếng-việt)
+17. [ADB server từ xa (máy DEV + máy tester)](#17-adb-server-từ-xa-máy-dev--máy-tester)
 
 ## 1. ARTEMIS Pro làm được gì
 
@@ -434,4 +435,105 @@ LOCAL_LLM=1 sh apps/test_console/run.sh                     # Ollama, 0đ
 - **Tài liệu**: [`apps/test_console/README.md`](./apps/test_console/README.md).
 - **Wrapper CLI**: [`scripts/artemis.sh`](./scripts/artemis.sh) (tự thêm `adb` vào PATH, tự dùng
   `.venv` hoặc `uv run`).
+
+## 17. ADB server từ xa (máy DEV + máy tester)
+
+Mô hình: **máy DEV** chạy ARTEMIS backend + Web UI, **máy tester** cắm điện thoại qua USB và chạy
+ADB server mở ra LAN. Mọi thao tác thiết bị (screenshot, tap, swipe, input, đọc UI, UIAutomator2)
+đều đi qua ADB server đó; không có đường nào tự rơi về `localhost`.
+
+### 17.1. Máy tester (nơi cắm điện thoại)
+
+```bash
+# Bật USB debugging trên điện thoại, cắm cáp, chấp nhận "Allow USB debugging"
+adb devices -l                      # phải thấy trạng thái "device"
+
+# Chạy ADB server nghe trên LAN (foreground, giữ terminal này)
+adb kill-server
+adb -a -P 5037 nodaemon server
+
+# Chỉ mở firewall cho máy DEV (ví dụ ufw)
+sudo ufw allow from <DEV_IP> to any port 5037 proto tcp
+```
+
+Tuyệt đối **không** mở cổng 5037 ra Internet — ADB không có xác thực kênh truyền, chỉ dùng LAN/VPN.
+
+### 17.2. Máy DEV (chạy ARTEMIS)
+
+```bash
+cd ~/Developer/artermis-pro
+cat >> .env <<'EOF'
+ADB_HOST=<TESTER_IP>
+ADB_PORT=5037
+EOF
+
+uv run artemis adb check                 # kết nối + liệt kê thiết bị (exit != 0 nếu lỗi)
+uv run artemis adb devices               # bảng serial / state / model
+uv run artemis adb check --json          # cho script/CI
+uv run artemis doctor                    # kiểm tra tổng thể (đã gồm endpoint + thiết bị)
+
+# Web UI cho tester truy cập qua LAN
+uv run artemis ui --host 0.0.0.0 --port 8000
+# → tester mở http://<DEV_IP>:8000 (URL LAN được in ra khi khởi động)
+```
+
+Admin Console cho phép Host là **IP literal** (ví dụ `http://192.168.2.79:8000`). Nếu tester truy cập
+bằng tên miền nội bộ, khai báo thêm để không bị chặn 403:
+
+```bash
+# .env
+ARTEMIS_ALLOWED_HOSTS=dev-box.local,dev-box
+```
+
+Có thể override tạm cho một lệnh mà không sửa `.env`:
+
+```bash
+uv run artemis adb devices --host 10.0.0.25 --port 5037
+ADB_HOST=10.0.0.25 uv run artemis run "Mở Settings, cho biết mức pin" -p flash
+```
+
+### 17.3. Kiến trúc & giới hạn cần biết
+
+| Hạng mục | Trạng thái với ADB remote |
+| --- | --- |
+| `adb devices`, screenshot (`exec-out screencap`), tap/swipe/input, `dumpsys`, `run_adb_command` | ✅ đi qua `adb -H <host> -P <port>` |
+| UIAutomator2 (đọc UI) | ✅ adbutils/uiautomator2 được rebind sang endpoint (`ANDROID_ADB_SERVER_HOST/PORT`) |
+| Device list trong Web UI, live screen, replay | ✅ dùng endpoint đã cấu hình |
+| Accessibility Helper | ⚠️ **tự động tắt** ở chế độ remote: `adb forward` chỉ bind trên loopback của máy chạy ADB server, nên máy DEV không gọi được. ARTEMIS tự chuyển sang UIAutomator2. Muốn dùng helper phải có SSH tunnel (`ssh -L <port>:127.0.0.1:<port>`) rồi đặt `ARTEMIS_ALLOW_REMOTE_HELPER=1` |
+| Ghi video bằng scrcpy | ⚠️ scrcpy tự gọi `adb` của máy DEV → cần wrapper (xem 17.4) |
+| `adb start-server` / `kill-server` | ⚠️ chỉ chạy khi endpoint là local; với remote thì ARTEMIS chỉ kiểm tra kết nối (không tạo server mới trên máy DEV) |
+| Đổi endpoint từ Admin Console | Mặc định chỉ cho client local; muốn đổi từ xa đặt `ARTEMIS_ALLOW_REMOTE_ADB_CONFIGURATION=true` |
+
+### 17.4. scrcpy với ADB remote (tuỳ chọn)
+
+```bash
+cat > ~/bin/adb-remote <<'EOF'
+#!/usr/bin/env bash
+exec adb -H "$ADB_HOST" -P "$ADB_PORT" "$@"
+EOF
+chmod +x ~/bin/adb-remote
+export ADB="$HOME/bin/adb-remote"     # scrcpy dùng biến ADB này
+```
+
+### 17.5. Kiểm thử end-to-end
+
+```bash
+# 1) Endpoint + thiết bị
+uv run artemis adb check
+
+# 2) Đọc UI + screenshot + thao tác (task thật qua LLM)
+uv run artemis run "Mở Settings, vào Battery và cho tôi biết mức pin hiện tại" -p flash
+
+# 3) Kiểm tra từng thao tác phần cứng (không cần LLM)
+SERIAL=$(adb -H $ADB_HOST -P $ADB_PORT devices | awk 'NR==2{print $1}')
+adb -H $ADB_HOST -P $ADB_PORT -s $SERIAL exec-out screencap -p > /tmp/screen.png
+adb -H $ADB_HOST -P $ADB_PORT -s $SERIAL shell input tap 540 1200
+adb -H $ADB_HOST -P $ADB_PORT -s $SERIAL shell input swipe 540 1600 540 600 300
+adb -H $ADB_HOST -P $ADB_PORT -s $SERIAL shell input text "artemis"
+adb -H $ADB_HOST -P $ADB_PORT -s $SERIAL shell uiautomator dump /sdcard/ui.xml
+
+# 4) Rút cáp USB khi đang chạy task → ARTEMIS báo device offline/unauthorized rõ ràng,
+#    task dừng và nhả device lock; cắm lại rồi chạy lại.
+```
+
 

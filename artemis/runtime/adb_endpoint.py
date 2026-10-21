@@ -23,6 +23,7 @@ changes in the Admin Console.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import logging
 import os
 import re
 import subprocess
@@ -32,6 +33,7 @@ from artemis.config import settings
 from artemis.config.constants import DEFAULT_ADB_HOST, DEFAULT_ADB_PORT
 from artemis.toolchain import toolchain
 
+logger = logging.getLogger(__name__)
 
 ADB_ENDPOINT_ID_ENV = "ARTEMIS_ADB_ENDPOINT_ID"
 _LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -109,6 +111,10 @@ class AdbEndpoint:
         target["ADB_HOST"] = self.host
         target["ADB_PORT"] = str(self.port)
         target["ADB_SERVER_SOCKET"] = self.socket
+        # adbutils (and therefore uiautomator2) only reads these two; ADB_HOST /
+        # ADB_PORT alone would silently leave it on 127.0.0.1:5037.
+        target["ANDROID_ADB_SERVER_HOST"] = self.host
+        target["ANDROID_ADB_SERVER_PORT"] = str(self.port)
         target[ADB_ENDPOINT_ID_ENV] = self.identity
         return target
 
@@ -166,6 +172,50 @@ def current_adb_endpoint() -> AdbEndpoint:
     host = settings.ADB_HOST or os.environ.get("ADB_HOST") or DEFAULT_ADB_HOST
     port = settings.ADB_PORT or os.environ.get("ADB_PORT") or DEFAULT_ADB_PORT
     return AdbEndpoint.create(str(host), int(port))
+
+
+def configure_adbutils(endpoint: AdbEndpoint | None = None) -> AdbEndpoint:
+    """Point adbutils (and uiautomator2) at the configured ADB server.
+
+    ``adbutils.adb`` is a module-level client built at import time from
+    ``ANDROID_ADB_SERVER_HOST`` / ``ANDROID_ADB_SERVER_PORT``. Rebind it so a
+    remote ``ADB_HOST``/``ADB_PORT`` is honoured by every ``u2.connect`` call
+    instead of falling back to loopback. Missing adbutils is not an error: the
+    subprocess-based paths keep working.
+    """
+    endpoint = endpoint or current_adb_endpoint()
+    try:
+        import adbutils
+    except ImportError:  # pragma: no cover - adbutils is a hard dependency
+        return endpoint
+
+    try:
+        previous = getattr(adbutils, "adb", None)
+        # Mutate the existing client too: anything that captured a reference
+        # before this call keeps talking to the same endpoint.
+        if previous is not None:
+            for attr, value in (
+                ("_BaseClient__host", endpoint.host),
+                ("_BaseClient__port", endpoint.port),
+            ):
+                try:
+                    setattr(previous, attr, value)
+                except Exception:  # pragma: no cover - defensive
+                    pass
+        adbutils.adb = adbutils.AdbClient(host=endpoint.host, port=endpoint.port)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Could not rebind adbutils to {endpoint.socket}: {exc}")
+    return endpoint
+
+
+def apply_current_endpoint(
+    environment: MutableMapping[str, str] | None = None,
+) -> AdbEndpoint:
+    """Export the configured endpoint and rebind adbutils for this process."""
+    endpoint = current_adb_endpoint()
+    endpoint.apply_to_environment(environment)
+    configure_adbutils(endpoint)
+    return endpoint
 
 
 def adb_command(arguments: Sequence[str]) -> list[str]:

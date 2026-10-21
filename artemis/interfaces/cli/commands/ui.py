@@ -18,6 +18,7 @@ import logging
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -243,6 +244,25 @@ def load_session_reconciler() -> None:
         logger.debug("Admin console session reconciler not loaded: %s", exc, exc_info=True)
 
 
+def _lan_urls(host: str, port: int) -> list[str]:
+    """Best-effort LAN URLs to advertise when the UI is bound beyond loopback."""
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        return []
+    if host not in {"0.0.0.0", "::", "*"}:
+        return [f"http://{host}:{port}"]
+    urls: list[str] = []
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        for info in infos:
+            address = info[4][0]
+            if address.startswith("127.") or address in urls:
+                continue
+            urls.append(f"http://{address}:{port}")
+    except OSError:
+        return []
+    return urls
+
+
 def _poll_and_open_browser(url: str, stop_event: threading.Event, timeout: float = 15.0) -> None:
     """Poll the UI server until it responds, then launch the user's default browser."""
     start = time.time()
@@ -348,11 +368,21 @@ def ui_command(
             return
 
     console.print()
+    lan_urls = _lan_urls(host, port)
     msg = (
         f"[bold cyan]✨ Artemis Autonomous Mobile Agent UI[/bold cyan]\n\n"
         f"📱 [bold green]Showcase UI & Onboarding:[/bold green] [cyan]{local_url}[/cyan]\n"
         f"🛠️ [bold magenta]Admin Debug Console:[/bold magenta]     [cyan]{local_url}/admin[/cyan]\n"
-        f"📖 [dim]API Documentation:[/dim]         [dim]{local_url}/docs[/dim]\n\n"
+        f"📖 [dim]API Documentation:[/dim]         [dim]{local_url}/docs[/dim]"
+    )
+    if lan_urls:
+        msg += (
+            "\n\n🌐 [bold yellow]Reachable from other machines (testers):[/bold yellow]\n"
+            + "\n".join(f"   • [cyan]{url}[/cyan]" for url in lan_urls)
+            + "\n   [dim]Keep this on the LAN/VPN only - do not expose it to the internet.[/dim]"
+        )
+    msg += (
+        "\n\n"
         + (
             "[dim]Press Ctrl+C to stop while idle; Ctrl+Break forces shutdown during a task.[/dim]"
             if sys.platform == "win32"

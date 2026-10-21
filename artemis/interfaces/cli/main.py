@@ -17,6 +17,7 @@
 from typing import Annotated
 
 from artemis._version import __version__
+from artemis.interfaces.cli.commands.adb import adb_app
 from artemis.interfaces.cli.commands.batch import batch_command
 from artemis.interfaces.cli.commands.doctor import doctor_command
 from artemis.interfaces.cli.commands.helper import helper_app
@@ -31,6 +32,7 @@ from artemis.interfaces.cli.commands.server_lifecycle import (
 )
 from artemis.interfaces.cli.commands.trace import trace_app
 from artemis.interfaces.cli.commands.ui import ui_command
+from artemis.runtime.adb_endpoint import apply_current_endpoint
 from third_party.mobile_use.utils.logger import get_logger
 from rich.console import Console
 from rich.panel import Panel
@@ -67,6 +69,12 @@ app.add_typer(trace_app, name="trace", help="Inspect and query execution traces.
 app.add_typer(
     helper_app, name="helper", help="Manage the Accessibility Helper APK on attached devices."
 )
+app.add_typer(adb_app, name="adb", help="Inspect the configured ADB server and its devices.")
+
+# Export ADB_HOST/ADB_PORT (and rebind adbutils/uiautomator2) once per CLI process
+# so a remote ADB server configured in .env applies to every command and to the
+# subprocesses they spawn (daemon, workers, adb shell tools).
+apply_current_endpoint()
 
 
 def version_callback(value: bool):

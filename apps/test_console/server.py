@@ -478,7 +478,7 @@ class Runner:
         with self._lock:
             return next((t for t in self._tasks if t.id == task_id), None)
 
-    def start(self, req: "RunRequest") -> Task:
+    def start(self, req: RunRequest) -> Task:
         with self._lock:
             if self._proc and self._proc.poll() is None:
                 raise RuntimeError("Một task đang chạy. Hãy dừng hoặc đợi task hiện tại xong.")

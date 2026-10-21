@@ -92,6 +92,12 @@ import threading
 
 def main(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8001):
     """Main entrypoint to run the Artemis Mobile Agent MCP server."""
+    # Pin ADB_HOST/ADB_PORT (and adbutils/uiautomator2) to the configured ADB
+    # server before any device tool runs.
+    from artemis.runtime.adb_endpoint import apply_current_endpoint
+
+    endpoint = apply_current_endpoint()
+    print(f"[artemis-mcp] ADB endpoint: {endpoint.socket} ({endpoint.mode})", file=sys.stderr)
     threading.Thread(target=start_awake_service, daemon=True, name="artemis-awake-init").start()
     try:
         if transport.lower() == "sse":

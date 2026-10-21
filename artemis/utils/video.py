@@ -30,6 +30,7 @@ from typing import Any
 
 import cv2
 
+from artemis.runtime.adb_endpoint import adb_command
 from artemis.utils.cython_compat import CyFunctionDetector
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -332,13 +333,7 @@ async def get_android_display_state(device_id: str) -> tuple[int, int, int] | No
     """Return Android's current (rotation, width, height)."""
     try:
         process = await asyncio.create_subprocess_exec(
-            "adb",
-            "-s",
-            device_id,
-            "shell",
-            "dumpsys",
-            "window",
-            "displays",
+            *adb_command(["-s", device_id, "shell", "dumpsys", "window", "displays"]),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )

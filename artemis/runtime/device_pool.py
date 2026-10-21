@@ -25,6 +25,7 @@ import threading
 import time
 from typing import Any
 
+from artemis.runtime.adb_endpoint import adb_command, current_adb_endpoint
 from artemis.runtime.device_lock import DeviceExecutionLock
 from artemis.toolchain import toolchain
 from third_party.mobile_use.utils.logger import get_logger
@@ -103,13 +104,14 @@ class DevicePool:
         self, timeout: float | None = None
     ) -> list[tuple[str, str, str | None, str | None]] | None:
         """Run `adb devices -l` synchronously. Returns None when the query
-        itself failed, as opposed to an empty list of attached devices."""
-        adb = self._resolve_adb()
-        if not adb:
-            return None
+        itself failed, as opposed to an empty list of attached devices.
+
+        The command targets the configured ADB server (``ADB_HOST``/``ADB_PORT``),
+        so a remote server never silently falls back to loopback.
+        """
         try:
             res = subprocess.run(
-                [adb, "devices", "-l"],
+                adb_command(["devices", "-l"]),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
@@ -128,15 +130,10 @@ class DevicePool:
     ) -> list[tuple[str, str, str | None, str | None]] | None:
         """Run `adb devices -l` asynchronously. Returns None when the query
         itself failed, as opposed to an empty list of attached devices."""
-        adb = self._resolve_adb()
-        if not adb:
-            return None
         proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                adb,
-                "devices",
-                "-l",
+                *adb_command(["devices", "-l"]),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -241,20 +238,25 @@ class DevicePool:
         return raw
 
     async def _start_adb_server(self, timeout: float) -> None:
-        """Best-effort bounded `adb start-server` so later queries hit a warm daemon."""
-        adb = self._resolve_adb()
-        if not adb:
+        """Best-effort bounded `adb start-server` so later queries hit a warm daemon.
+
+        Only meaningful for a local ADB server: a remote server is already
+        running (that is how it is reachable) and `adb start-server` would try to
+        bind a *new* server on the DEV machine instead.
+        """
+        endpoint = current_adb_endpoint()
+        if not endpoint.is_local_default:
+            logger.debug(
+                f"Skipping `adb start-server`: using remote ADB server {endpoint.socket}."
+            )
             return
         proc = None
         try:
-            clean_env = os.environ.copy()
-            clean_env.pop("ADB_SERVER_SOCKET", None)
             proc = await asyncio.create_subprocess_exec(
-                adb,
-                "start-server",
+                *adb_command(["start-server"]),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env=clean_env,
+                env=endpoint.apply_to_environment(os.environ.copy()),
             )
             await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except Exception as exc:

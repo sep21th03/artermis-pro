@@ -94,11 +94,16 @@ def resolve_emulator_path() -> str | None:
 
 
 def get_connected_devices(adb_path: str | None = None) -> list[str]:
-    """Returns a list of connected and authorized Android device serials."""
-    adb = adb_path or resolve_adb_path()
+    """Returns a list of connected and authorized Android device serials.
+
+    Runs against the configured ADB server (``ADB_HOST``/``ADB_PORT``); the
+    ``adb_path`` argument is kept for backwards compatibility only.
+    """
+    from artemis.runtime.adb_endpoint import adb_command
+
     try:
         res = subprocess.run(
-            [adb, "devices"],
+            adb_command(["devices"]),
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -159,11 +164,13 @@ def ensure_emulator(
     except Exception:
         return False
 
+    from artemis.runtime.adb_endpoint import adb_command
+
     start_time = time.time()
     while time.time() - start_time < timeout_seconds:
         try:
             res = subprocess.run(
-                [adb, "-s", "emulator-5554", "shell", "getprop", "sys.boot_completed"],
+                adb_command(["-s", "emulator-5554", "shell", "getprop", "sys.boot_completed"]),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,

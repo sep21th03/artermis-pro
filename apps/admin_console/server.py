@@ -456,6 +456,12 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     """Run the UI server with bounded, signal-aware graceful shutdown."""
     state.host = host
     state.port = port
+    # Pin the ADB endpoint for this server process (and anything it spawns), so
+    # the device list, live screen and replay all talk to the configured server.
+    from artemis.runtime.adb_endpoint import apply_current_endpoint
+
+    endpoint = apply_current_endpoint()
+    print(f"[ServerStartup] ADB endpoint: {endpoint.socket} ({endpoint.mode})")
     write_server_info(port=port, host=host, lifecycle_token=LIFECYCLE_TOKEN)
 
     try:

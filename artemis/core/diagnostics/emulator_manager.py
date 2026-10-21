@@ -29,6 +29,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from artemis.platform import OSType, platform
+from artemis.runtime.adb_endpoint import adb_command
 from artemis.toolchain import toolchain
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -309,9 +310,7 @@ class EmulatorManager:
                 # Check adb devices for emulator serial
                 try:
                     p = await asyncio.create_subprocess_exec(
-                        adb_path,
-                        "devices",
-                        "-l",
+                        *adb_command(["devices", "-l"]),
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                     )
@@ -374,11 +373,7 @@ class EmulatorManager:
                 # Check sys.boot_completed
                 try:
                     p = await asyncio.create_subprocess_exec(
-                        adb_path,
-                        "-s",
-                        detected_serial,
-                        "shell",
-                        "getprop sys.boot_completed",
+                        *adb_command(["-s", detected_serial, "shell", "getprop sys.boot_completed"]),
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                     )
@@ -460,9 +455,8 @@ class EmulatorManager:
 
             if serial:
                 try:
-                    adb_path = self._locate_adb()
                     subprocess.run(
-                        [adb_path, "-s", serial, "emu", "kill"],
+                        adb_command(["-s", serial, "emu", "kill"]),
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         timeout=5,

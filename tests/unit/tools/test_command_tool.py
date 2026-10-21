@@ -119,10 +119,15 @@ async def test_run_command_sync(mock_exec, mock_ctx):
     mock_exec.assert_called_once()
     # Check that adb was called with device ID and "shell"
     args, kwargs = mock_exec.call_args
-    assert args[0].lower().replace(".exe", "").endswith("adb")
-    assert args[1] == "-s"
-    assert args[2] == "test_device_1234"
-    assert args[3] == "shell"
+    argv = list(args)
+    assert argv[0].lower().replace(".exe", "").endswith("adb")
+    # The configured ADB server endpoint is pinned before the device flags, so a
+    # remote ADB_HOST/ADB_PORT is never bypassed by a local server.
+    assert argv[1] == "-H"
+    assert argv[3] == "-P"
+    shell_index = argv.index("shell")
+    assert argv[shell_index - 2] == "-s"
+    assert argv[shell_index - 1] == "test_device_1234"
 
 
 @pytest.mark.asyncio
@@ -293,12 +298,17 @@ async def test_run_short_command_success(mock_exec, mock_ctx):
     assert "short command success output" in result
     mock_exec.assert_called_once()
     args, kwargs = mock_exec.call_args
-    assert args[0].lower().replace(".exe", "").endswith("adb")
-    assert args[1] == "-s"
-    assert args[2] == "test_device_1234"
-    assert args[3] == "shell"
+    argv = list(args)
+    assert argv[0].lower().replace(".exe", "").endswith("adb")
+    # The configured ADB server endpoint is pinned before the device flags, so a
+    # remote ADB_HOST/ADB_PORT is never bypassed by a local server.
+    assert argv[1] == "-H"
+    assert argv[3] == "-P"
+    shell_index = argv.index("shell")
+    assert argv[shell_index - 2] == "-s"
+    assert argv[shell_index - 1] == "test_device_1234"
     # Verify it cd'd to /data/local/tmp by default
-    assert "cd /data/local/tmp" in args[4]
+    assert "cd /data/local/tmp" in argv[shell_index + 1]
 
 
 @pytest.mark.asyncio

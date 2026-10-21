@@ -57,6 +57,7 @@ from artemis.tools.tool_wrapper import ToolWrapper
 from third_party.mobile_use.controllers.platform_specific_commands_controller import (
     get_adb_device,
 )
+from artemis.runtime.adb_endpoint import adb_command, current_adb_endpoint
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -689,7 +690,8 @@ class RunAdbCommandTool(ArtemisTool):
 
         # Prepare environment
         terminal_id = None
-        run_env = os.environ.copy()  # Local host env to run adb command
+        # Host env for the adb subprocess, pinned to the configured endpoint.
+        run_env = current_adb_endpoint().apply_to_environment(os.environ.copy())
         android_env_vars: dict[str, str] = {}
 
         if run_persistent:
@@ -736,13 +738,9 @@ class RunAdbCommandTool(ArtemisTool):
         # stdin is closed unless the caller wants to feed input later.
         try:
             process = await asyncio.create_subprocess_exec(
-                _adb_binary(),
-                "-s",
-                device_id,
-                "shell",
-                phone_script,
+                *adb_command(["-s", device_id, "shell", phone_script]),
                 cwd=os.getcwd(),
-                env=run_env,
+                env=current_adb_endpoint().apply_to_environment(run_env),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
@@ -1081,7 +1079,7 @@ class RunShortAdbCommandTool(ArtemisTool):
         if not device_id:
             device_id = "default_device"
 
-        run_env = os.environ.copy()
+        run_env = current_adb_endpoint().apply_to_environment(os.environ.copy())
         phone_script = f"cd /data/local/tmp\n{cmd_line}\n"
 
         adb_client = getattr(ctx, "adb_client", None) if ctx else None
@@ -1102,13 +1100,9 @@ class RunShortAdbCommandTool(ArtemisTool):
 
         try:
             process = await asyncio.create_subprocess_exec(
-                _adb_binary(),
-                "-s",
-                device_id,
-                "shell",
-                phone_script,
+                *adb_command(["-s", device_id, "shell", phone_script]),
                 cwd=os.getcwd(),
-                env=run_env,
+                env=current_adb_endpoint().apply_to_environment(run_env),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 stdin=asyncio.subprocess.DEVNULL,

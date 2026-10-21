@@ -22,6 +22,8 @@ import traceback
 from typing import Any
 from uuid import UUID
 
+from artemis.runtime.adb_endpoint import current_adb_endpoint
+
 WORKSPACE_ROOT = Path(__file__).parent.parent.resolve()
 
 # Try to import settings from artemis
@@ -164,7 +166,8 @@ class ReplayManager:
                 "Failed to import UIAutomatorClient. Ensure artemis package is installed in path."
             )
 
-        self.adb = AdbClient(host="localhost", port=5037)
+        endpoint = current_adb_endpoint()
+        self.adb = AdbClient(host=endpoint.host, port=endpoint.port)
         try:
             devices = self.adb.device_list()
         except Exception as adb_err:
@@ -401,7 +404,8 @@ class ReplayManager:
         try:
             from adbutils import AdbClient
 
-            adb = AdbClient(host="localhost", port=5037)
+            endpoint = current_adb_endpoint()
+            adb = AdbClient(host=endpoint.host, port=endpoint.port)
             devices = adb.device_list()
             return [{"serial": d.serial, "status": "online"} for d in devices]
         except Exception as e:

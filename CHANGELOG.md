@@ -1,5 +1,39 @@
 # Changelog — ARTEMIS Pro
 
+## [0.3.0] — 2026-10-21
+
+### Added
+
+- **Remote ADB server support** (DEV machine runs ARTEMIS, tester machine runs
+  `adb -a -P 5037 nodaemon server` with the phone on USB):
+  - `artemis/runtime/adb_status.py`: endpoint reachability (TCP) + `adb devices -l`
+    inventory with `device` / `unauthorized` / `offline` states and one actionable
+    hint per failure mode.
+  - `artemis adb devices` / `artemis adb check` (with `--host`, `--port`, `--json`).
+  - `AdbEndpoint.apply_to_environment` now also exports `ANDROID_ADB_SERVER_HOST/PORT`
+    (the names adbutils/uiautomator2 actually read) and `apply_current_endpoint()`
+    rebinds the module-level `adbutils.adb` client.
+  - `apply_current_endpoint()` is applied at CLI, MCP server and Admin Console startup.
+  - `artemis doctor` reports the endpoint, its reachability and a remote-specific fix list.
+  - `artemis ui --host 0.0.0.0` prints the LAN URLs testers can open.
+
+### Fixed
+
+- Device enumeration (`device_pool`), live screen + device list (`device_stream_service`),
+  replay (`replay_manager`), `run_adb_command` (`command_tool`), `dumpsys` display state
+  (`utils/video.py`) and MCP device utils no longer run bare `adb`: every call goes through
+  `adb -H <ADB_HOST> -P <ADB_PORT>`, so nothing silently falls back to `localhost`.
+- `adb start-server` / `kill-server` only run for a local endpoint; with a remote server
+  ARTEMIS just verifies connectivity instead of spawning a server on the DEV machine.
+
+### Changed
+
+- Accessibility Helper is skipped automatically with a remote ADB server (`adb forward`
+  binds on the tester's loopback) and falls back to UIAutomator2; override with
+  `ARTEMIS_ALLOW_REMOTE_HELPER=1` when the forward port is reachable (SSH tunnel).
+- scrcpy video recording logs a warning under a remote endpoint: scrcpy needs
+  `ADB` to point at a wrapper script (documented in README 17.4).
+
 ## [0.2.0] — 2026-10-21
 
 ### Added

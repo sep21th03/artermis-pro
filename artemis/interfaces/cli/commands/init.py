@@ -22,6 +22,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 
 from artemis.config.paths import get_env_file
+from artemis.runtime.adb_endpoint import adb_command
 
 
 def init_command() -> None:
@@ -66,7 +67,7 @@ def init_command() -> None:
     if adb_path:
         try:
             res = subprocess.run(
-                [adb_path, "devices", "-l"],
+                adb_command(["devices", "-l"]),
                 capture_output=True,
                 text=True,
                 timeout=5,

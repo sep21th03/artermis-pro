@@ -32,6 +32,8 @@ from artemis.core.diagnostics.schema import (
     ProbeStatus,
 )
 from artemis.platform import OSType, platform
+from artemis.runtime.adb_endpoint import adb_command, current_adb_endpoint
+from artemis.runtime.adb_status import tcp_reachable
 from artemis.toolchain import toolchain
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -203,12 +205,7 @@ class AdbDeviceProbe(BaseProbe):
 
         async def run_dumpsys(*service_args: str) -> str:
             proc = await asyncio.create_subprocess_exec(
-                adb_path,
-                "-s",
-                serial,
-                "shell",
-                "dumpsys",
-                *service_args,
+                *adb_command(["-s", serial, "shell", "dumpsys", *service_args]),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -289,11 +286,7 @@ class AdbDeviceProbe(BaseProbe):
     ) -> str:
         """Run a bounded ADB shell command and always reap timed-out children."""
         proc = await asyncio.create_subprocess_exec(
-            adb_path,
-            "-s",
-            serial,
-            "shell",
-            *args,
+            *adb_command(["-s", serial, "shell", *args]),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -320,9 +313,7 @@ class AdbDeviceProbe(BaseProbe):
         proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                adb_path,
-                "devices",
-                "-l",
+                *adb_command(["devices", "-l"]),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -474,18 +465,34 @@ class AdbDeviceProbe(BaseProbe):
             },
         )
 
-    async def _parse_adb_devices(self, adb_path: str) -> list[DeviceInfo]:
-        """Execute `adb devices -l` and extract structured device metadata."""
+    async def _parse_adb_devices(
+        self, adb_path: str, timeout_seconds: float = 8.0
+    ) -> list[DeviceInfo]:
+        """Execute `adb devices -l` and extract structured device metadata.
+
+        Bounded on purpose: an unreachable remote ADB server makes the adb client
+        block on connect, which must not stall the readiness probe.
+        """
         devices: list[DeviceInfo] = []
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                adb_path,
-                "devices",
-                "-l",
+                *adb_command(["devices", "-l"]),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            stdout, _ = await proc.communicate()
+            try:
+                stdout, _ = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout_seconds
+                )
+            except TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                logger.debug(
+                    f"`adb devices -l` timed out after {timeout_seconds:.0f}s "
+                    "(unreachable ADB server?)"
+                )
+                return devices
             if proc.returncode != 0 or not stdout:
                 return devices
 
@@ -653,7 +660,16 @@ class AdbDeviceProbe(BaseProbe):
             )
 
         adb_ver = await self._get_adb_version(adb_path)
-        devices = await self._parse_adb_devices(adb_path)
+        endpoint = current_adb_endpoint()
+        endpoint_reachable = tcp_reachable(endpoint.host, endpoint.port)
+
+        # A remote endpoint that is already known to be unreachable gets a shorter
+        # bound: its enumeration is expected to fail and the operator needs the fix
+        # quickly, not a 30s doctor hang.
+        enumeration_timeout = (
+            3.0 if not endpoint.is_local_default and not endpoint_reachable else 8.0
+        )
+        devices = await self._parse_adb_devices(adb_path, timeout_seconds=enumeration_timeout)
 
         # Inspect ADB authentication key health
         from artemis.core.diagnostics.adb_keys import inspect_adb_keys
@@ -668,6 +684,8 @@ class AdbDeviceProbe(BaseProbe):
             "installed": True,
             "adb_path": adb_path,
             "adb_version": adb_ver,
+            "endpoint": endpoint.to_dict(),
+            "endpoint_reachable": True,
             "adb_keys": key_status.to_dict(),
             "emulator_path": emulator_path,
             "is_emulator_in_path": is_emu_in_path,
@@ -678,6 +696,38 @@ class AdbDeviceProbe(BaseProbe):
 
         # 2. Case: No devices found
         if not devices:
+            # A remote ADB server this machine cannot reach explains the empty list;
+            # fail with the exact fix instead of a generic "No Device Found". A local
+            # endpoint is skipped on purpose: the adb client starts the local server.
+            if not endpoint.is_local_default and not endpoint_reachable:
+                return ProbeResult(
+                    id=self.probe_id,
+                    category=self.category,
+                    title="Device / Emulator Connected",
+                    status=ProbeStatus.FAIL if self.is_blocker else ProbeStatus.WARN,
+                    is_blocker=self.is_blocker,
+                    summary=f"ADB Server Unreachable ({endpoint.host}:{endpoint.port})",
+                    description=(
+                        f"ADB server {endpoint.host}:{endpoint.port} is not reachable. "
+                        "On the tester machine run `adb -a -P 5037 nodaemon server`, allow "
+                        "TCP 5037 from this machine on the LAN (never expose it to the "
+                        "internet), then retry."
+                    ),
+                    metadata={**metadata, "endpoint_reachable": False, "device_count": 0},
+                    actions=[
+                        ProbeAction(
+                            action_type="command",
+                            label="Start ADB server on the tester machine",
+                            payload=f"adb -a -P {endpoint.port} nodaemon server",
+                        ),
+                        ProbeAction(
+                            action_type="hint",
+                            label="Check the endpoint",
+                            payload=f"adb -H {endpoint.host} -P {endpoint.port} devices -l",
+                        ),
+                    ],
+                )
+
             actions: list[ProbeAction] = []
 
             if key_status.is_corrupted:
@@ -712,11 +762,22 @@ class AdbDeviceProbe(BaseProbe):
                 ProbeAction(
                     action_type="hint",
                     label="Connect via USB",
-                    payload="Connect your Android phone via USB cable and enable Developer Options -> USB Debugging.",
+                    payload=(
+                        f"Attach the phone to the tester machine that runs the ADB server "
+                        f"({endpoint.host}:{endpoint.port}) and accept the USB debugging prompt."
+                        if not endpoint.is_local_default
+                        else "Connect your Android phone via USB cable and enable Developer Options -> USB Debugging."
+                    ),
                 )
             )
 
             desc = "ADB is ready, but no active Android device or emulator was detected."
+            if not endpoint.is_local_default:
+                desc = (
+                    f"ADB server {endpoint.host}:{endpoint.port} is reachable but no device is "
+                    "attached to it. Plug the phone into the tester machine and accept the USB "
+                    "debugging prompt."
+                )
             if key_status.is_corrupted:
                 desc += f" Warning: Corrupted ADB RSA key detected ({key_status.error_reason})."
             if installed_avds:

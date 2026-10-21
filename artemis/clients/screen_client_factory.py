@@ -43,7 +43,7 @@ from PIL import Image
 
 from artemis.clients.accessibility_client import AccessibilityClient, HelperUnavailable
 from artemis.config.constants import ENV_ARTEMIS_HIERARCHY_BACKEND
-from artemis.runtime.adb_endpoint import adb_command
+from artemis.runtime.adb_endpoint import adb_command, current_adb_endpoint
 from artemis.runtime.helper_manager import ProvisionEvent
 from third_party.mobile_use.clients.ui_automator_client import (
     UIAutomatorClient,
@@ -316,11 +316,32 @@ class FallbackScreenClient:
 ScreenClient = AccessibilityClient | UIAutomatorClient | FallbackScreenClient
 
 
+def remote_endpoint_blocks_helper() -> bool:
+    """True when the Accessibility Helper cannot be used for this ADB endpoint.
+
+    ``adb forward`` binds a port on the machine that runs the ADB server. With a
+    remote server (tester machine) that port is on the tester's loopback, so the
+    DEV machine cannot reach the helper's HTTP tunnel. Set
+    ``ARTEMIS_ALLOW_REMOTE_HELPER=1`` only when the forward port is reachable
+    anyway (for example through an SSH tunnel).
+    """
+    if os.environ.get("ARTEMIS_ALLOW_REMOTE_HELPER", "").strip().lower() in {"1", "true", "yes"}:
+        return False
+    return not current_adb_endpoint().is_local_default
+
+
 def create_screen_client(
     device_id: str, backend: str | HierarchyBackend | None = None
 ) -> ScreenClient:
     """Build the screen client for ``device_id`` according to the configured backend."""
     resolved = resolve_backend(backend)
+    if resolved is not HierarchyBackend.UIAUTOMATOR and remote_endpoint_blocks_helper():
+        logger.warning(
+            "Accessibility Helper is unavailable with a remote ADB server "
+            f"({current_adb_endpoint().socket}): `adb forward` binds on the machine running "
+            "the ADB server. Falling back to UIAutomator2 for this device."
+        )
+        resolved = HierarchyBackend.UIAUTOMATOR
     if resolved is HierarchyBackend.UIAUTOMATOR:
         return UIAutomatorClient(device_id=device_id)
     if resolved is HierarchyBackend.HELPER:

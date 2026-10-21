@@ -17,12 +17,14 @@
 import asyncio
 import base64
 from io import BytesIO
+import os
 from pathlib import Path
 from typing import Any, Literal
 
 from adbutils import AdbClient, AdbDevice
 from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
+from artemis.runtime.adb_endpoint import current_adb_endpoint
 from artemis.toolchain import find_ffmpeg, find_scrcpy
 from artemis.utils.video import build_scrcpy_record_command
 from artemis.utils.ui_filter import filter_ui_hierarchy
@@ -442,6 +444,14 @@ class AndroidAdbDriver(BaseDeviceDriver):
         self._recording_mkv_path = out_dir / "recording.mkv"
         self._recording_output_path = out_dir / "recording.mp4"
         logger.info(f"Starting scrcpy video recording to {self._recording_mkv_path}...")
+        if not current_adb_endpoint().is_local_default and not os.environ.get("ADB"):
+            # scrcpy shells out to its own adb, which would use the DEV machine's
+            # local server. Point ADB at a wrapper (see README section 17.4).
+            logger.warning(
+                "Video recording with a remote ADB server needs the ADB environment "
+                "variable to point at a wrapper script (`adb -H <host> -P <port>`); "
+                "scrcpy may fail to find the device otherwise."
+            )
         try:
             scrcpy_bin = find_scrcpy()
             cmd = build_scrcpy_record_command(

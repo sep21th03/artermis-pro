@@ -161,7 +161,7 @@ async def test_adb_probe_detects_corrupted_key_with_unauthorized_device(monkeypa
 
     monkeypatch.setattr(probe, "_get_adb_version", mock_adb_ver)
 
-    async def mock_devices(adb_path):
+    async def mock_devices(adb_path, timeout_seconds=8.0):
         return [DeviceInfo(serial="TEST_SERIAL", state="unauthorized")]
 
     monkeypatch.setattr(probe, "_parse_adb_devices", mock_devices)
