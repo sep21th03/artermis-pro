@@ -17,9 +17,11 @@
 import asyncio
 import os
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from langchain_core.callbacks.base import Callbacks
 from artemis.config import checker_overrides_for_level, settings
+from artemis.runtime.adb_status import probe_adb_endpoint, tcp_reachable
 from artemis.utils.startup_progress import publish_startup_progress
 from third_party.mobile_use.main import (
     GoalArgument,
@@ -166,6 +168,96 @@ async def execute_task(
     )
 
 
+_LOCAL_ENDPOINT_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _preflight_llm_endpoint(console: Console) -> None:
+    """Fail fast when a *local* OpenAI-compatible endpoint is not listening.
+
+    A dead loopback endpoint (typically the Test Console budget proxy on :8787
+    copied into .env from another machine) otherwise looks like a hang: every
+    LLM call waits out its 60s timeout while `artemis run` waits up to 1800s for
+    the daemon task. Remote endpoints are not probed here - only warned about by
+    the model call itself - so transient network issues keep their retries.
+    """
+    base = str(settings.OPENAI_BASE_URL or "").strip()
+    if not base:
+        return
+    parsed = urlsplit(base if "//" in base else f"http://{base}")
+    host = parsed.hostname
+    if not host or host not in _LOCAL_ENDPOINT_HOSTS:
+        return
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if tcp_reachable(host, port, timeout=1.5):
+        return
+
+    console.print(
+        Panel(
+            f"LLM endpoint [cyan]{base}[/cyan] is not reachable "
+            f"(nothing is listening on {host}:{port}).\n\n"
+            "[bold]OPENAI_BASE_URL in .env points at a local service that is not running.[/bold]\n"
+            "• Dùng Vilao/OpenAI trực tiếp: [green]OPENAI_BASE_URL=https://api.vilao.ai/v1[/green]\n"
+            "• Dùng proxy ngân sách của Test Console: chạy "
+            "[green]sh apps/test_console/run.sh[/green]\n\n"
+            "Sau khi sửa .env: [green]artemis restart --force[/green] (daemon đang chạy giữ env cũ).",
+            title="✖ LLM endpoint unreachable",
+            border_style="red",
+            expand=False,
+        )
+    )
+    raise SystemExit(2)
+
+
+def _preflight_device(console: Console, device_serial: str | None) -> None:
+    """Fail fast when the configured ADB server has no usable device.
+
+    Without this, the task is submitted to the daemon and `artemis run` waits up
+    to 1800s for a device that will never appear, which reads as a hang. Set
+    ARTEMIS_ALLOW_QUEUE_WITHOUT_DEVICE=1 to keep the old "queue and wait" flow.
+    """
+    if os.environ.get("ARTEMIS_ALLOW_QUEUE_WITHOUT_DEVICE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return
+
+    status = probe_adb_endpoint()
+    if status.ready_devices:
+        wanted = (device_serial or "").strip()
+        if wanted and all(device.serial != wanted for device in status.ready_devices):
+            available = ", ".join(device.serial for device in status.ready_devices)
+            console.print(
+                Panel(
+                    f"Thiết bị [cyan]{wanted}[/cyan] không có trên ADB server "
+                    f"{status.endpoint.host}:{status.endpoint.port}.\n"
+                    f"Đang có: [green]{available}[/green]\n\n"
+                    "Bỏ `--device-serial` hoặc chọn đúng serial.",
+                    title="✖ Device not found",
+                    border_style="red",
+                    expand=False,
+                )
+            )
+            raise SystemExit(2)
+        return
+
+    hint = status.hint() or "Không có thiết bị nào sẵn sàng."
+    console.print(
+        Panel(
+            f"{hint}\n\n"
+            f"ADB endpoint: [cyan]{status.endpoint.host}:{status.endpoint.port}[/cyan] "
+            f"({status.endpoint.mode})\n\n"
+            "Kiểm tra nhanh: [green]artemis adb check[/green]\n"
+            "Muốn cứ xếp hàng chờ thiết bị: "
+            "[green]ARTEMIS_ALLOW_QUEUE_WITHOUT_DEVICE=1 artemis run ...[/green]",
+            title="✖ No usable Android device",
+            border_style="red",
+            expand=False,
+        )
+    )
+    raise SystemExit(2)
+
+
 def run_command(
     goal: GoalArgument,
     profile: Annotated[
@@ -300,12 +392,15 @@ def run_command(
     ensure_video_recording_available(with_video_recording_tools)
 
     console = Console()
+    _preflight_llm_endpoint(console)
 
     is_worker = (
         os.environ.get("ARTEMIS_TASK_WORKER") == "1"
         or os.environ.get("ARTEMIS_DEVICE_QUEUE_TICKET") is not None
     )
     is_standalone = standalone or os.environ.get("ARTEMIS_STANDALONE") == "1"
+    if not is_worker:
+        _preflight_device(console, device_serial)
 
     # Install the SIGTERM -> KeyboardInterrupt bridge *before* the daemon
     # routing below. `artemis run` normally only submits the task to the daemon
