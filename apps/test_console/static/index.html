@@ -1,0 +1,886 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mobile Test Console</title>
+<style>
+  :root{
+    --bg:#f4f6fb; --card:#ffffff; --ink:#0f172a; --muted:#64748b; --line:#e2e8f0;
+    --blue:#155eef; --blue-soft:#e8efff; --orange:#f97316; --green:#12a150;
+    --red:#e5484d; --amber:#b45309; --shadow:0 10px 30px rgba(15,23,42,.08);
+    --radius:16px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;}
+  button,input,select,textarea{font:inherit}
+  button{cursor:pointer}
+  .topbar{display:flex;align-items:center;gap:16px;padding:16px 24px;background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+  .brand{display:flex;align-items:center;gap:12px}
+  .logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,var(--blue),#4f8bff);color:#fff;
+    display:grid;place-items:center;font-weight:800;letter-spacing:.5px}
+  .brand h1{font-size:17px;margin:0;line-height:1.2}
+  .brand p{margin:2px 0 0;font-size:12px;color:var(--muted)}
+  .top-right{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .badge{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border-radius:999px;
+    background:#f1f5f9;border:1px solid var(--line);font-size:12.5px;color:#334155}
+  .badge b{font-weight:650;color:var(--ink)}
+  .dot{width:8px;height:8px;border-radius:50%;background:#94a3b8}
+  .dot.ok{background:var(--green)} .dot.err{background:var(--red)} .dot.warn{background:var(--orange)}
+  .btn{border:1px solid var(--line);background:#fff;color:var(--ink);padding:9px 14px;border-radius:10px;font-weight:600;font-size:13.5px;
+    display:inline-flex;align-items:center;gap:7px;transition:.15s;text-decoration:none}
+  .btn:hover{border-color:#c7d2e5;transform:translateY(-1px)}
+  .btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+  .btn.primary:hover{background:#0f4fd6}
+  .btn.danger{background:#fff1f1;border-color:#ffd1d3;color:var(--red)}
+  .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+  .btn.small{padding:6px 10px;font-size:12.5px;border-radius:8px}
+  .wrap{max-width:1500px;margin:0 auto;padding:20px 24px 40px}
+  .grid{display:grid;grid-template-columns:410px minmax(0,1fr);gap:20px;align-items:start}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+  .card-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line)}
+  .card-head h2{font-size:14px;margin:0;letter-spacing:.2px;text-transform:uppercase;color:#475569}
+  .card-head .spacer{margin-left:auto}
+  .card-body{padding:16px 18px}
+  .field{margin-bottom:14px}
+  .field > label{display:block;font-size:12.5px;font-weight:650;color:#334155;margin-bottom:6px}
+  .hint{font-size:11.8px;color:var(--muted);line-height:1.5}
+  select,input[type=text],textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fff;color:var(--ink);outline:none}
+  select:focus,input:focus,textarea:focus{border-color:#9db8ff;box-shadow:0 0 0 3px rgba(21,94,239,.12)}
+  textarea{min-height:120px;resize:vertical;line-height:1.55}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .seg{display:flex;gap:6px;background:#f1f5f9;padding:4px;border-radius:11px}
+  .seg button{flex:1;border:0;background:transparent;padding:8px 10px;border-radius:8px;font-size:13px;font-weight:650;color:#475569}
+  .seg button.active{background:#fff;color:var(--blue);box-shadow:0 1px 3px rgba(15,23,42,.12)}
+  .presets{display:flex;flex-direction:column;gap:7px;max-height:250px;overflow:auto;padding-right:2px}
+  .preset{text-align:left;border:1px solid var(--line);background:#fff;border-radius:11px;padding:9px 11px;transition:.15s}
+  .preset:hover{border-color:#b9ccff;background:#f8faff}
+  .preset.active{border-color:var(--blue);background:var(--blue-soft)}
+  .preset b{display:block;font-size:12.8px;margin-bottom:2px}
+  .preset span{display:block;font-size:11.5px;color:var(--muted);line-height:1.4}
+  .actions{display:flex;gap:10px;margin-top:4px}
+  .actions .btn{flex:1;justify-content:center;padding:12px}
+  /* Cao bằng màn hình: khung bên trong (bước chạy / log) tự cuộn, không đẩy
+     cả trang dài ra rồi phải cuộn cả cửa sổ. */
+  .stage{height:calc(100vh - 140px);min-height:520px;display:flex;flex-direction:column;overflow:hidden}
+  .stage-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:#fbfcff}
+  .tabs{display:flex;gap:4px;background:#eef2f9;padding:4px;border-radius:10px}
+  .tabs button{border:0;background:transparent;padding:7px 13px;border-radius:7px;font-size:13px;font-weight:650;color:#475569}
+  .tabs button.active{background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(15,23,42,.1)}
+  .status{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12.5px;color:#475569}
+  .pill{padding:5px 10px;border-radius:999px;font-weight:650;font-size:12px;background:#eef2f7;color:#475569}
+  .pill.running{background:#fff4e5;color:#b45309}
+  .pill.success{background:#e7f8ef;color:#0f7a3d}
+  .pill.failed{background:#fdecec;color:#c62a2f}
+  .pill.stopped{background:#eef2f7;color:#475569}
+  .screen-pane{flex:1;display:flex;align-items:center;justify-content:center;background:
+    radial-gradient(circle at 30% 20%,#eef4ff,transparent 45%),#0f172a;padding:18px;min-height:0}
+  .phone{position:relative;height:clamp(420px,62vh,620px);aspect-ratio:9/19.5;max-width:100%;background:#111;border-radius:22px;
+    padding:8px;box-shadow:0 20px 50px rgba(0,0,0,.35)}
+  .phone img{width:100%;height:100%;object-fit:contain;border-radius:15px;background:#000;display:block}
+  .screen-empty{position:absolute;inset:8px;display:grid;place-items:center;color:#94a3b8;font-size:12.5px;text-align:center;padding:20px}
+  .log-pane{flex:1;min-height:0;background:#0b1020;color:#d6e2ff;overflow:auto;padding:14px 16px;font:12.5px/1.55 "SFMono-Regular",Menlo,Consolas,monospace}
+  .log-line{white-space:pre-wrap;word-break:break-word;display:flex;gap:8px}
+  .log-line .t{color:#5b6b8c;flex:none}
+  .log-line.ok{color:#7ee2a8}.log-line.err{color:#ff9b9e}.log-line.warn{color:#ffc46b}.log-line.cmd{color:#8ab4ff}
+  .history{margin-top:20px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;color:#64748b;padding:10px 14px;border-bottom:1px solid var(--line);background:#fafbff}
+  td{padding:11px 14px;border-bottom:1px solid #f1f5f9;vertical-align:top}
+  tr:hover td{background:#fafbff}
+  .muted{color:var(--muted)}
+  .empty{padding:26px;text-align:center;color:var(--muted);font-size:13px}
+  .modal{position:fixed;inset:0;background:rgba(15,23,42,.5);display:none;align-items:center;justify-content:center;padding:24px;z-index:60}
+  .modal.open{display:flex}
+  .modal-card{background:#fff;border-radius:16px;max-width:900px;width:100%;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.3)}
+  .modal-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line)}
+  .modal-head h3{margin:0;font-size:15px}
+  .modal-body{padding:16px 18px;overflow:auto}
+  pre.logbox{background:#0b1020;color:#d6e2ff;padding:14px;border-radius:10px;font:12px/1.55 Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;margin:0}
+  .toast{position:fixed;right:20px;bottom:20px;display:flex;flex-direction:column;gap:8px;z-index:80}
+  .toast div{background:#0f172a;color:#fff;padding:11px 14px;border-radius:10px;font-size:13px;box-shadow:0 10px 30px rgba(0,0,0,.25);max-width:420px}
+  .toast div.err{background:#b4232a}.toast div.ok{background:#0f7a3d}
+  .kbd{font:11px Menlo,monospace;background:#f1f5f9;border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+  .advanced{border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin-bottom:14px;background:#fbfcff}
+  .advanced summary{cursor:pointer;font-size:12.8px;font-weight:650;color:#475569}
+  .advanced[open] summary{margin-bottom:6px}
+  .advanced .field:last-child{margin-bottom:0}
+  .steps-pane{flex:1;min-height:0;overflow:auto;padding:16px;background:#f7f9fd;
+    scroll-behavior:smooth;overscroll-behavior:contain}
+  #stepsList{display:flex;flex-direction:column;gap:12px}
+  .result{border:1px solid;border-radius:14px;padding:14px 16px;margin-bottom:14px;display:flex;gap:14px;align-items:flex-start}
+  .result.pass{background:#e9f9ef;border-color:#b7ebc9}
+  .result.fail{background:#fdeeee;border-color:#f6c3c3}
+  .result.stopped{background:#fff7e8;border-color:#f3d9a4}
+  .result .icon{font-size:24px;line-height:1.1}
+  .result h3{margin:0 0 3px;font-size:17px}
+  .result p{margin:2px 0;font-size:12.5px;color:#475569}
+  .result ul{margin:6px 0 0 18px;padding:0;font-size:12.5px;color:#8a1c1c}
+  .result .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+  .chip{background:#fff;border:1px solid var(--line);border-radius:999px;padding:3px 8px;font-size:11px;color:#475569}
+  .result .actions{margin-top:9px;display:flex;gap:8px}
+  .result img{width:66px;border-radius:8px;border:2px solid #fff;box-shadow:0 4px 14px rgba(15,23,42,.18)}
+  .step-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;box-shadow:0 4px 14px rgba(15,23,42,.05)}
+  .step-head{display:flex;align-items:center;gap:8px;margin-bottom:9px;flex-wrap:wrap}
+  .step-num{background:var(--blue-soft);color:var(--blue);font-weight:700;font-size:11.5px;padding:3px 8px;border-radius:999px}
+  .step-label{font-weight:650;font-size:13.5px}
+  .step-shots{display:grid;grid-template-columns:auto auto auto;gap:10px;align-items:center;justify-content:center}
+  .shot{margin:0;text-align:center;min-width:0}
+  .shot img{width:120px;max-height:240px;object-fit:contain;border-radius:8px;background:#0f172a;cursor:zoom-in;display:block}
+  .shot figcaption{font-size:11px;color:var(--muted);margin-top:4px}
+  .step-arrow{color:#94a3b8;font-size:18px}
+  @media(max-width:1100px){.grid{grid-template-columns:1fr}.phone{max-height:520px}
+    .stage{height:auto;min-height:560px}.steps-pane{max-height:72vh}}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">T</div>
+    <div>
+      <h1>Mobile Test Console</h1>
+      <p>Kiểm thử tự động trên điện thoại thật · Artemis</p>
+    </div>
+  </div>
+  <div class="top-right">
+    <span class="badge" id="deviceBadge"><span class="dot" id="deviceDot"></span><b id="deviceText">Đang tìm thiết bị…</b></span>
+    <span class="badge" id="llmBadge" title="Cấu hình LLM trong artemis/.env"><span class="dot" id="llmDot"></span><b id="llmText">LLM…</b></span>
+    <span class="badge" id="budgetBadge" title="Chi phí task này / giới hạn"><span class="dot" id="budgetDot"></span><b id="budgetText">Ngân sách…</b></span>
+    <button class="btn small" id="btnLlmTest">Kiểm tra LLM</button>
+    <a class="btn small" href="http://localhost:8000" target="_blank" rel="noreferrer">Artemis UI ↗</a>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="grid">
+    <section class="card">
+      <div class="card-head"><h2>Điều khiển</h2><span class="spacer"></span>
+        <button class="btn small" id="btnRefresh">↻ Thiết bị</button>
+      </div>
+      <div class="card-body">
+        <div class="field">
+          <label for="device">Thiết bị</label>
+          <select id="device"></select>
+          <div class="hint" style="margin-top:6px">Cắm USB, bật USB debugging. App mặc định: <b>com.example.app</b> (đổi ở ô Package).</div>
+        </div>
+
+        <div class="field">
+          <label>Kịch bản mẫu</label>
+          <div class="presets" id="presets"></div>
+        </div>
+
+        <div class="field">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <label for="goal" style="margin:0">Prompt / Mục tiêu</label>
+            <span class="muted" id="goalCount" style="margin-left:auto;font-size:11.5px">0/4000</span>
+            <button class="btn small" id="btnFreePrompt" type="button">Prompt tự do</button>
+          </div>
+          <textarea id="goal" maxlength="4000" placeholder="Nhập prompt bất kỳ, ví dụ: Mở ứng dụng đang test, vào tab Thiết bị, kiểm tra danh sách tải đúng và không có lỗi mạng. Không bật/tắt thiết bị."></textarea>
+          <div class="hint" style="margin-top:6px">Có thể sửa prompt của kịch bản mẫu. Nhấn <span class="kbd">⌘/Ctrl + Enter</span> để chạy nhanh.</div>
+        </div>
+
+        <div class="field">
+          <label for="timeLimit">Giới hạn thời gian</label>
+          <select id="timeLimit">
+            <option value="120">2 phút (khuyến nghị cho Flash)</option>
+            <option value="300" selected>5 phút</option>
+            <option value="480">8 phút (tối đa)</option>
+          </select>
+          <div class="hint" style="margin-top:6px">Quá giờ hoặc 120 giây không có log mới → tự dừng và ghi lý do.</div>
+        </div>
+
+        <details class="advanced">
+          <summary>Tuỳ chọn nâng cao</summary>
+          <div class="field" style="margin-top:10px">
+            <label>Chế độ chạy</label>
+            <div class="seg" id="profileSeg">
+              <button data-profile="flash" class="active">⚡ Flash · nhanh</button>
+              <button data-profile="pro">🧠 Pro · có plan</button>
+            </div>
+            <div class="hint" style="margin-top:6px">Flash: 3–5s/bước. Pro: chậm hơn, có kiểm tra từng mốc.</div>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label for="pkg">Package</label>
+              <input type="text" id="pkg" value="com.example.app" />
+            </div>
+            <div class="field">
+              <label for="testName">Tên test</label>
+              <input type="text" id="testName" placeholder="tự động" />
+            </div>
+          </div>
+        </details>
+
+        <div class="actions">
+          <button class="btn primary" id="btnRun">▶ Chạy test</button>
+          <button class="btn danger" id="btnStop" disabled>■ Dừng</button>
+        </div>
+        <div class="hint" style="margin-top:10px">Task chỉ thao tác trong app ở ô Package. Không đăng xuất, không đổi cài đặt trừ khi kịch bản yêu cầu.</div>
+      </div>
+    </section>
+
+    <section class="card stage">
+      <div class="stage-head">
+        <div class="tabs">
+          <button data-tab="steps" class="active">Các bước</button>
+          <button data-tab="screen">Màn hình trực tiếp</button>
+          <button data-tab="log">Log kỹ thuật</button>
+        </div>
+        <div class="status">
+          <span class="pill" id="statusPill">Sẵn sàng</span>
+          <span id="elapsed" class="muted">00:00</span>
+        </div>
+      </div>
+      <div class="steps-pane" id="stepsPane">
+        <div id="resultCard"></div>
+        <div id="stepsEmpty" class="empty">Chưa có lần chạy. Chọn kịch bản hoặc nhập prompt rồi bấm <b>Chạy test</b>.</div>
+        <div id="stepsList"></div>
+      </div>
+      <div class="screen-pane" id="screenPane" style="display:none">
+        <div class="phone">
+          <img id="screen" alt="Màn hình điện thoại" style="display:none" />
+          <div class="screen-empty" id="screenEmpty">Chưa có hình. Kiểm tra kết nối thiết bị.</div>
+        </div>
+      </div>
+      <div class="log-pane" id="logPane" style="display:none">
+        <div id="log"></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="card history">
+    <div class="card-head"><h2>Lịch sử chạy</h2><span class="spacer"></span>
+      <button class="btn small" id="btnHistory">↻ Tải lại</button>
+    </div>
+    <div id="historyBody"><div class="empty">Chưa có lần chạy nào.</div></div>
+  </section>
+</div>
+
+<div class="modal" id="modal">
+  <div class="modal-card">
+    <div class="modal-head"><h3 id="modalTitle">Chi tiết</h3><span style="margin-left:auto"></span>
+      <button class="btn small" id="modalClose">Đóng</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script>
+const PRESETS = [
+  {id:'smoke', title:'Smoke khởi động', profile:'flash',
+   desc:'Mở app, chờ tải, phát hiện màn hình trắng / crash / lỗi mạng',
+   goal:'Mở ứng dụng đang test. Không đăng xuất, không đổi cài đặt. Chờ app tải xong, kiểm tra xem có màn hình trắng, dialog crash hoặc thông báo lỗi mạng không. Mô tả màn hình đầu tiên và các tab/nút chính đang thấy.'},
+  {id:'login', title:'Màn hình đăng nhập', profile:'flash',
+   desc:'Kiểm tra form đăng nhập, nút, popup — không nhập tài khoản thật',
+   goal:'Mở ứng dụng. Nếu đang đăng nhập sẵn thì KHÔNG đăng xuất. Nếu ở màn hình đăng nhập, kiểm tra các trường nhập, nút đăng nhập, quên mật khẩu, đăng ký và các popup hiển thị. Không nhập tài khoản thật, không đổi cài đặt.'},
+  {id:'devices', title:'Danh sách thiết bị', profile:'flash',
+   desc:'Vào tab Thiết bị/Nhà, kiểm tra tải phòng và thiết bị',
+   goal:'Mở ứng dụng, vào tab Thiết bị (hoặc Nhà). Kiểm tra danh sách phòng và thiết bị tải xong, không có spinner quay mãi, không có lỗi mạng. Không bật/tắt bất kỳ thiết bị nào. Mô tả số phòng/thiết bị nhìn thấy.'},
+  {id:'toggle', title:'Bật/tắt công tắc', profile:'flash',
+   desc:'Flash, tối đa 8 bước: bật rồi tắt 1 công tắc, xác nhận trạng thái',
+   goal:'Mở ứng dụng, vào một phòng có công tắc hoặc đèn. Bật rồi tắt DUY NHẤT một công tắc và xác nhận trạng thái trên UI đổi theo. Thành công khi đã bật rồi tắt xong và UI hiển thị đúng; nếu không thấy công tắc hoặc thiết bị offline thì báo FAILED và dừng. Tối đa 8 bước. Không thay đổi thiết bị khác, không đổi cài đặt, không đăng xuất.'},
+  {id:'voicebox', title:'Voicebox / học lệnh', profile:'pro',
+   desc:'Kiểm tra cấu hình voicebox, danh sách lệnh và ngữ cảnh',
+   goal:'Mở ứng dụng, vào màn hình cấu hình Voicebox hoặc loa thông minh. Kiểm tra danh sách lệnh và ngữ cảnh tải đúng, không có lỗi. Không lưu thay đổi, không đăng xuất.'},
+  {id:'adddevice', title:'Thêm thiết bị (QR/BLE)', profile:'pro',
+   desc:'Kiểm tra luồng thêm thiết bị và quyền Nearby/Bluetooth',
+   goal:'Mở ứng dụng, vào luồng Thêm thiết bị. Kiểm tra màn hình chọn loại thiết bị và quét QR/BLE, cách app xử lý quyền Nearby devices/Bluetooth. Không hoàn tất ghép nối, không đổi cài đặt.'},
+  {id:'notify', title:'Trung tâm thông báo', profile:'flash',
+   desc:'Mở tab Thông báo, kiểm tra danh sách và trạng thái đã đọc',
+   goal:'Mở ứng dụng, vào tab Thông báo. Kiểm tra danh sách thông báo tải được, trạng thái đã đọc/chưa đọc và không có lỗi. Không xoá thông báo, không đổi cài đặt.'}
+];
+
+const $ = (id) => document.getElementById(id);
+const state = {seq:0, running:false, wasRunning:false, budgetWarned:false, profile:'flash', serial:'', autoScreen:true, tab:'steps', task:null, taskId:null, lastStepCount:-1, lastStepsFetch:0, summaryShown:false, viewingTaskId:null, startTs:0, maxSeconds:300, timer:null, followSteps:true};
+
+function fmtDuration(ms){
+  if(!ms || ms < 0) return '00:00';
+  const s = Math.floor(ms/1000), m = Math.floor(s/60);
+  return String(m).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+}
+function esc(v){ return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function toast(msg, kind=''){
+  const el = document.createElement('div');
+  el.className = kind; el.textContent = msg;
+  $('toast').appendChild(el);
+  setTimeout(()=>el.remove(), 5000);
+}
+async function api(path, opts){
+  const res = await fetch(path, opts);
+  const text = await res.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch { data = {detail:text}; }
+  if(!res.ok) throw new Error(data.detail || data.error || ('HTTP '+res.status));
+  return data;
+}
+
+function renderPresets(){
+  const box = $('presets');
+  box.innerHTML = '';
+  PRESETS.forEach(p => {
+    const b = document.createElement('button');
+    b.className = 'preset';
+    b.innerHTML = '<b>'+esc(p.title)+'</b><span>'+esc(p.desc)+'</span>';
+    b.onclick = () => {
+      document.querySelectorAll('.preset').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+      $('goal').value = p.goal;
+      setProfile(p.profile);
+      $('testName').value = p.id;
+      const limit = p.profile === 'pro' ? '300' : '120';
+      $('timeLimit').value = limit;
+      state.maxSeconds = Number(limit);
+      updateGoalCount();
+      persistPrompt();
+    };
+    box.appendChild(b);
+  });
+}
+function persistPrompt(){
+  try{ localStorage.setItem('testconsole.prompt', $('goal').value); }catch(_){}
+}
+function updateGoalCount(){
+  $('goalCount').textContent = $('goal').value.length + '/4000';
+}
+function clearPresetSelection(){
+  document.querySelectorAll('.preset').forEach(x => x.classList.remove('active'));
+}
+function setProfile(profile){
+  state.profile = profile;
+  document.querySelectorAll('#profileSeg button').forEach(b => b.classList.toggle('active', b.dataset.profile === profile));
+}
+function setTab(tab){
+  state.tab = tab;
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  $('stepsPane').style.display = tab === 'steps' ? 'block' : 'none';
+  $('screenPane').style.display = tab === 'screen' ? 'flex' : 'none';
+  $('logPane').style.display = tab === 'log' ? 'block' : 'none';
+  if(tab === 'steps'){ state.followSteps = true; scrollToLatestStep(true); }
+}
+function openModal(title, html){
+  $('modalTitle').textContent = title;
+  $('modalBody').innerHTML = html;
+  $('modal').classList.add('open');
+}
+</script>
+<script>
+async function loadHealth(){
+  try{
+    const h = await api('/api/health');
+    const ready = (h.devices || []).filter(d => d.state === 'device');
+    const select = $('device');
+    const previous = state.serial || select.value;
+    select.innerHTML = '';
+    if(!ready.length){
+      select.innerHTML = '<option value="">Không có thiết bị</option>';
+      $('deviceDot').className = 'dot err';
+      $('deviceText').textContent = 'Chưa kết nối';
+    } else {
+      ready.forEach(d => {
+        const option = document.createElement('option');
+        option.value = d.serial;
+        option.textContent = (d.model || 'Android') + ' · ' + d.serial;
+        select.appendChild(option);
+      });
+      state.serial = ready.some(d => d.serial === previous) ? previous : ready[0].serial;
+      select.value = state.serial;
+      $('deviceDot').className = 'dot ok';
+      $('deviceText').textContent = (ready[0].model || 'Android') + ' · ' + ready[0].serial;
+    }
+    select.onchange = () => { state.serial = select.value; refreshScreen(); };
+
+    const llm = h.llm || {};
+    $('llmDot').className = 'dot ' + (llm.key_present ? 'ok' : 'err');
+    $('llmText').textContent = (llm.provider || '?') + ' / ' + (llm.model || '?');
+    $('llmBadge').title = 'Endpoint: ' + (llm.base_url || '') + (llm.key_present ? ' · key ' + (llm.key_hint || '') : ' · thiếu key');
+    if(!h.artemis_ok) toast('Không tìm thấy Artemis tại ' + h.artemis_dir, 'err');
+    refreshScreen();
+  }catch(e){
+    $('deviceDot').className = 'dot err';
+    $('deviceText').textContent = 'Lỗi kết nối';
+    toast(e.message, 'err');
+  }
+}
+
+function refreshScreen(){
+  if(state.tab !== 'screen') return;
+  if(!state.serial){ $('screenEmpty').style.display = 'grid'; return; }
+  const img = $('screen');
+  const url = '/api/screenshot?serial=' + encodeURIComponent(state.serial || '') + '&t=' + Date.now();
+  const probe = new Image();
+  probe.onload = () => { img.src = probe.src; img.style.display = 'block'; $('screenEmpty').style.display = 'none'; };
+  probe.onerror = () => { $('screenEmpty').style.display = 'grid'; };
+  probe.src = url;
+}
+function screenLoop(){
+  if(state.autoScreen && state.tab === 'screen') refreshScreen();
+  setTimeout(screenLoop, 2000);
+}
+
+function addLog(line){
+  const box = $('log');
+  const atBottom = box.parentElement.scrollTop + box.parentElement.clientHeight >= box.parentElement.scrollHeight - 60;
+  const row = document.createElement('div');
+  const text = line.text || '';
+  let cls = 'log-line';
+  if(/^\\$/.test(text)) cls += ' cmd';
+  else if(/❌|Traceback|failed|error|credit_balance|429/i.test(text)) cls += ' err';
+  else if(/⚠/.test(text)) cls += ' warn';
+  else if(/✓|✔/.test(text)) cls += ' ok';
+  row.className = cls;
+  row.innerHTML = '<span class="t">' + esc(line.t) + '</span><span>' + esc(text) + '</span>';
+  box.appendChild(row);
+  while(box.children.length > 4000) box.removeChild(box.firstChild);
+  if(atBottom) box.parentElement.scrollTop = box.parentElement.scrollHeight;
+}
+function clearLog(){ $('log').innerHTML = ''; }
+
+function setRunning(running, task){
+  state.running = running;
+  $('btnRun').disabled = running;
+  $('btnStop').disabled = !running;
+  const pill = $('statusPill');
+  let label = 'Sẵn sàng', cls = 'pill';
+  if(running){ label = 'Đang chạy'; cls += ' running'; }
+  else if(task && task.status === 'success'){ label = 'Thành công'; cls += ' success'; }
+  else if(task && task.status === 'failed'){ label = 'Thất bại'; cls += ' failed'; }
+  else if(task && task.status === 'stopped'){ label = 'Đã dừng'; cls += ' stopped'; }
+  pill.className = cls;
+  pill.textContent = label;
+  if(!running && task && task.ended_at){
+    $('elapsed').textContent = fmtDuration((task.ended_at - task.started_at) * 1000);
+  }
+}
+function tick(){
+  if(state.running && state.startTs){
+    $('elapsed').textContent = fmtDuration(Date.now() - state.startTs) + ' / ' + fmtDuration(state.maxSeconds * 1000);
+  }
+  setTimeout(tick, 1000);
+}
+
+function updateBudget(budget){
+  if(!budget) return;
+  const limits = budget.limits || {};
+  const cost = Math.round(budget.task_cost_vnd || 0);
+  const max = Math.round(limits.max_task_cost_vnd || 0);
+  const daily = Math.round(budget.daily_spent_vnd || 0);
+  const dailyMax = Math.round(limits.max_daily_cost_vnd || 0);
+  $('budgetText').textContent = cost + 'đ/' + max + 'đ · ' + (budget.requests || 0) + '/' + (limits.max_requests || 0) + ' req';
+  $('budgetDot').className = 'dot ' + (budget.exceeded ? 'err' : (cost > max * 0.7 ? 'warn' : 'ok'));
+  $('budgetBadge').title = 'Hôm nay: ' + daily + 'đ/' + dailyMax + 'đ' + (budget.exceeded ? ' · ĐÃ CHẶN: ' + budget.exceeded : '');
+  if(budget.exceeded && !state.budgetWarned){
+    state.budgetWarned = true;
+    toast('Ngân sách: ' + budget.exceeded, 'err');
+    loadHistory();
+  }
+  if(!budget.exceeded) state.budgetWarned = false;
+}
+
+/* ---- Khung "Các bước" tự cuộn bên trong, bám theo bước mới nhất ---- */
+function paneNearBottom(pane, slack = 80){
+  return pane.scrollHeight - pane.scrollTop - pane.clientHeight <= slack;
+}
+function scrollToStepCard(card, smooth){
+  const pane = $('stepsPane');
+  if(!pane || !card || pane.style.display === 'none') return;
+  // Toạ độ tương đối với khung đang nhìn (không phải với #stepsList), nếu không
+  // sẽ lệch đúng bằng chiều cao thẻ kết quả nằm phía trên danh sách bước.
+  const delta = card.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+  pane.scrollTo({
+    top: Math.max(0, pane.scrollTop + delta - 6),
+    behavior: smooth ? 'smooth' : 'instant',
+  });
+}
+function scrollToLatestStep(smooth){
+  const cards = $('stepsList').children;
+  if(!state.followSteps || !cards.length) return;
+  scrollToStepCard(cards[cards.length - 1], smooth && state.lastStepCount > 1);
+}
+
+function renderSteps(steps){
+  const hasResult = $('resultCard').innerHTML.trim().length > 0;
+  $('stepsEmpty').style.display = steps.length ? 'none' : 'block';
+  if(!steps.length){
+    $('stepsEmpty').textContent = hasResult
+      ? 'Task này không có thao tác chạm/vuốt — agent chỉ quan sát màn hình.'
+      : 'Chưa có lần chạy. Chọn kịch bản hoặc nhập prompt rồi bấm Chạy test.';
+  }
+  $('stepsList').innerHTML = steps.map(step => {
+    const before = step.before
+      ? `<figure class="shot"><img src="${esc(step.before)}" alt="Trước"><figcaption>Trước</figcaption></figure>`
+      : '';
+    const after = step.after
+      ? `<figure class="shot"><img src="${esc(step.after)}" alt="Sau"><figcaption>Sau</figcaption></figure>`
+      : '';
+    const arrow = step.before && step.after ? '<div class="step-arrow">→</div>' : '';
+    const shots = (before || after)
+      ? `<div class="step-shots">${before}${arrow}${after}</div>`
+      : `<div class="hint">${esc(step.detail || '')}</div>`;
+    return `<div class="step-card">
+      <div class="step-head"><span class="step-num">Bước ${esc(step.number)}</span><span class="step-label">${esc(step.label)}</span></div>
+      ${shots}
+    </div>`;
+  }).join('');
+  $('stepsList').querySelectorAll('img').forEach(img => {
+    img.onclick = () => openImage(img.getAttribute('src'));
+    // Ảnh tải xong mới biết chiều cao thật -> bám lại đúng bước mới nhất.
+    img.onload = () => scrollToLatestStep(false);
+  });
+  scrollToLatestStep(true);
+}
+
+function openImage(url){
+  openModal('Ảnh bước chạy',
+    `<div style="text-align:center"><img src="${esc(url)}" style="max-width:100%;max-height:70vh;border-radius:10px"></div>`);
+}
+
+function humanizeIssue(text){
+  const rules = [
+    [/Unable to load script/i, 'App chưa tải được JS bundle — kiểm tra Metro và adb reverse.'],
+    [/credit_balance|insufficient_quota|429/i, 'Hết credit hoặc bị giới hạn tần suất gọi LLM.'],
+    [/no devices|device offline|not connected/i, 'Không kết nối được thiết bị Android.'],
+    [/timeout|timed out/i, 'Hết thời gian chờ phản hồi.'],
+    [/budget_exceeded/i, 'Đã chạm giới hạn ngân sách của task.'],
+  ];
+  for(const [pattern, message] of rules){ if(pattern.test(text)) return message; }
+  return text;
+}
+
+function renderResult(summary){
+  const verdict = summary.verdict || 'fail';
+  const titles = {pass: 'ĐẠT', fail: 'KHÔNG ĐẠT', stopped: 'ĐÃ DỪNG', running: 'ĐANG CHẠY'};
+  const icons = {pass: '✅', fail: '❌', stopped: '⏹', running: '⏳'};
+  const cardClass = verdict === 'running' ? 'stopped' : verdict;
+  const meta = `${summary.steps_count || 0} bước · ${fmtDuration((summary.duration_seconds || 0) * 1000)} · ${Math.round(summary.cost_vnd || 0)}đ`;
+  const issues = (summary.issues || []).filter(Boolean);
+  const chips = (summary.highlights || []).filter(Boolean);
+  const issueHtml = verdict !== 'pass' && issues.length
+    ? `<ul>${issues.map(item => `<li>${esc(humanizeIssue(item))}</li>`).join('')}</ul>` : '';
+  const detail = String(summary.conclusion || '').replace(/^ĐẠT\s*[–-]\s*/i, '');
+  const explain = summary.explanation
+    ? `<p><b>Agent báo:</b> ${esc(summary.explanation)}</p>` : '';
+  const chipHtml = chips.length
+    ? `<div class="chips">${chips.map(item => `<span class="chip">${esc(item)}</span>`).join('')}</div>` : '';
+  const image = summary.final_image
+    ? `<img src="${esc(summary.final_image)}" alt="Màn hình cuối" title="Màn hình cuối">` : '';
+  $('resultCard').innerHTML = `<div class="result ${esc(cardClass)}">
+    <div class="icon">${icons[verdict] || '❌'}</div>
+    <div style="flex:1;min-width:0">
+      <h3>${titles[verdict] || 'KẾT QUẢ'}</h3>
+      <p>${esc(detail)}</p>
+      <p>${esc(meta)}</p>
+      ${explain}
+      ${issueHtml}
+      ${chipHtml}
+      <div class="actions"><button class="btn small" id="btnResultLog">Xem log kỹ thuật</button></div>
+    </div>
+    ${image}
+  </div>`;
+  const logButton = $('resultCard').querySelector('#btnResultLog');
+  if(logButton) logButton.onclick = () => setTab('log');
+  const finalImage = $('resultCard').querySelector('.result img');
+  if(finalImage) finalImage.onclick = () => openImage(finalImage.getAttribute('src'));
+  if(!$('stepsList').children.length){
+    $('stepsEmpty').style.display = 'block';
+    $('stepsEmpty').textContent = 'Task này không có thao tác chạm/vuốt — agent chỉ quan sát màn hình.';
+  }
+}
+
+async function poll(){
+  try{
+    const data = await api('/api/status?since=' + state.seq);
+    if(data.task && (!state.task || data.task.id !== state.task.id)){
+      state.task = data.task;
+      state.seq = 0;
+      state.startTs = data.task.started_at * 1000;
+      state.maxSeconds = data.task.max_seconds || state.maxSeconds;
+      const limitSelect = $('timeLimit');
+      if([...limitSelect.options].some(o => Number(o.value) === state.maxSeconds)){
+        limitSelect.value = String(state.maxSeconds);
+      }
+      clearLog();
+    }
+    (data.lines || []).forEach(addLog);
+    if(data.seq) state.seq = data.seq;
+    setRunning(data.running, data.task || state.task);
+    updateBudget(data.budget);
+    const justFinished = state.wasRunning && !data.running;
+    if(data.task && (data.running || !state.viewingTaskId)){
+      ensureTask(data.task);
+    }
+    if(justFinished && state.taskId){
+      finishTask(state.taskId);
+      loadHistory();
+    }
+    if(data.running && state.taskId && Date.now() - state.lastStepsFetch > 3500){
+      state.lastStepsFetch = Date.now();
+      loadSteps(state.taskId);
+    }
+    state.wasRunning = data.running;
+  }catch(_){ /* server restarting */ }
+  setTimeout(poll, 1000);
+}
+
+async function loadSteps(taskId){
+  try{
+    const data = await api('/api/tasks/' + taskId + '/steps');
+    const steps = data.steps || [];
+    if(steps.length !== state.lastStepCount){
+      renderSteps(steps);
+      state.lastStepCount = steps.length;
+    }
+    if(state.running && steps.length){
+      $('statusPill').textContent = 'Đang chạy · ' + steps.length + ' bước';
+    } else if(state.running && !steps.length){
+      $('stepsEmpty').style.display = 'block';
+      $('stepsEmpty').textContent = 'Đang chạy — chưa có bước thao tác nào.';
+    }
+  }catch(_){}
+}
+
+async function loadSummary(taskId){
+  const summary = await api('/api/tasks/' + taskId + '/summary');
+  renderResult(summary);
+  return summary;
+}
+
+function ensureTask(task){
+  if(!task || state.taskId === task.id) return;
+  if(state.viewingTaskId && !state.running) return;
+  state.taskId = task.id;
+  state.lastStepCount = -1;
+  state.summaryShown = false;
+  state.followSteps = true;
+  $('resultCard').innerHTML = '';
+  $('stepsList').innerHTML = '';
+  $('stepsEmpty').style.display = 'none';
+  loadSteps(task.id);
+  if(!state.running) loadSummary(task.id).catch(() => {});
+}
+
+async function finishTask(taskId){
+  if(!taskId) return;
+  await loadSteps(taskId);
+  let summary = null;
+  // Tiến trình vừa thoát còn vài trăm ms để server chốt status/ended_at/cost;
+  // hỏi ngay lập tức sẽ ra card "ĐANG CHẠY" với 00:00 · 0đ.
+  for(let attempt = 0; attempt < 6; attempt++){
+    try{ summary = await loadSummary(taskId); }catch(_){ summary = null; }
+    if(summary && summary.verdict !== 'running' && (summary.duration_seconds || 0) > 0) break;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  if(summary && !state.summaryShown){
+    state.summaryShown = true;
+    notifyResult(summary);
+  }
+}
+
+function notifyResult(summary){
+  const title = summary.verdict === 'pass' ? '✅ Kết quả: ĐẠT'
+    : summary.verdict === 'stopped' ? '⏹ Kết quả: ĐÃ DỪNG'
+    : summary.verdict === 'running' ? '⏳ Kết quả: ĐANG CHẠY'
+    : '❌ Kết quả: KHÔNG ĐẠT';
+  if(summary.verdict === 'running') return;
+  toast(summary.conclusion || title, summary.verdict === 'pass' ? 'ok' : 'err');
+  if('Notification' in window && Notification.permission === 'granted'){
+    try{ new Notification(title, {body: String(summary.conclusion || '').slice(0, 180), tag: 'testconsole-' + state.taskId}); }catch(_){}
+  }
+  beep(summary.verdict === 'pass');
+}
+
+function beep(ok){
+  try{
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = ok ? 880 : 420;
+    gain.gain.value = 0.05;
+    osc.start();
+    setTimeout(() => { try{ osc.stop(); ctx.close(); }catch(_){} }, 260);
+  }catch(_){}
+}
+
+async function viewTask(taskId){
+  if(state.running){ toast('Đang chạy task, vui lòng đợi xong rồi xem lịch sử.', 'err'); return; }
+  state.viewingTaskId = taskId;
+  state.taskId = taskId;
+  state.lastStepCount = -1;
+  state.summaryShown = true;
+  $('resultCard').innerHTML = '';
+  $('stepsList').innerHTML = '';
+  setTab('steps');
+  await loadSteps(taskId);
+  try{ await loadSummary(taskId); }catch(e){ toast('Không tải được kết luận: ' + e.message, 'err'); }
+}
+
+async function runTask(){
+  const goal = $('goal').value.trim();
+  if(goal.length < 5){ toast('Nhập mục tiêu ít nhất 5 ký tự.', 'err'); return; }
+  if(!state.serial){ toast('Chưa có thiết bị. Cắm USB và bật USB debugging rồi bấm ↻ Thiết bị.', 'err'); return; }
+  persistPrompt();
+  if('Notification' in window && Notification.permission === 'default'){
+    Notification.requestPermission().catch(() => {});
+  }
+  $('btnRun').disabled = true;
+  try{
+    clearLog(); state.seq = 0; state.task = null; state.startTs = Date.now();
+    state.taskId = null; state.lastStepCount = -1; state.lastStepsFetch = 0;
+    state.summaryShown = false;
+    state.viewingTaskId = null;
+    $('resultCard').innerHTML = '';
+    $('stepsList').innerHTML = '';
+    $('stepsEmpty').style.display = 'none';
+    setTab('steps');
+    const result = await api('/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        goal, profile: state.profile,
+        package: $('pkg').value.trim(), serial: state.serial,
+        test_name: $('testName').value.trim(),
+        max_seconds: state.maxSeconds
+      })
+    });
+    state.task = result.task; state.startTs = Date.now();
+    toast('Đã bắt đầu task ' + result.task.id, 'ok');
+  }catch(e){
+    toast(e.message, 'err');
+    $('btnRun').disabled = false;
+  }
+}
+
+async function stopTask(){
+  try{ const r = await api('/api/stop', {method:'POST'}); toast(r.message || 'Đã dừng'); }
+  catch(e){ toast(e.message, 'err'); }
+}
+
+const STATUS_LABEL = {running:'Đang chạy', success:'Thành công', failed:'Thất bại', stopped:'Đã dừng'};
+function fmtTime(ts){
+  if(!ts) return '—';
+  const d = new Date(ts * 1000);
+  return d.toLocaleString('vi-VN', {hour12:false});
+}
+function truncate(text, n){
+  const value = String(text || '');
+  return value.length > n ? value.slice(0, n - 1) + '…' : value;
+}
+
+async function loadHistory(){
+  try{
+    const items = await api('/api/tasks?limit=20');
+    if(!items.length){
+      $('historyBody').innerHTML = '<div class="empty">Chưa có lần chạy nào.</div>';
+      return;
+    }
+    const rows = items.map(t => {
+      const duration = t.ended_at ? fmtDuration((t.ended_at - t.started_at) * 1000) : '—';
+      return '<tr data-id="' + esc(t.id) + '" data-name="' + esc(t.test_name) + '" style="cursor:pointer">' +
+        '<td class="muted">' + esc(fmtTime(t.started_at)) + '</td>' +
+        '<td><b>' + esc(t.test_name) + '</b><div class="muted" style="font-size:11.5px">' + esc(truncate(t.goal, 90)) + '</div></td>' +
+        '<td>' + esc((t.profile || '').toUpperCase()) + '</td>' +
+        '<td><span class="pill ' + esc(t.status) + '">' + esc(STATUS_LABEL[t.status] || t.status) + '</span></td>' +
+        '<td class="muted">' + esc(duration) + '</td>' +
+        '<td><button class="btn small">Xem kết quả</button></td></tr>';
+    }).join('');
+    $('historyBody').innerHTML =
+      '<table><thead><tr><th>Thời gian</th><th>Test / mục tiêu</th><th>Chế độ</th><th>Kết quả</th><th>Thời lượng</th><th></th></tr></thead><tbody>' +
+      rows + '</tbody></table>';
+    $('historyBody').querySelectorAll('tbody tr').forEach(row => {
+      row.onclick = () => viewTask(row.dataset.id);
+    });
+  }catch(e){
+    $('historyBody').innerHTML = '<div class="empty">Không tải được lịch sử: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function showTaskLog(id, name){
+  try{
+    const res = await fetch('/api/tasks/' + encodeURIComponent(id) + '/log');
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    openModal('Log · ' + (name || id), '<pre class="logbox">' + esc(text) + '</pre>');
+  }catch(e){ toast('Không đọc được log: ' + e.message, 'err'); }
+}
+
+async function testLlm(){
+  const button = $('btnLlmTest');
+  button.disabled = true;
+  try{
+    const r = await api('/api/llm-test', {method:'POST'});
+    if(r.ok){
+      openModal('LLM kết nối OK',
+        '<p><b>Endpoint:</b> ' + esc(r.base_url) + '<br><b>Số model:</b> ' + r.count + '</p>' +
+        '<pre class="logbox">' + esc((r.models || []).join('\n')) + '</pre>');
+    }else{
+      openModal('LLM lỗi', '<p><b>Endpoint:</b> ' + esc(r.base_url || '') + '</p>' +
+        '<pre class="logbox">' + esc(r.error || 'Không rõ lỗi') + '</pre>');
+    }
+  }catch(e){
+    openModal('LLM lỗi', '<pre class="logbox">' + esc(e.message) + '</pre>');
+  }finally{ button.disabled = false; }
+}
+
+function bindEvents(){
+  $('btnRefresh').onclick = async () => { await loadHealth(); toast('Đã làm mới thiết bị'); };
+  $('btnHistory').onclick = loadHistory;
+  $('btnRun').onclick = runTask;
+  $('btnStop').onclick = stopTask;
+  $('btnLlmTest').onclick = testLlm;
+  $('modalClose').onclick = () => $('modal').classList.remove('open');
+  $('modal').onclick = (event) => { if(event.target === $('modal')) $('modal').classList.remove('open'); };
+  document.querySelectorAll('.tabs button').forEach(button => {
+    button.onclick = () => setTab(button.dataset.tab);
+  });
+  document.querySelectorAll('#profileSeg button').forEach(button => {
+    button.onclick = () => setProfile(button.dataset.profile);
+  });
+  $('goal').addEventListener('keydown', event => {
+    if((event.metaKey || event.ctrlKey) && event.key === 'Enter') runTask();
+  });
+  $('goal').addEventListener('input', () => {
+    clearPresetSelection();
+    updateGoalCount();
+    persistPrompt();
+  });
+  $('btnFreePrompt').onclick = () => {
+    $('goal').value = '';
+    $('testName').value = 'custom';
+    clearPresetSelection();
+    updateGoalCount();
+    persistPrompt();
+    $('goal').focus();
+  };
+  $('timeLimit').onchange = () => { state.maxSeconds = Number($('timeLimit').value); };
+
+  // Bám theo bước mới, nhưng nhường ngay khi người dùng tự cuộn lên xem bước cũ.
+  const pane = $('stepsPane');
+  pane.addEventListener('wheel', event => {
+    if(event.deltaY < 0) state.followSteps = false;
+    else if(paneNearBottom(pane, 80)) state.followSteps = true;
+  }, {passive: true});
+  pane.addEventListener('touchmove', () => { state.followSteps = false; }, {passive: true});
+  pane.addEventListener('scroll', () => {
+    if(paneNearBottom(pane, 24)) state.followSteps = true;
+  }, {passive: true});
+}
+
+try{
+  const saved = localStorage.getItem('testconsole.prompt');
+  if(saved){ $('goal').value = saved; }
+}catch(_){}
+updateGoalCount();
+renderPresets();
+setTab('steps');
+bindEvents();
+loadHealth();
+loadHistory();
+api('/api/tasks?limit=1').then(items => { if(items.length) ensureTask(items[0]); }).catch(() => {});
+poll();
+tick();
+screenLoop();
+</script>
+</body>
+</html>

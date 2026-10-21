@@ -1,0 +1,16 @@
+# Model local cho ARTEMIS — tạo bằng:
+#   /Applications/Ollama.app/Contents/Resources/ollama create artemis-local -f Modelfile.artemis-local
+#
+# Nền: Qwen3-VL 8B (vision + tool calling, Q4, 6,2 GB).
+# LƯU Ý: Qwen3-VL luôn "thinking" (Ollama 0.40 không tắt được bằng think=false,
+# /no_think hay reasoning_effort). Vì vậy proxy local phải nới max_tokens lên
+# ~1536 để model suy nghĩ xong vẫn còn chỗ phát tool call; đổi lại mỗi lượt
+# mất ~30-60 s trên M4. Muốn nhanh hơn thì dùng model cloud.
+# num_ctx 16384: đủ cho prompt Flash (ảnh + cây XML + ledger) mà không ăn hết RAM 16 GB.
+# temperature 0: agent cần hành vi lặp lại được, không sáng tạo.
+FROM qwen3-vl:8b
+
+PARAMETER num_ctx 16384
+PARAMETER temperature 0
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.05
