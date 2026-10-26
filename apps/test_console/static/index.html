@@ -109,10 +109,56 @@
   .steps-pane{flex:1;min-height:0;overflow:auto;padding:16px;background:#f7f9fd;
     scroll-behavior:smooth;overscroll-behavior:contain}
   #stepsList{display:flex;flex-direction:column;gap:12px}
+  /* --- Knowledge Base (Workflow RAG) --- */
+  .kb-pane{flex:1;min-height:0;overflow:auto;padding:16px;background:#f7f9fd}
+  .kb-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+  .kb-bar select,.kb-bar input{padding:8px 10px;border:1px solid var(--line);border-radius:10px;
+    font-size:13px;font-family:inherit;background:#fff}
+  .kb-bar input{flex:1;min-width:170px}
+  .kb-status{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;font-size:12px}
+  .kb-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:14px}
+  .kb-card > h3{margin:0 0 10px;font-size:13.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .kb-list{display:flex;flex-direction:column;gap:10px;margin-bottom:14px}
+  .kb-item{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px;cursor:pointer}
+  .kb-item:hover{border-color:var(--blue)}
+  .kb-item.sel{border-color:var(--blue);box-shadow:0 0 0 2px var(--blue-soft)}
+  .kb-item h4{margin:0 0 5px;font-size:13.5px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .kb-item .sub{font-size:11.8px;color:var(--muted);line-height:1.55}
+  .kb-item .sub b{color:#475569}
+  .kb-steps{margin-bottom:9px}
+  .kb-step{border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin-bottom:9px;background:#fbfcff}
+  .kb-step-head{display:flex;align-items:center;gap:8px;margin-bottom:9px;font-size:12.5px;font-weight:650}
+  .kb-step-head button{margin-left:auto}
+  .kb-step .grid{display:grid;grid-template-columns:118px 1fr;gap:7px 9px;align-items:center}
+  .kb-step .grid > label{font-size:11.5px;color:var(--muted)}
+  .kb-step input,.kb-step select,.kb-step textarea{width:100%;padding:7px 9px;border:1px solid var(--line);
+    border-radius:9px;font-size:12.5px;font-family:inherit;background:#fff}
+  .kb-step .grid > label.span{grid-column:1 / -1}
+  .kb-context{background:#0b1020;color:#d6e2ff;padding:12px;border-radius:10px;
+    font:11.5px/1.55 Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;
+    margin:10px 0 0;max-height:320px;overflow:auto}
+  .kb-hit{display:flex;gap:8px;align-items:center;font-size:12.5px;padding:7px 0;
+    border-bottom:1px dashed var(--line);flex-wrap:wrap}
+  .kb-hit:last-child{border-bottom:0}
+  .kb-hit .name{font-weight:650}
+  .kb-two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:980px){.kb-two{grid-template-columns:1fr}}
+  .activity{background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px 14px;margin-bottom:14px}
+  .activity summary{cursor:pointer;font-size:12.8px;font-weight:650;color:#475569}
+  .activity-list{display:flex;flex-direction:column;gap:7px;margin-top:10px;max-height:340px;overflow:auto}
+  .act{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;line-height:1.5}
+  .act .tag{flex:none;min-width:76px;font-size:11px;font-weight:650;border-radius:6px;padding:2px 6px;text-align:center;background:#eef2f7;color:#475569}
+  .act.tool .tag{background:var(--blue-soft);color:var(--blue)}
+  .act.error .tag{background:#fdecec;color:#c62a2f}
+  .act.warn .tag{background:#fff4e5;color:#b45309}
+  .act.info .tag{background:#e7f8ef;color:#0f7a3d}
+  .act .body{min-width:0;flex:1;word-break:break-word}
+  .act .detail{color:var(--muted);font:11.5px/1.5 Menlo,Consolas,monospace;white-space:pre-wrap;margin-top:2px}
   .result{border:1px solid;border-radius:14px;padding:14px 16px;margin-bottom:14px;display:flex;gap:14px;align-items:flex-start}
   .result.pass{background:#e9f9ef;border-color:#b7ebc9}
   .result.fail{background:#fdeeee;border-color:#f6c3c3}
   .result.stopped{background:#fff7e8;border-color:#f3d9a4}
+  .result.unverified{background:#fff7e8;border-color:#f3d9a4}
   .result .icon{font-size:24px;line-height:1.1}
   .result h3{margin:0 0 3px;font-size:17px}
   .result p{margin:2px 0;font-size:12.5px;color:#475569}
@@ -147,6 +193,7 @@
     <span class="badge" id="deviceBadge"><span class="dot" id="deviceDot"></span><b id="deviceText">Đang tìm thiết bị…</b></span>
     <span class="badge" id="llmBadge" title="Cấu hình LLM trong artemis/.env"><span class="dot" id="llmDot"></span><b id="llmText">LLM…</b></span>
     <span class="badge" id="budgetBadge" title="Chi phí task này / giới hạn"><span class="dot" id="budgetDot"></span><b id="budgetText">Ngân sách…</b></span>
+    <span class="badge" id="accessBadge" title="Khoá truy cập API cho /llm/v1"><span class="dot" id="accessDot"></span><b id="accessText">API khoá…</b></span>
     <button class="btn small" id="btnLlmTest">Kiểm tra LLM</button>
     <a class="btn small" href="http://localhost:8000" target="_blank" rel="noreferrer">Artemis UI ↗</a>
   </div>
@@ -178,6 +225,19 @@
           </div>
           <textarea id="goal" maxlength="4000" placeholder="Nhập prompt bất kỳ, ví dụ: Mở ứng dụng đang test, vào tab Thiết bị, kiểm tra danh sách tải đúng và không có lỗi mạng. Không bật/tắt thiết bị."></textarea>
           <div class="hint" style="margin-top:6px">Có thể sửa prompt của kịch bản mẫu. Nhấn <span class="kbd">⌘/Ctrl + Enter</span> để chạy nhanh.</div>
+          <div class="hint" style="margin-top:4px">Prompt càng rõ càng ít đi linh tinh: nói rõ <b>làm gì</b>, <b>thành công khi nào</b>, và <b>giới hạn bao nhiêu bước</b>.</div>
+          <div class="actions" style="margin-top:8px">
+            <button class="btn small" id="btnPreviewPrompt">🔍 Xem prompt hoàn chỉnh</button>
+            <span class="muted" id="promptPreviewNote" style="font-size:12px"></span>
+          </div>
+          <div id="promptPreviewBox" style="display:none;margin-top:10px">
+            <div class="hint" style="margin-bottom:6px">Đây là <b>prompt agent sẽ nhận</b> (prompt của anh + hướng dẫn từ workflow khớp). Sửa được — bấm <b>Dùng bản này</b> rồi Chạy.</div>
+            <textarea id="promptPreview" rows="10" spellcheck="false" style="width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5"></textarea>
+            <div class="actions" style="margin-top:6px">
+              <button class="btn small primary" id="btnUsePrompt">✔ Dùng bản này</button>
+              <button class="btn small" id="btnResetPrompt">Bỏ bản sửa</button>
+            </div>
+          </div>
         </div>
 
         <div class="field">
@@ -202,8 +262,10 @@
           </div>
           <div class="row">
             <div class="field">
-              <label for="pkg">Package</label>
-              <input type="text" id="pkg" value="com.example.app" />
+              <label for="pkg">Package — app đã cài trên máy</label>
+              <input type="text" id="pkg" list="pkgList" value="com.example.app" />
+              <datalist id="pkgList"></datalist>
+              <div class="hint" id="pkgHint" style="margin-top:6px"></div>
             </div>
             <div class="field">
               <label for="testName">Tên test</label>
@@ -226,6 +288,7 @@
           <button data-tab="steps" class="active">Các bước</button>
           <button data-tab="screen">Màn hình trực tiếp</button>
           <button data-tab="log">Log kỹ thuật</button>
+          <button data-tab="kb">Knowledge</button>
         </div>
         <div class="status">
           <span class="pill" id="statusPill">Sẵn sàng</span>
@@ -234,6 +297,7 @@
       </div>
       <div class="steps-pane" id="stepsPane">
         <div id="resultCard"></div>
+        <div id="activityBox"></div>
         <div id="stepsEmpty" class="empty">Chưa có lần chạy. Chọn kịch bản hoặc nhập prompt rồi bấm <b>Chạy test</b>.</div>
         <div id="stepsList"></div>
       </div>
@@ -245,6 +309,110 @@
       </div>
       <div class="log-pane" id="logPane" style="display:none">
         <div id="log"></div>
+      </div>
+      <div class="kb-pane" id="kbPane" style="display:none">
+        <div class="kb-status" id="kbStatus"></div>
+
+        <div class="kb-bar">
+          <select id="kbAppSel"></select>
+          <input type="text" id="kbSearch" placeholder="Tìm workflow theo tên / id / alias…" />
+          <button class="btn" id="btnKbNew">＋ Workflow mới</button>
+          <button class="btn" id="btnKbReload">↻ Tải lại</button>
+        </div>
+
+        <div class="kb-list" id="kbList"></div>
+        <div class="empty" id="kbEmpty">
+          Chưa có workflow nào cho app này. Bấm <b>＋ Workflow mới</b> để tạo.<br>
+          <span class="muted">Workflow mô tả <b>ý định</b> của từng bước (“tab cuối cùng trên thanh
+          dưới cùng”), <b>không</b> phải toạ độ — Operator sẽ tự tìm phần tử khớp mô tả trên UI thật.</span>
+        </div>
+
+        <div class="kb-card" id="kbForm" style="display:none">
+          <h3 id="kbFormTitle">Workflow</h3>
+          <div class="kb-two">
+            <div class="field">
+              <label for="kbId">ID (chữ thường, số, . _ -)</label>
+              <input type="text" id="kbId" placeholder="auth.logout" />
+            </div>
+            <div class="field">
+              <label for="kbName">Tên chức năng</label>
+              <input type="text" id="kbName" placeholder="Đăng xuất tài khoản" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="kbDesc">Mô tả</label>
+            <input type="text" id="kbDesc" placeholder="Đăng xuất khỏi tài khoản đang đăng nhập" />
+          </div>
+          <div class="kb-two">
+            <div class="field">
+              <label for="kbAliases">Cách gọi khác — alias (cách nhau dấu phẩy)</label>
+              <input type="text" id="kbAliases" placeholder="logout, đăng xuất, thoát tài khoản" />
+              <div class="hint" style="margin-top:6px">Alias là cách tester gọi chức năng. Khớp alias
+              được tính là <b>bằng chứng</b> (không phải máy đoán), nên đây là chỗ đáng đầu tư nhất.</div>
+            </div>
+            <div class="field">
+              <label for="kbTags">Tags (cách nhau dấu phẩy)</label>
+              <input type="text" id="kbTags" placeholder="auth, tài khoản" />
+            </div>
+          </div>
+          <div class="kb-two">
+            <div class="field">
+              <label for="kbStatusSel">Trạng thái</label>
+              <select id="kbStatusSel">
+                <option value="draft">draft — bản nháp, vẫn được truy xuất</option>
+                <option value="verified">verified — đã kiểm chứng</option>
+                <option value="deprecated">deprecated — ngừng dùng, KHÔNG truy xuất</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="kbVersion">Phiên bản app (để trống = mọi phiên bản)</label>
+              <select id="kbVersion"><option value="">— mọi phiên bản —</option></select>
+            </div>
+          </div>
+          <div class="field">
+            <label for="kbPre">Điều kiện trước (mỗi dòng một điều kiện)</label>
+            <textarea id="kbPre" rows="2" placeholder="Người dùng đã đăng nhập"></textarea>
+          </div>
+          <div class="field">
+            <label>Các bước — mô tả <b>ý định</b>, tuyệt đối không ghi toạ độ</label>
+            <div class="kb-steps" id="kbSteps"></div>
+            <button class="btn" id="btnKbAddStep">＋ Thêm bước</button>
+          </div>
+          <div class="field">
+            <label for="kbCrit">Tiêu chí thành công — Checker sẽ xác minh (mỗi dòng một tiêu chí)</label>
+            <textarea id="kbCrit" rows="2" placeholder="Màn hình đăng nhập hiện ra"></textarea>
+          </div>
+          <div class="field">
+            <label for="kbNote">Ghi chú thay đổi (lưu vào lịch sử sửa)</label>
+            <input type="text" id="kbNote" placeholder="sửa bước 2 theo UI mới" />
+          </div>
+          <div class="actions">
+            <button class="btn primary" id="btnKbSave">💾 Lưu workflow</button>
+            <button class="btn" id="btnKbCancel">Huỷ</button>
+            <button class="btn" id="btnKbDelete">🗑 Xoá</button>
+            <span class="muted" id="kbFormMsg" style="font-size:12px"></span>
+          </div>
+        </div>
+
+        <div class="kb-card">
+          <h3>🔎 Kiểm tra truy xuất</h3>
+          <div class="kb-bar">
+            <input type="text" id="kbQuery" placeholder="Test đăng xuất" />
+            <button class="btn primary" id="btnKbTest">Kiểm tra</button>
+          </div>
+          <div class="hint">Chạy đúng đoạn truy xuất mà một lần test sẽ dùng, và in ra <b>chính xác
+          khối văn bản</b> sẽ được chèn vào Planner.</div>
+          <div id="kbTestResult"></div>
+        </div>
+
+        <div class="kb-card">
+          <h3>📊 Kiến thức đã dùng trong các lần chạy</h3>
+          <div class="kb-bar">
+            <input type="text" id="kbRunId" placeholder="lọc theo run id (để trống = 20 lần gần nhất)" />
+            <button class="btn" id="btnKbLogs">Xem</button>
+          </div>
+          <div id="kbLogs"></div>
+        </div>
       </div>
     </section>
   </div>
@@ -289,11 +457,14 @@ const PRESETS = [
    goal:'Mở ứng dụng, vào luồng Thêm thiết bị. Kiểm tra màn hình chọn loại thiết bị và quét QR/BLE, cách app xử lý quyền Nearby devices/Bluetooth. Không hoàn tất ghép nối, không đổi cài đặt.'},
   {id:'notify', title:'Trung tâm thông báo', profile:'flash',
    desc:'Mở tab Thông báo, kiểm tra danh sách và trạng thái đã đọc',
-   goal:'Mở ứng dụng, vào tab Thông báo. Kiểm tra danh sách thông báo tải được, trạng thái đã đọc/chưa đọc và không có lỗi. Không xoá thông báo, không đổi cài đặt.'}
+   goal:'Mở ứng dụng, vào tab Thông báo. Kiểm tra danh sách thông báo tải được, trạng thái đã đọc/chưa đọc và không có lỗi. Không xoá thông báo, không đổi cài đặt.'},
+  {id:'relaunch', title:'Tắt app rồi mở lại', profile:'flash',
+   desc:'Force-stop rồi mở lại app, xác nhận app lên màn hình chính',
+   goal:'Tắt HẲN app đang test (force-stop) rồi mở lại. Nếu app đang ở màn hình đăng nhập thì bấm nút Đăng nhập bằng tài khoản đã lưu sẵn trên máy. Thành công khi: app đã được tắt, mở lại và hiển thị màn hình chính (hoặc màn hình sau đăng nhập) — hãy mô tả màn hình đó. Nếu không có nút Đăng nhập thì báo FAILED và nêu rõ đang ở màn hình nào. Tối đa 10 bước. Không đổi cài đặt, không xoá dữ liệu app.'}
 ];
 
 const $ = (id) => document.getElementById(id);
-const state = {seq:0, running:false, wasRunning:false, budgetWarned:false, profile:'flash', serial:'', autoScreen:true, tab:'steps', task:null, taskId:null, lastStepCount:-1, lastStepsFetch:0, summaryShown:false, viewingTaskId:null, startTs:0, maxSeconds:300, timer:null, followSteps:true};
+const state = {seq:0, running:false, wasRunning:false, budgetWarned:false, profile:'flash', serial:'', autoScreen:true, tab:'steps', task:null, taskId:null, lastStepCount:-1, lastActivityCount:-1, lastStepsFetch:0, summaryShown:false, viewingTaskId:null, startTs:0, maxSeconds:300, timer:null, followSteps:true};
 
 function fmtDuration(ms){
   if(!ms || ms < 0) return '00:00';
@@ -312,7 +483,21 @@ async function api(path, opts){
   const text = await res.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch { data = {detail:text}; }
-  if(!res.ok) throw new Error(data.detail || data.error || ('HTTP '+res.status));
+  if(!res.ok){
+    // Lỗi validate của pydantic trả `detail` là một mảng object; nếu ném thẳng
+    // vào Error thì UI chỉ hiện "[object Object]" và tester không biết sai ở đâu.
+    const detail = data.detail;
+    let msg = '';
+    if(Array.isArray(detail)){
+      msg = detail.map(item => (item && item.loc ? item.loc.join('.') + ': ' : '')
+        + ((item && (item.msg || item.reason)) || JSON.stringify(item))).join(' · ');
+    }else if(detail && typeof detail === 'object'){
+      msg = detail.reason || detail.message || JSON.stringify(detail);
+    }else if(typeof detail === 'string'){
+      msg = detail;
+    }
+    throw new Error(msg || data.error || ('HTTP ' + res.status));
+  }
   return data;
 }
 
@@ -341,6 +526,14 @@ function renderPresets(){
 function persistPrompt(){
   try{ localStorage.setItem('testconsole.prompt', $('goal').value); }catch(_){}
 }
+/* Lưu cả Package + chế độ: quên lưu thì F5 là ô Package quay về mặc định và task
+   sẽ chạy nhầm app (ARTEMIS thử 3 lần × 15s rồi bỏ cuộc, app không hề mở). */
+function persistSettings(){
+  try{
+    localStorage.setItem('testconsole.package', $('pkg').value);
+    localStorage.setItem('testconsole.profile', state.profile);
+  }catch(_){}
+}
 function updateGoalCount(){
   $('goalCount').textContent = $('goal').value.length + '/4000';
 }
@@ -350,6 +543,53 @@ function clearPresetSelection(){
 function setProfile(profile){
   state.profile = profile;
   document.querySelectorAll('#profileSeg button').forEach(b => b.classList.toggle('active', b.dataset.profile === profile));
+  persistSettings();
+}
+
+/* ---- Ô Package: chọn từ app đã cài, cảnh báo ngay khi sai ---- */
+let installedPackages = [];
+
+async function loadPackages(){
+  if(!state.serial){ $('pkgList').innerHTML = ''; installedPackages = []; return; }
+  try{
+    const data = await api('/api/packages?serial=' + encodeURIComponent(state.serial));
+    installedPackages = data.packages || [];
+    $('pkgList').innerHTML = installedPackages
+      .map(name => '<option value="' + esc(name) + '"></option>').join('');
+  }catch(_){ installedPackages = []; }
+  checkPackage();
+}
+
+function checkPackage(){
+  const hint = $('pkgHint');
+  const value = $('pkg').value.trim();
+  if(!installedPackages.length){ hint.textContent = ''; return; }
+  if(installedPackages.includes(value)){
+    hint.innerHTML = '<span style="color:var(--green)">✓ Đã cài trên máy</span>';
+    return;
+  }
+  // Cùng heuristic với server: ưu tiên cùng tiền tố (com.iot. → com.iot.hunonic),
+  // rồi tới chuỗi con của cả tên package.
+  const lowered = value.toLowerCase();
+  const prefix = value.includes('.')
+    ? value.split('.').slice(0, 2).join('.').toLowerCase() + '.'
+    : '';
+  const suggestions = installedPackages.filter(name => {
+    const target = name.toLowerCase();
+    return (prefix && target.startsWith(prefix)) || (lowered.length > 6 && target.includes(lowered));
+  }).slice(0, 4);
+  const buttons = suggestions
+    .map(name => '<button class="btn small" data-pkg="' + esc(name) + '">' + esc(name) + '</button>')
+    .join(' ');
+  hint.innerHTML = '<span style="color:var(--red)">✗ Chưa cài trên máy — task sẽ không mở được app.</span>'
+    + (buttons ? '<div style="margin-top:6px">Có phải bạn muốn: ' + buttons + '</div>' : '');
+  hint.querySelectorAll('button[data-pkg]').forEach(button => {
+    button.onclick = () => {
+      $('pkg').value = button.dataset.pkg;
+      persistSettings();
+      checkPackage();
+    };
+  });
 }
 function setTab(tab){
   state.tab = tab;
@@ -357,6 +597,13 @@ function setTab(tab){
   $('stepsPane').style.display = tab === 'steps' ? 'block' : 'none';
   $('screenPane').style.display = tab === 'screen' ? 'flex' : 'none';
   $('logPane').style.display = tab === 'log' ? 'block' : 'none';
+  $('kbPane').style.display = tab === 'kb' ? 'block' : 'none';
+  if(tab === 'kb'){
+    // Nạp lần đầu khi mở tab, và điền sẵn prompt đang gõ để thử truy xuất ngay.
+    if(!kbState.loaded) loadKb();
+    if(!$('kbQuery').value) $('kbQuery').value = ($('goal').value || '').trim();
+    loadKbLogs();
+  }
   if(tab === 'steps'){ state.followSteps = true; scrollToLatestStep(true); }
 }
 function openModal(title, html){
@@ -389,14 +636,23 @@ async function loadHealth(){
       $('deviceDot').className = 'dot ok';
       $('deviceText').textContent = (ready[0].model || 'Android') + ' · ' + ready[0].serial;
     }
-    select.onchange = () => { state.serial = select.value; refreshScreen(); };
+    select.onchange = () => { state.serial = select.value; refreshScreen(); loadPackages(); };
 
     const llm = h.llm || {};
     $('llmDot').className = 'dot ' + (llm.key_present ? 'ok' : 'err');
     $('llmText').textContent = (llm.provider || '?') + ' / ' + (llm.model || '?');
-    $('llmBadge').title = 'Endpoint: ' + (llm.base_url || '') + (llm.key_present ? ' · key ' + (llm.key_hint || '') : ' · thiếu key');
+    $('llmBadge').title = 'Client gửi tới: ' + (llm.base_url || '')
+      + (llm.upstream ? ' · chuyển tiếp tới: ' + llm.upstream : '')
+      + (llm.key_present ? ' · key ' + (llm.key_hint || '') : ' · thiếu key');
+    const access = h.access || {};
+    $('accessDot').className = 'dot ' + (access.required ? 'ok' : 'warn');
+    $('accessText').textContent = access.required ? 'API khoá: bật' : 'API khoá: không cần';
+    $('accessBadge').title = access.required
+      ? 'Client phải gửi khoá truy cập (đuôi ' + (access.key_hint || '') + ') mới gọi được /llm/v1'
+      : 'Chế độ LLM local: miễn khoá truy cập';
     if(!h.artemis_ok) toast('Không tìm thấy Artemis tại ' + h.artemis_dir, 'err');
     refreshScreen();
+    loadPackages();
   }catch(e){
     $('deviceDot').className = 'dot err';
     $('deviceText').textContent = 'Lỗi kết nối';
@@ -499,13 +755,35 @@ function scrollToLatestStep(smooth){
   scrollToStepCard(cards[cards.length - 1], smooth && state.lastStepCount > 1);
 }
 
-function renderSteps(steps){
+const ACTIVITY_TAG = {turn:'Lượt', tool:'Thao tác', error:'Lỗi', warn:'Cảnh báo', info:'Thông tin'};
+
+/* Diễn biến agent đọc từ trace: có task không chạm/vuốt gì nên tab "Các bước"
+   trống trơn dù đã tốn tiền — danh sách này cho biết nó đã thực sự làm gì. */
+function renderActivity(activity, hasSteps){
+  const items = activity || [];
+  const box = $('activityBox');
+  if(!items.length){ box.innerHTML = ''; return; }
+  box.innerHTML = `<details class="activity" ${hasSteps ? '' : 'open'}>
+    <summary>Diễn biến của agent — ${items.length} mục${hasSteps ? '' : ' (không có thao tác chạm/vuốt nào)'}</summary>
+    <div class="activity-list">${items.map(item => `
+      <div class="act ${esc(item.kind)}">
+        <span class="tag">${esc(ACTIVITY_TAG[item.kind] || item.kind)}</span>
+        <span class="body">${esc(item.label)}${item.detail ? `<div class="detail">${esc(item.detail)}</div>` : ''}</span>
+      </div>`).join('')}</div>
+  </details>`;
+}
+
+function renderSteps(steps, activity){
   const hasResult = $('resultCard').innerHTML.trim().length > 0;
+  const hasActivity = (activity || []).length > 0;
+  renderActivity(activity, steps.length > 0);
   $('stepsEmpty').style.display = steps.length ? 'none' : 'block';
   if(!steps.length){
-    $('stepsEmpty').textContent = hasResult
-      ? 'Task này không có thao tác chạm/vuốt — agent chỉ quan sát màn hình.'
-      : 'Chưa có lần chạy. Chọn kịch bản hoặc nhập prompt rồi bấm Chạy test.';
+    $('stepsEmpty').textContent = hasActivity
+      ? 'Không có thao tác chạm/vuốt nào — xem “Diễn biến của agent” ở trên để biết nó đã làm gì.'
+      : hasResult
+        ? 'Task này không có thao tác chạm/vuốt — agent chỉ quan sát màn hình.'
+        : 'Chưa có lần chạy. Chọn kịch bản hoặc nhập prompt rồi bấm Chạy test.';
   }
   $('stepsList').innerHTML = steps.map(step => {
     const before = step.before
@@ -521,6 +799,7 @@ function renderSteps(steps){
     return `<div class="step-card">
       <div class="step-head"><span class="step-num">Bước ${esc(step.number)}</span><span class="step-label">${esc(step.label)}</span></div>
       ${shots}
+      ${step.thinking ? `<div class="hint" style="margin-top:8px;font-style:italic">🧠 ${esc(step.thinking)}</div>` : ''}
     </div>`;
   }).join('');
   $('stepsList').querySelectorAll('img').forEach(img => {
@@ -550,8 +829,9 @@ function humanizeIssue(text){
 
 function renderResult(summary){
   const verdict = summary.verdict || 'fail';
-  const titles = {pass: 'ĐẠT', fail: 'KHÔNG ĐẠT', stopped: 'ĐÃ DỪNG', running: 'ĐANG CHẠY'};
-  const icons = {pass: '✅', fail: '❌', stopped: '⏹', running: '⏳'};
+  const titles = {pass: 'ĐẠT', fail: 'KHÔNG ĐẠT', stopped: 'ĐÃ DỪNG', running: 'ĐANG CHẠY',
+    unverified: 'CHƯA XÁC MINH'};
+  const icons = {pass: '✅', fail: '❌', stopped: '⏹', running: '⏳', unverified: '⚠️'};
   const cardClass = verdict === 'running' ? 'stopped' : verdict;
   const meta = `${summary.steps_count || 0} bước · ${fmtDuration((summary.duration_seconds || 0) * 1000)} · ${Math.round(summary.cost_vnd || 0)}đ`;
   const issues = (summary.issues || []).filter(Boolean);
@@ -627,9 +907,11 @@ async function loadSteps(taskId){
   try{
     const data = await api('/api/tasks/' + taskId + '/steps');
     const steps = data.steps || [];
-    if(steps.length !== state.lastStepCount){
-      renderSteps(steps);
+    const activity = data.activity || [];
+    if(steps.length !== state.lastStepCount || activity.length !== state.lastActivityCount){
+      renderSteps(steps, activity);
       state.lastStepCount = steps.length;
+      state.lastActivityCount = activity.length;
     }
     if(state.running && steps.length){
       $('statusPill').textContent = 'Đang chạy · ' + steps.length + ' bước';
@@ -651,9 +933,11 @@ function ensureTask(task){
   if(state.viewingTaskId && !state.running) return;
   state.taskId = task.id;
   state.lastStepCount = -1;
+  state.lastActivityCount = -1;
   state.summaryShown = false;
   state.followSteps = true;
   $('resultCard').innerHTML = '';
+  $('activityBox').innerHTML = '';
   $('stepsList').innerHTML = '';
   $('stepsEmpty').style.display = 'none';
   loadSteps(task.id);
@@ -681,9 +965,13 @@ function notifyResult(summary){
   const title = summary.verdict === 'pass' ? '✅ Kết quả: ĐẠT'
     : summary.verdict === 'stopped' ? '⏹ Kết quả: ĐÃ DỪNG'
     : summary.verdict === 'running' ? '⏳ Kết quả: ĐANG CHẠY'
+    : summary.verdict === 'unverified' ? '⚠️ Kết quả: CHƯA XÁC MINH'
     : '❌ Kết quả: KHÔNG ĐẠT';
   if(summary.verdict === 'running') return;
-  toast(summary.conclusion || title, summary.verdict === 'pass' ? 'ok' : 'err');
+  // 'unverified' không phải lỗi (agent có thể đã làm đúng) nhưng cũng KHÔNG phải
+  // thành công — tô đỏ nó sẽ khiến tester tưởng task hỏng, tô xanh thì tệ hơn.
+  toast(summary.conclusion || title,
+    summary.verdict === 'pass' ? 'ok' : (summary.verdict === 'unverified' ? '' : 'err'));
   if('Notification' in window && Notification.permission === 'granted'){
     try{ new Notification(title, {body: String(summary.conclusion || '').slice(0, 180), tag: 'testconsole-' + state.taskId}); }catch(_){}
   }
@@ -709,18 +997,100 @@ async function viewTask(taskId){
   state.viewingTaskId = taskId;
   state.taskId = taskId;
   state.lastStepCount = -1;
+  state.lastActivityCount = -1;
   state.summaryShown = true;
   $('resultCard').innerHTML = '';
+  $('activityBox').innerHTML = '';
   $('stepsList').innerHTML = '';
   setTab('steps');
   await loadSteps(taskId);
   try{ await loadSummary(taskId); }catch(e){ toast('Không tải được kết luận: ' + e.message, 'err'); }
 }
 
+/* Cảnh báo TRƯỚC khi chạy khi kiến thức sẽ không được dùng.
+
+   Profile flash chạy FlashRunner: không có Planner (nên workflow vô tác dụng) và
+   không có Checker (nên kết quả không ai xác minh). Tester chỉ thấy "task thành
+   công" mà không biết cả hai điều đó — đây chính là tình huống đã xảy ra thật. */
+async function knowledgePreflight(goal){
+  try{
+    const pkg = ($('pkg').value || '').trim();
+    if(!pkg) return null;
+    const apps = await api('/api/kb/apps');
+    const app = (apps || []).find(a => a.package_name === pkg);
+    if(!app) return null;
+    const probe = await api('/api/kb/retrieve', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({query: goal, app_id: app.id})
+    });
+    if(!probe.found) return null;
+    const ids = (probe.hits || []).filter(h => h.trusted).map(h => h.workflow_id);
+    return ids.length ? {ids} : null;
+  }catch(_){
+    return null;  // KB hỏng thì không được cản việc chạy test
+  }
+}
+
+/* ---- Prompt hoàn chỉnh: xem trước và sửa trước khi chạy ---- */
+// Prompt tester đã sửa. Rỗng = chưa sửa gì, chạy bằng prompt gốc.
+let promptOverride = '';
+
+async function previewPrompt(){
+  const goal = $('goal').value.trim();
+  if(goal.length < 5){ toast('Nhập prompt ít nhất 5 ký tự rồi mới xem được.', 'err'); return; }
+  $('promptPreviewBox').style.display = 'block';
+  $('promptPreview').value = 'Đang lấy từ máy chủ kiến thức…';
+  $('promptPreviewNote').textContent = '';
+  promptOverride = '';
+  try{
+    const r = await api('/api/knowledge/context', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({goal, app_package: ($('pkg').value || '').trim()})
+    });
+    $('promptPreview').value = r.prompt || goal;
+    const trusted = ((r.kb || {}).trusted) || [];
+    $('promptPreviewNote').textContent = r.found
+      ? 'Đã ghép workflow: ' + (trusted.join(', ') || '(chỉ có máy đoán)')
+      : 'Không ghép workflow nào — prompt giữ nguyên.';
+  }catch(e){
+    $('promptPreview').value = goal;
+    $('promptPreviewNote').textContent = 'Không lấy được prompt hoàn chỉnh: ' + e.message;
+  }
+}
+
+function usePreviewedPrompt(){
+  const text = $('promptPreview').value.trim();
+  if(text.length < 5){ toast('Prompt hoàn chỉnh quá ngắn.', 'err'); return; }
+  promptOverride = text;
+  toast('Sẽ chạy bằng prompt hoàn chỉnh này (' + text.length + ' ký tự).', 'ok');
+}
+
+function resetPreviewedPrompt(){
+  promptOverride = '';
+  toast('Đã bỏ bản sửa — chạy bằng prompt gốc.');
+}
+
 async function runTask(){
   const goal = $('goal').value.trim();
   if(goal.length < 5){ toast('Nhập mục tiêu ít nhất 5 ký tự.', 'err'); return; }
   if(!state.serial){ toast('Chưa có thiết bị. Cắm USB và bật USB debugging rồi bấm ↻ Thiết bị.', 'err'); return; }
+
+  // Kiểm tra kiến thức trước khi chạy: flash sẽ không dùng được workflow nào cả.
+  const kb = await knowledgePreflight(goal);
+  if(kb && state.profile === 'flash'){
+    const switchToPro = confirm(
+      'Tìm thấy workflow "' + kb.ids.join(', ') + '" cho app này.\n\n'
+      + 'NHƯNG bạn đang chọn profile Flash:\n'
+      + '  • Flash không có Planner → workflow sẽ KHÔNG được dùng\n'
+      + '  • Flash không có Checker → kết quả sẽ chỉ là "chưa xác minh"\n\n'
+      + 'Bấm OK để chuyển sang Pro rồi chạy.\n'
+      + 'Bấm Cancel để vẫn chạy Flash như đã chọn.'
+    );
+    if(switchToPro) setProfile('pro');
+  }else if(kb){
+    toast('🧠 Sẽ chèn workflow: ' + kb.ids.join(', '), 'ok');
+  }
+
   persistPrompt();
   if('Notification' in window && Notification.permission === 'default'){
     Notification.requestPermission().catch(() => {});
@@ -728,10 +1098,11 @@ async function runTask(){
   $('btnRun').disabled = true;
   try{
     clearLog(); state.seq = 0; state.task = null; state.startTs = Date.now();
-    state.taskId = null; state.lastStepCount = -1; state.lastStepsFetch = 0;
+    state.taskId = null; state.lastStepCount = -1; state.lastActivityCount = -1; state.lastStepsFetch = 0;
     state.summaryShown = false;
     state.viewingTaskId = null;
     $('resultCard').innerHTML = '';
+    $('activityBox').innerHTML = '';
     $('stepsList').innerHTML = '';
     $('stepsEmpty').style.display = 'none';
     setTab('steps');
@@ -741,11 +1112,13 @@ async function runTask(){
         goal, profile: state.profile,
         package: $('pkg').value.trim(), serial: state.serial,
         test_name: $('testName').value.trim(),
-        max_seconds: state.maxSeconds
+        max_seconds: state.maxSeconds,
+        prompt_override: promptOverride
       })
     });
     state.task = result.task; state.startTs = Date.now();
     toast('Đã bắt đầu task ' + result.task.id, 'ok');
+    (result.warnings || []).forEach(warning => toast(warning, 'err'));
   }catch(e){
     toast(e.message, 'err');
     $('btnRun').disabled = false;
@@ -757,7 +1130,10 @@ async function stopTask(){
   catch(e){ toast(e.message, 'err'); }
 }
 
-const STATUS_LABEL = {running:'Đang chạy', success:'Thành công', failed:'Thất bại', stopped:'Đã dừng'};
+// Nhãn này là VÒNG ĐỜI của tiến trình, KHÔNG phải kết quả kiểm chứng. Trước đây
+// `success` hiện là "Thành công" nên một task agent tự báo xong mà chưa ai xác minh
+// vẫn trông như đã đạt. Kết quả thật nằm ở verdict trong "Xem kết quả".
+const STATUS_LABEL = {running:'Đang chạy', success:'Chạy xong', failed:'Lỗi', stopped:'Đã dừng'};
 function fmtTime(ts){
   if(!ts) return '—';
   const d = new Date(ts * 1000);
@@ -786,7 +1162,9 @@ async function loadHistory(){
         '<td><button class="btn small">Xem kết quả</button></td></tr>';
     }).join('');
     $('historyBody').innerHTML =
-      '<table><thead><tr><th>Thời gian</th><th>Test / mục tiêu</th><th>Chế độ</th><th>Kết quả</th><th>Thời lượng</th><th></th></tr></thead><tbody>' +
+      '<table><thead><tr><th>Thời gian</th><th>Test / mục tiêu</th><th>Chế độ</th>'
+      + '<th title="Tiến trình chạy, không phải kết quả kiểm chứng — bấm Xem kết quả để có verdict">Tiến trình</th>'
+      + '<th>Thời lượng</th><th></th></tr></thead><tbody>' +
       rows + '</tbody></table>';
     $('historyBody').querySelectorAll('tbody tr').forEach(row => {
       row.onclick = () => viewTask(row.dataset.id);
@@ -823,12 +1201,448 @@ async function testLlm(){
   }finally{ button.disabled = false; }
 }
 
+/* ===================== Knowledge Base (Workflow RAG) ===================== */
+
+const KB_ACTIONS = [
+  ['tap', 'chạm vào'], ['long_press', 'nhấn giữ'], ['scroll', 'cuộn'],
+  ['swipe', 'vuốt'], ['input_text', 'nhập chữ'], ['back', 'nhấn back'],
+  ['confirm_if_present', 'xác nhận nếu có hộp thoại'], ['wait', 'đợi'], ['assert', 'kiểm tra'],
+];
+const KB_STATUS_LABEL = {draft: 'nháp', verified: 'đã kiểm chứng', deprecated: 'ngừng dùng'};
+
+const kbState = {apps: [], workflows: [], versions: [], appId: '', editingId: '', loaded: false};
+
+async function loadKb(force){
+  if(kbState.loaded && !force) return;
+  try{
+    const status = await api('/api/kb/status');
+    renderKbStatus(status);
+    if(!status.available){ kbState.loaded = true; return; }
+    kbState.apps = await api('/api/kb/apps');
+    if(!kbState.appId && kbState.apps.length) kbState.appId = kbState.apps[0].id;
+    renderKbApps();
+    if(kbState.appId) await loadKbWorkflows();
+    else { kbState.workflows = []; renderKbList(); }
+    kbState.loaded = true;
+  }catch(e){
+    $('kbStatus').innerHTML = '<span class="pill" style="background:#fdecec;color:#c62a2f">'
+      + 'Knowledge base không dùng được: ' + esc(e.message) + '</span>';
+  }
+}
+
+/* Trạng thái KB: có dùng được không, model embedding, số workflow, nút reindex. */
+function renderKbStatus(status){
+  if(!status.available){
+    $('kbStatus').innerHTML =
+      '<span class="pill" style="background:#fff4e5;color:#b45309">KB tắt</span>'
+      + '<span class="muted">' + esc(status.degraded_reason || 'Chưa cấu hình ARTEMIS_KB_DSN') + '</span>'
+      + '<span class="muted">— ARTEMIS vẫn chạy bình thường, chỉ là không có kiến thức để chèn.</span>';
+    $('kbAppSel').innerHTML = '<option value="">— KB tắt —</option>';
+    $('kbAppSel').disabled = true;
+    $('btnKbNew').disabled = true;
+    return;
+  }
+  $('kbAppSel').disabled = false;
+  $('btnKbNew').disabled = false;
+  $('kbStatus').innerHTML =
+    '<span class="pill" style="background:#e8f7ee;color:#0f7a3d">KB sẵn sàng</span>'
+    + '<span class="muted">' + status.workflow_count + ' workflow · embedding '
+    + esc(status.embedding_model || '?')
+    + (status.vector_channel ? '' : ' <b>(kênh vector TẮT — thiếu key)</b>')
+    + ' · top_k=' + status.top_k + ' · ngưỡng phủ từ khoá=' + status.keyword_min_coverage + '</span>'
+    // Nói rõ dữ liệu nằm ở đâu: DSN của máy dev trỏ cổng SSH tunnel (127.0.0.1:5433)
+    // nên rất dễ tưởng là database tại chỗ, trong khi thực tế là trên VPS.
+    + (status.database
+        ? '<span class="muted" title="Database đang đọc/ghi thật sự">🗄 ' + esc(status.database) + '</span>'
+        : '')
+    + '<button class="btn" id="btnKbReindex" style="padding:5px 10px;font-size:12px">↻ Tạo lại embedding</button>';
+  const btn = $('btnKbReindex');
+  if(btn) btn.onclick = async () => {
+    if(!confirm('Tạo lại toàn bộ embedding cho model hiện tại? Sẽ tốn 1 lần gọi API cho mỗi workflow.')) return;
+    btn.disabled = true;
+    try{
+      const res = await api('/api/kb/reindex', {method:'POST'});
+      toast('Đã tạo lại: xoá ' + res.dropped + ', tạo ' + res.embedded + ', dùng lại ' + res.reused, 'ok');
+      await loadKb(true);
+    }catch(e){ toast(e.message, 'err'); }
+    finally{ btn.disabled = false; }
+  };
+}
+
+function renderKbApps(){
+  $('kbAppSel').innerHTML = kbState.apps.length
+    ? kbState.apps.map(a => '<option value="' + esc(a.id) + '"'
+        + (a.id === kbState.appId ? ' selected' : '') + '>'
+        + esc(a.name || a.id) + ' · ' + esc(a.package_name || 'chưa gán package')
+        + ' (' + a.workflow_count + ')</option>').join('')
+    : '<option value="">— chưa có app nào —</option>';
+}
+
+async function loadKbWorkflows(){
+  if(!kbState.appId){ kbState.workflows = []; kbState.versions = []; renderKbList(); return; }
+  try{
+    kbState.workflows = await api('/api/kb/workflows?app_id=' + encodeURIComponent(kbState.appId));
+    kbState.versions = await api('/api/kb/apps/' + encodeURIComponent(kbState.appId) + '/versions');
+  }catch(e){
+    toast('Không tải được workflow: ' + e.message, 'err');
+    kbState.workflows = []; kbState.versions = [];
+  }
+  renderKbVersions();
+  renderKbList();
+}
+
+function renderKbVersions(){
+  const current = $('kbVersion').value;
+  $('kbVersion').innerHTML = '<option value="">— mọi phiên bản —</option>'
+    + kbState.versions.map(v => '<option value="' + esc(v.id) + '">' + esc(v.version_label) + '</option>').join('');
+  $('kbVersion').value = current;
+}
+
+/* Lọc theo ô tìm kiếm: khớp id, tên, alias, tag. */
+function kbFiltered(){
+  const term = ($('kbSearch').value || '').trim().toLowerCase();
+  if(!term) return kbState.workflows;
+  return kbState.workflows.filter(w => {
+    const hay = [w.id, w.name, w.description, ...(w.aliases || []), ...(w.tags || [])]
+      .join(' ').toLowerCase();
+    return hay.includes(term);
+  });
+}
+
+function renderKbList(){
+  const rows = kbFiltered();
+  $('kbEmpty').style.display = kbState.workflows.length ? 'none' : 'block';
+  $('kbList').innerHTML = rows.map(w => {
+    const steps = (w.steps || []).length;
+    return '<div class="kb-item' + (w.id === kbState.editingId ? ' sel' : '') + '" data-kb="' + esc(w.id) + '">'
+      + '<h4>' + esc(w.name) + ' <span class="chip">' + esc(w.id) + '</span>'
+      + '<span class="chip">' + esc(KB_STATUS_LABEL[w.status] || w.status) + '</span>'
+      + (w.version_id ? '<span class="chip">chỉ ' + esc(w.version_id) + '</span>' : '')
+      + '<span class="chip">' + steps + ' bước</span>'
+      + '<span class="chip">rev ' + (w.revision_no || 0) + '</span></h4>'
+      + (w.description ? '<div class="sub">' + esc(w.description) + '</div>' : '')
+      + ((w.aliases || []).length ? '<div class="sub">Alias: <b>' + esc(w.aliases.join(', ')) + '</b></div>' : '')
+      + ((w.success_criteria || []).length
+          ? '<div class="sub">Tiêu chí: ' + esc(w.success_criteria.join(' · ')) + '</div>' : '')
+      + '</div>';
+  }).join('');
+  if(kbState.workflows.length && !rows.length){
+    $('kbList').innerHTML = '<div class="empty">Không có workflow nào khớp “'
+      + esc($('kbSearch').value) + '”.</div>';
+  }
+  $('kbList').querySelectorAll('.kb-item').forEach(item => {
+    item.onclick = () => editKbWorkflow(item.dataset.kb);
+  });
+}
+
+/* ---------- form tạo / sửa ---------- */
+
+function newKbWorkflow(){
+  if(!kbState.appId){ toast('Chưa chọn app.', 'err'); return; }
+  kbState.editingId = '';
+  $('kbFormTitle').textContent = 'Workflow mới';
+  $('kbId').value = ''; $('kbId').disabled = false;
+  $('kbName').value = ''; $('kbDesc').value = '';
+  $('kbAliases').value = ''; $('kbTags').value = '';
+  $('kbStatusSel').value = 'draft'; $('kbVersion').value = '';
+  $('kbPre').value = ''; $('kbCrit').value = ''; $('kbNote').value = '';
+  $('kbFormMsg').textContent = 'ID không sửa được sau khi tạo (là khoá của workflow).';
+  $('btnKbDelete').style.display = 'none';
+  renderKbSteps([{action:'tap'}]);
+  $('kbForm').style.display = 'block';
+  renderKbList();
+  $('kbForm').scrollIntoView({behavior:'smooth', block:'start'});
+  $('kbId').focus();
+}
+
+function editKbWorkflow(id){
+  const w = kbState.workflows.find(x => x.id === id);
+  if(!w) return;
+  kbState.editingId = id;
+  $('kbFormTitle').textContent = 'Sửa: ' + w.name;
+  $('kbId').value = w.id;
+  $('kbId').disabled = true;
+  $('kbName').value = w.name || '';
+  $('kbDesc').value = w.description || '';
+  $('kbAliases').value = (w.aliases || []).join(', ');
+  $('kbTags').value = (w.tags || []).join(', ');
+  $('kbStatusSel').value = w.status || 'draft';
+  $('kbVersion').value = w.version_id || '';
+  $('kbPre').value = (w.preconditions || []).join('\n');
+  $('kbCrit').value = (w.success_criteria || []).join('\n');
+  $('kbNote').value = '';
+  $('kbFormMsg').textContent = 'rev ' + (w.revision_no || 0)
+    + (w.updated_at ? ' · sửa lần cuối ' + w.updated_at : '');
+  $('btnKbDelete').style.display = 'inline-flex';
+  renderKbSteps(w.steps || []);
+  $('kbForm').style.display = 'block';
+  renderKbList();
+  $('kbForm').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+/* ---------- trình soạn bước ---------- */
+
+function renderKbSteps(steps){
+  $('kbSteps').innerHTML = '';
+  (steps.length ? steps : [{action:'tap'}]).forEach(step => addKbStep(step));
+}
+
+function addKbStep(step){
+  const s = step || {action:'tap'};
+  const row = document.createElement('div');
+  row.className = 'kb-step';
+  row.innerHTML =
+    '<div class="kb-step-head"><span></span>'
+      + '<button class="btn" data-step-del style="padding:3px 9px;font-size:12px">✕ xoá bước</button></div>'
+    + '<div class="grid">'
+    + '<label>Hành động</label><select data-f="action">'
+      + KB_ACTIONS.map(([v, label]) => '<option value="' + v + '"'
+          + (s.action === v ? ' selected' : '') + '>' + esc(label) + ' (' + v + ')</option>').join('')
+      + '</select>'
+    + '<label>Mô tả phần tử cần tìm</label>'
+      + '<input data-f="target" placeholder="Tab cuối cùng trên thanh điều hướng dưới cùng" />'
+    + '<label>Kỳ vọng sau bước</label>'
+      + '<input data-f="expected_state" placeholder="Màn hình cá nhân" />'
+    + '<label data-when="scroll swipe">Hướng</label>'
+      + '<select data-f="direction" data-when="scroll swipe"><option value="">—</option>'
+      + ['up','down','left','right'].map(d => '<option value="' + d + '">' + d + '</option>').join('')
+      + '</select>'
+    + '<label data-when="scroll">Cuộn tới khi thấy</label>'
+      + '<input data-f="until" data-when="scroll" placeholder="Nút Đăng xuất xuất hiện" />'
+    + '<label data-when="input_text">Giá trị cần nhập</label>'
+      + '<input data-f="value" data-when="input_text" placeholder="nội dung nhập vào ô" />'
+    + '<label data-when="wait assert">Chờ tối đa (giây)</label>'
+      + '<input data-f="timeout_s" data-when="wait assert" type="number" step="0.5" min="0" placeholder="5" />'
+    + '<label class="span"><input type="checkbox" data-f="optional" style="width:auto" />'
+      + ' Bước này có thể không xuất hiện (bỏ qua được)</label>'
+    + '</div>';
+
+  row.querySelector('[data-f="target"]').value = s.target || '';
+  row.querySelector('[data-f="expected_state"]').value = s.expected_state || '';
+  row.querySelector('[data-f="direction"]').value = s.direction || '';
+  row.querySelector('[data-f="until"]').value = s.until || '';
+  row.querySelector('[data-f="value"]').value = s.value || '';
+  row.querySelector('[data-f="timeout_s"]').value =
+    (s.timeout_s === null || s.timeout_s === undefined) ? '' : s.timeout_s;
+  row.querySelector('[data-f="optional"]').checked = !!s.optional;
+
+  row.querySelector('[data-step-del]').onclick = () => { row.remove(); renumberKbSteps(); };
+  row.querySelector('[data-f="action"]').onchange = () => syncKbStep(row);
+  $('kbSteps').appendChild(row);
+  syncKbStep(row);
+  renumberKbSteps();
+}
+
+/* Chỉ hiện các ô có nghĩa với hành động đang chọn. */
+function syncKbStep(row){
+  const action = row.querySelector('[data-f="action"]').value;
+  row.querySelectorAll('[data-when]').forEach(el => {
+    el.style.display = el.dataset.when.split(' ').includes(action) ? '' : 'none';
+  });
+}
+
+function renumberKbSteps(){
+  [...$('kbSteps').children].forEach((row, index) => {
+    const label = row.querySelector('.kb-step-head span');
+    if(label) label.textContent = 'Bước ' + (index + 1);
+  });
+}
+
+/* Gom các bước từ form. Chỉ gửi khoá đã có giá trị: WorkflowStep chặn khoá lạ. */
+function collectKbSteps(){
+  return [...$('kbSteps').children].map(row => {
+    const field = name => row.querySelector('[data-f="' + name + '"]');
+    const value = name => (field(name) ? field(name).value.trim() : '');
+    const step = {action: value('action') || 'tap'};
+    if(value('target')) step.target = value('target');
+    if(value('expected_state')) step.expected_state = value('expected_state');
+    if(value('direction')) step.direction = value('direction');
+    if(value('until')) step.until = value('until');
+    if(value('value')) step.value = value('value');
+    if(value('timeout_s')) step.timeout_s = Number(value('timeout_s'));
+    if(field('optional') && field('optional').checked) step.optional = true;
+    return step;
+  });
+}
+
+/* ---------- lưu / xoá ---------- */
+
+function kbSplit(value){ return (value || '').split(',').map(x => x.trim()).filter(Boolean); }
+function kbLines(value){ return (value || '').split('\n').map(x => x.trim()).filter(Boolean); }
+
+async function saveKbWorkflow(){
+  const id = ($('kbId').value || '').trim();
+  const name = ($('kbName').value || '').trim();
+  if(!id){ toast('Nhập ID workflow (ví dụ auth.logout).', 'err'); $('kbId').focus(); return; }
+  if(!name){ toast('Nhập tên chức năng.', 'err'); $('kbName').focus(); return; }
+  const steps = collectKbSteps();
+  if(!steps.length){ toast('Cần ít nhất một bước.', 'err'); return; }
+
+  const body = {
+    app_id: kbState.appId,
+    name,
+    description: ($('kbDesc').value || '').trim(),
+    aliases: kbSplit($('kbAliases').value),
+    tags: kbSplit($('kbTags').value),
+    preconditions: kbLines($('kbPre').value),
+    steps,
+    success_criteria: kbLines($('kbCrit').value),
+    status: $('kbStatusSel').value,
+    version_id: $('kbVersion').value || null,
+    change_note: ($('kbNote').value || '').trim(),
+  };
+
+  const btn = $('btnKbSave');
+  btn.disabled = true;
+  $('kbFormMsg').textContent = 'Đang lưu và tạo embedding…';
+  try{
+    const res = await api('/api/kb/workflows/' + encodeURIComponent(id), {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    toast('Đã lưu “' + res.name + '” (rev ' + res.revision_no + ')'
+      + (res.embedded ? ' — đã tạo embedding mới' : ' — embedding giữ nguyên'), 'ok');
+    kbState.editingId = res.id;
+    await loadKbWorkflows();
+    editKbWorkflow(res.id);
+  }catch(e){
+    $('kbFormMsg').textContent = '';
+    toast(e.message, 'err');
+  }finally{ btn.disabled = false; }
+}
+
+async function deleteKbWorkflow(){
+  if(!kbState.editingId){ toast('Chưa chọn workflow nào.', 'err'); return; }
+  const w = kbState.workflows.find(x => x.id === kbState.editingId);
+  const ok = confirm('Xoá hẳn workflow “' + (w ? w.name : kbState.editingId) + '”?\n\n'
+    + 'Nếu chỉ muốn tạm ngừng dùng, đổi trạng thái sang “ngừng dùng” thay vì xoá — '
+    + 'như vậy lịch sử sửa vẫn còn và có thể bật lại.');
+  if(!ok) return;
+  try{
+    await api('/api/kb/workflows/' + encodeURIComponent(kbState.editingId), {method:'DELETE'});
+    toast('Đã xoá workflow.');
+    kbState.editingId = '';
+    $('kbForm').style.display = 'none';
+    await loadKbWorkflows();
+  }catch(e){ toast(e.message, 'err'); }
+}
+
+/* ---------- kiểm tra truy xuất ---------- */
+
+async function testKbRetrieve(){
+  const query = ($('kbQuery').value || '').trim();
+  if(!query){ toast('Nhập câu cần thử (ví dụ: Test đăng xuất).', 'err'); return; }
+  if(!kbState.appId){ toast('Chưa chọn app.', 'err'); return; }
+  const btn = $('btnKbTest');
+  btn.disabled = true;
+  $('kbTestResult').innerHTML = '<div class="hint">Đang truy xuất…</div>';
+  try{
+    const res = await api('/api/kb/retrieve', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({query, app_id: kbState.appId})
+    });
+    renderKbTest(res);
+  }catch(e){
+    $('kbTestResult').innerHTML = '<div class="empty">Lỗi: ' + esc(e.message) + '</div>';
+  }finally{ btn.disabled = false; }
+}
+
+function renderKbTest(res){
+  const hits = res.hits || [];
+  const head = res.found
+    ? '<span class="pill" style="background:#e8f7ee;color:#0f7a3d">TÌM THẤY — sẽ chèn vào Planner</span>'
+    : (hits.length
+        ? '<span class="pill" style="background:#fff4e5;color:#b45309">KHÔNG xác nhận — không chèn</span>'
+        : '<span class="pill" style="background:#eef2f7;color:#475569">Không có gì khớp</span>');
+  const why = (!res.found && res.reason)
+    ? '<div class="hint" style="margin-top:6px">' + esc(res.reason) + '</div>' : '';
+  const timing = res.timings_ms
+    ? '<div class="hint" style="margin-top:6px">'
+      + Object.entries(res.timings_ms).map(([k, v]) =>
+          esc(k.replace(/_ms$/, '')) + ' ' + v + 'ms').join(' · ')
+      + '</div>'
+    : '';
+  const rows = hits.map(h =>
+    '<div class="kb-hit"><span class="name">' + esc(h.workflow_id) + '</span>'
+    + '<span class="muted">' + esc(h.name) + '</span>'
+    + '<span class="chip">' + esc(KB_STATUS_LABEL[h.status] || h.status) + '</span>'
+    + '<span class="chip">khớp: ' + esc(Object.keys(h.channels || {}).join('+') || '—') + '</span>'
+    + '<span class="chip">' + (h.trusted ? 'xác nhận' : 'máy đoán') + '</span>'
+    + '</div>').join('');
+  $('kbTestResult').innerHTML = head + why + timing
+    + (rows ? '<div style="margin-top:8px">' + rows + '</div>' : '')
+    + (res.context ? '<pre class="kb-context">' + esc(res.context) + '</pre>' : '');
+}
+
+/* ---------- kiến thức đã dùng trong các lần chạy ---------- */
+
+async function loadKbLogs(){
+  const runId = ($('kbRunId').value || '').trim();
+  $('kbLogs').innerHTML = '<div class="hint">Đang tải…</div>';
+  try{
+    const rows = await api('/api/kb/logs?'
+      + (runId ? 'run_id=' + encodeURIComponent(runId) : 'limit=20'));
+    renderKbLogs(rows);
+  }catch(e){
+    $('kbLogs').innerHTML = '<div class="empty">Không tải được: ' + esc(e.message) + '</div>';
+  }
+}
+
+function renderKbLogs(rows){
+  if(!rows.length){
+    $('kbLogs').innerHTML = '<div class="empty">Chưa có lần chạy nào dùng knowledge base.</div>';
+    return;
+  }
+  $('kbLogs').innerHTML = rows.map(row => {
+    const outcome = row.outcome || {};
+    const tests = outcome.tests || {};
+    const verdict = outcome.task_status
+      ? '<span class="chip">' + esc(outcome.task_status) + '</span>'
+        + '<span class="chip">đạt ' + (tests.passed || 0) + ' · hỏng ' + (tests.failed || 0)
+        + ' · chưa rõ ' + (tests.inconclusive || 0) + '</span>'
+      : '<span class="chip">chưa ghi kết quả</span>';
+    const hits = (row.retrieved || []).map(h =>
+      esc(h.workflow_id) + (h.trusted === false ? ' (máy đoán)' : '')).join(', ') || '—';
+    return '<div class="kb-item" style="cursor:default">'
+      + '<h4>' + esc(row.query) + '</h4>'
+      + '<div class="sub">Run: <b>' + esc(row.run_id || '—') + '</b>'
+      + ' · chọn: <b>' + esc(row.chosen_workflow_id || 'không có') + '</b>'
+      + ' · truy xuất: ' + hits + '</div>'
+      + '<div class="sub">' + verdict + ' · ' + esc(row.created_at || '') + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+
 function bindEvents(){
   $('btnRefresh').onclick = async () => { await loadHealth(); toast('Đã làm mới thiết bị'); };
   $('btnHistory').onclick = loadHistory;
   $('btnRun').onclick = runTask;
   $('btnStop').onclick = stopTask;
   $('btnLlmTest').onclick = testLlm;
+  $('btnPreviewPrompt').onclick = previewPrompt;
+  $('btnUsePrompt').onclick = usePreviewedPrompt;
+  $('btnResetPrompt').onclick = resetPreviewedPrompt;
+  // Knowledge base
+  $('kbAppSel').onchange = () => {
+    kbState.appId = $('kbAppSel').value;
+    kbState.editingId = '';
+    $('kbForm').style.display = 'none';
+    loadKbWorkflows();
+  };
+  $('kbSearch').oninput = renderKbList;
+  $('btnKbNew').onclick = newKbWorkflow;
+  $('btnKbReload').onclick = async () => { await loadKb(true); toast('Đã tải lại knowledge base'); };
+  $('btnKbAddStep').onclick = () => addKbStep({action:'tap'});
+  $('btnKbSave').onclick = saveKbWorkflow;
+  $('btnKbDelete').onclick = deleteKbWorkflow;
+  $('btnKbCancel').onclick = () => {
+    kbState.editingId = '';
+    $('kbForm').style.display = 'none';
+    renderKbList();
+  };
+  $('btnKbTest').onclick = testKbRetrieve;
+  $('kbQuery').addEventListener('keydown', event => { if(event.key === 'Enter') testKbRetrieve(); });
+  $('btnKbLogs').onclick = loadKbLogs;
   $('modalClose').onclick = () => $('modal').classList.remove('open');
   $('modal').onclick = (event) => { if(event.target === $('modal')) $('modal').classList.remove('open'); };
   document.querySelectorAll('.tabs button').forEach(button => {
@@ -844,6 +1658,9 @@ function bindEvents(){
     clearPresetSelection();
     updateGoalCount();
     persistPrompt();
+    // Prompt gốc đổi thì bản hoàn chỉnh đã sửa không còn khớp nữa — bỏ đi, nếu
+    // không sẽ chạy một prompt chứa nội dung của lần gõ trước.
+    if(promptOverride){ promptOverride = ''; $('promptPreviewNote').textContent = 'Prompt đã đổi — bấm xem lại.'; }
   });
   $('btnFreePrompt').onclick = () => {
     $('goal').value = '';
@@ -854,6 +1671,7 @@ function bindEvents(){
     $('goal').focus();
   };
   $('timeLimit').onchange = () => { state.maxSeconds = Number($('timeLimit').value); };
+  $('pkg').addEventListener('input', () => { persistSettings(); checkPackage(); });
 
   // Bám theo bước mới, nhưng nhường ngay khi người dùng tự cuộn lên xem bước cũ.
   const pane = $('stepsPane');
@@ -870,10 +1688,18 @@ function bindEvents(){
 try{
   const saved = localStorage.getItem('testconsole.prompt');
   if(saved){ $('goal').value = saved; }
+  const savedPackage = localStorage.getItem('testconsole.package');
+  if(savedPackage){ $('pkg').value = savedPackage; }
+  const savedProfile = localStorage.getItem('testconsole.profile');
+  if(savedProfile === 'flash' || savedProfile === 'pro'){ setProfile(savedProfile); }
 }catch(_){}
 updateGoalCount();
 renderPresets();
-setTab('steps');
+// Cho phép mở thẳng một tab bằng URL: /?tab=kb — tiện bookmark tab Knowledge.
+const wantedTab = (() => {
+  try { return new URLSearchParams(location.search).get('tab'); } catch(_) { return null; }
+})();
+setTab(wantedTab || 'steps');
 bindEvents();
 loadHealth();
 loadHistory();

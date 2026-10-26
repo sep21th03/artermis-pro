@@ -15,6 +15,7 @@
 import io
 import os
 import re
+import unicodedata
 from typing import Any
 
 from artemis.utils.coordinates import parse_swipe_parameters
@@ -255,6 +256,70 @@ def _inject_mutual_occlusion_warnings(
     return new_lines
 
 
+def _has_visible_label(text: str) -> bool:
+    """Whether a label can actually be read.
+
+    The dump contains elements whose "text" is a zero-width or format character:
+    it renders as nothing, so no one can choose it by name and warning about it
+    is pure noise. Measured on a real screen, two such elements were flagged.
+    """
+    for char in text:
+        if char.isalnum():
+            return True
+        if not unicodedata.category(char).startswith(("C", "Z")):
+            return True
+    return False
+
+
+def _inject_duplicate_text_warnings(lines: list[str]) -> list[str]:
+    """Warn when several elements carry the same label.
+
+    Two elements with identical text -- a "Đăng xuất" row in the settings list
+    and the "Đăng xuất" button inside the dialog it opens -- are the classic way
+    an index target lands on the wrong one: the model chooses by label, and both
+    labels match exactly. Measured on a real run, an agent tapped the menu row
+    and the dialog button interchangeably for 20 steps and never noticed.
+
+    The warning names the siblings so the choice is made on position and context
+    instead of on text alone. Same soft, appended style as the occlusion warning
+    above: the list stays a faithful description of the screen.
+    """
+    parsed: dict[int, str] = {}
+    by_text: dict[str, list[int]] = {}
+    for line in lines:
+        match = re.match(r"^\[(\d+)\]\s+[A-Za-z][A-Za-z ]*:\s*'(.*?)'\s*\|", line)
+        if not match:
+            continue
+        text = match.group(2).strip()
+        if not text or not _has_visible_label(text):
+            continue
+        idx = int(match.group(1))
+        parsed[idx] = text
+        by_text.setdefault(text, []).append(idx)
+
+    duplicated = {text: idxs for text, idxs in by_text.items() if len(idxs) > 1}
+    if not duplicated:
+        return lines
+
+    new_lines = []
+    for line in lines:
+        match = re.match(r"^\[(\d+)\]", line)
+        if match:
+            idx = int(match.group(1))
+            text = parsed.get(idx)
+            if text and text in duplicated:
+                siblings = [other for other in duplicated[text] if other != idx]
+                listed = " and ".join(f"[{other}]" for other in siblings[:2])
+                if len(siblings) > 2:
+                    listed += f" (+{len(siblings) - 2} more)"
+                line = (
+                    f"{line} (WARNING: {listed} carry the same text '{text}' —"
+                    " choose by position and context, not by text alone)"
+                )
+        new_lines.append(line)
+    return new_lines
+
+
 def format_minimal_list_with_points(
     fused_xml: list[dict[str, Any]], width: int = 1080, height: int = 2400
 ) -> tuple[str, list[list[int]], list[str]]:
@@ -328,6 +393,7 @@ def format_minimal_list_with_points(
             idx += 1
 
     lines = _inject_mutual_occlusion_warnings(lines, items_bounds)
+    lines = _inject_duplicate_text_warnings(lines)
     return "\n".join(lines), points, labels
 
 
@@ -437,6 +503,7 @@ def format_minimal_list_with_elements(
             idx += 1
 
     lines = _inject_mutual_occlusion_warnings(lines, items_bounds)
+    lines = _inject_duplicate_text_warnings(lines)
     return "\n".join(lines), elements, labels
 
 

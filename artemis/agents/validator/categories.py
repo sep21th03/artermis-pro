@@ -31,3 +31,6 @@ class ValidationErrorCategory(StrEnum):
     PIXEL_BYPASSED = "pixel_bypassed"
     XML_BYPASSED = "xml_bypassed"
     GENERAL = "general"
+    #: Cùng một hành động lặp lại y hệt mà màn hình không đổi. Không phải lỗi của
+    #: màn hình mà của vòng suy luận — agent cần đọc lại màn hình rồi đổi cách làm.
+    REPEAT_LOOP = "repeat_loop"

@@ -22,6 +22,7 @@ from artemis.config.constants import (
     LLM_CONFIG_FILENAME,
     AgentNode,
 )
+from artemis.config.core.interpolator import interpolate_config_value
 from artemis.config.paths import ROOT_DIR, get_config_path
 from artemis.utils.cython_compat import CyFunctionDetector
 from third_party.mobile_use.config import llm as base_llm_config
@@ -213,6 +214,12 @@ def parse_llm_config() -> LLMConfig:
     try:
         with open(config_path, encoding="utf-8") as f:
             config_dict = load_jsonc(f)
+            # ${env:VAR} / ${env:VAR:-mặc-định}: cho phép đặt model/provider trong .env
+            # mà không phải sửa file này. Không có biến nào thì giữ nguyên giá trị
+            # đã viết trong config.
+            config_dict = interpolate_config_value(
+                config_dict, workspace_root=config_path.parent.parent
+            )
             expanded_dict = _expand_default_into_nodes(config_dict)
             return LLMConfig.model_validate(expanded_dict)
     except Exception as e:

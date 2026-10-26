@@ -6,12 +6,15 @@
   // ------------------------------------------------------------------------------
   // 1. Global Default Model (Applied to all sub-agents unless overridden below)
   // ------------------------------------------------------------------------------
+  // Tên model đọc từ .env theo quy ước <MODEL>_<CHỨC NĂNG>. Không khai trong .env
+  // thì dùng giá trị sau ":-" (giữ nguyên hành vi cũ). Xem mục "MODEL THEO TỪNG
+  // CHỨC NĂNG" trong .env.
   "default": {
     "provider": "openai",
-    "model": "ts/gemini-3.5-flash-lite",
+    "model": "${env:GEMINI35FLASHLITE_DEFAULT:-ts/gemini-3.5-flash-lite}",
     "fallback": {
       "provider": "openai",
-      "model": "ts/gemini-3.5-flash-lite"
+      "model": "${env:GEMINI35FLASHLITE_DEFAULT:-ts/gemini-3.5-flash-lite}"
     }
   },
 
@@ -52,11 +55,15 @@
   "nodes": {
     // 🧠 Planner: High-level goal decomposition and strategic step planning
     "planner": {
-      "thinking_level": "high"
+      "provider": "${env:GEMINI35FLASH_PLANNER_PROVIDER:-openai}",
+      "model": "${env:GEMINI35FLASH_PLANNER:-ts/gemini-3.5-flash-lite}",
+      "thinking_level": "high" // LƯU Ý: thinking_level chỉ có tác dụng với provider "google"
     },
 
     // 🎯 Operator: Screen perception, element interaction, and direct execution
     "operator": {
+      "provider": "${env:GEMINI35FLASH_OPERATOR_PROVIDER:-openai}",
+      "model": "${env:GEMINI35FLASH_OPERATOR:-ts/gemini-3.5-flash-lite}",
       "thinking_level": "low",
       "include_thoughts": false
     },
@@ -73,8 +80,11 @@
     // To achieve accurate [x, y] point and bounding box localization, this node MUST use specialized Gemini ER (Embodied Reasoning / Robotics) models:
     // e.g., "gemini-robotics-er-2-preview". Non-ER models will fail spatial coordinate detection.
     "object_detector": {
-      "provider": "openai",
-      "model": "ts/gemini-3.5-flash-lite",
+      // Provider đọc từ .env: "google" (key Gemini, free tier — ĐÃ KIỂM CHỨNG
+      // chạy được và trả toạ độ chính xác) hoặc "openai" (Vilao, qua proxy).
+      // Fallback luôn về Vilao để không phụ thuộc free tier.
+      "provider": "${env:GEMINIER_OBJECT_DETECTOR_PROVIDER:-openai}",
+      "model": "${env:GEMINIER_OBJECT_DETECTOR:-ts/gemini-3.5-flash-lite}",
       "fallback": {
         "provider": "openai",
         "model": "ts/gemini-3.5-flash-lite"
@@ -86,6 +96,8 @@
     //  - "flash" version delegates directly to object_detector (requires Gemini ER model above).
     //  - "pro" / "ultra" versions run multi-turn ReAct loops (supports both Native Gemini and Universal Multi-Model LangChain engines).
     "explorer": {
+      "provider": "${env:GEMINI35FLASH_EXPLORER_PROVIDER:-openai}",
+      "model": "${env:GEMINI35FLASH_EXPLORER:-ts/gemini-3.5-flash-lite}",
       "thinking_level": "medium"
     },
 
@@ -95,10 +107,10 @@
     // 🔽 Hopper: Fast lightweight package name locator
     "hopper": {
       "provider": "openai",
-      "model": "ts/gemini-3.5-flash-lite",
+      "model": "${env:GEMINI35FLASHLITE_HOPPER:-ts/gemini-3.5-flash-lite}",
       "fallback": {
         "provider": "openai",
-        "model": "ts/gemini-3.5-flash-lite"
+        "model": "${env:GEMINI35FLASHLITE_HOPPER:-ts/gemini-3.5-flash-lite}"
       }
     },
 
@@ -120,6 +132,8 @@
     // 🔎 Checker: Plan-declared checkpoint verification and exit final review.
     // Thoughts are streamed so the verifier's reasoning shows live in the timeline.
     "checker": {
+      "provider": "${env:GEMINI35FLASH_CHECKER_PROVIDER:-openai}",
+      "model": "${env:GEMINI35FLASH_CHECKER:-ts/gemini-3.5-flash-lite}",
       "thinking_level": "medium",
       "include_thoughts": true
     }
@@ -145,7 +159,7 @@
       // replacing images only after strictly objective, high-density summaries are ready.
       "step_summarizer": {
         "enabled": false, // Whether background step summarization is active (requires a Gemini key: VisualStepSummarizer uses get_google_llm)
-        "model": "ts/gemini-3.5-flash-lite", // Lightweight model for fast background inference
+        "model": "${env:GEMINI35FLASHLITE_SUMMARIZER:-ts/gemini-3.5-flash-lite}", // Lightweight model for fast background inference
         "prune_history_xml": true // Prune outdated heavy XML trees from historical steps
       }
     },
@@ -245,7 +259,7 @@
         // call each); milestone closes are exempt, the hard line waives it.
         "min_steps": 3,
         "target_source_tokens": 2000,
-        "model": "ts/gemini-3.5-flash-lite",
+        "model": "${env:GEMINI35FLASHLITE_SUMMARIZER:-ts/gemini-3.5-flash-lite}",
         "max_chunks": 8
         // "max_eras": 8 // independent era cap; omitted = follows max_chunks
       },

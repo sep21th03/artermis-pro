@@ -65,6 +65,7 @@ from artemis.controllers.controller_factory import get_controller
 from artemis.data_engine.trace import DataEngineCallbackHandler
 from artemis.graph.graph import get_graph
 from artemis.graph.state import State
+from artemis.knowledge.integration import KnowledgeContext, attach
 from artemis.runtime import DeviceExecutionLock
 from artemis.sdk.run_outcome import attach_test_summary, resolve_trace_suffix
 from artemis.sdk.types.agent import AgentConfig
@@ -331,6 +332,7 @@ class AgentBase:
         request: TaskRequest[None],
         locked_app_package: str | None = None,
         app_path: str | Path | None = None,
+        knowledge: "KnowledgeContext | None" = None,
     ) -> str | dict | None: ...
 
     @overload
@@ -340,6 +342,7 @@ class AgentBase:
         request: TaskRequest[TOutput],
         locked_app_package: str | None = None,
         app_path: str | Path | None = None,
+        knowledge: "KnowledgeContext | None" = None,
     ) -> TOutput | None: ...
 
     async def run_task(
@@ -352,6 +355,7 @@ class AgentBase:
         name: str | None = None,
         app_path: str | Path | None = None,
         request: TaskRequest[TOutput] | None = None,
+        knowledge: "KnowledgeContext | None" = None,
     ) -> str | dict | TOutput | None:
 
         # Normal local execution path
@@ -371,7 +375,7 @@ class AgentBase:
                         " parameter. Using the parameter value."
                     )
                 request.app_path = Path(app_path) if isinstance(app_path, str) else app_path
-            return await self._run_task(request=request)
+            return await self._run_task(request=request, knowledge=knowledge)
         if goal is None:
             raise AgentTaskRequestError("Goal is required")
         task_request = self.new_task(goal=goal)
@@ -388,11 +392,12 @@ class AgentBase:
             task_request.with_locked_app_package(package_name=locked_app_package)
         if app_path is not None:
             task_request.with_app_path(app_path=app_path)
-        return await self._run_task(task_request.build())
+        return await self._run_task(task_request.build(), knowledge=knowledge)
 
     async def _run_task(
         self,
         request: TaskRequest[TOutput],
+        knowledge: "KnowledgeContext | None" = None,
     ) -> str | dict | TOutput | None:
         if not self._initialized:
             raise AgentNotInitializedError()
@@ -440,6 +445,12 @@ class AgentBase:
             llm_config=agent_profile.llm_config,
             agent_config=self._config,
         )
+        if knowledge is not None:
+            # Workflow guidance retrieved for this run.  It rides on the context
+            # (extra="allow") rather than on the graph State, so no State field
+            # and no visibility manifest entry is needed; the Planner reads it
+            # back via ``artemis.knowledge.integration.context_text``.
+            attach(context, knowledge)
 
         output_config = None
         if request.output_description or request.output_format:

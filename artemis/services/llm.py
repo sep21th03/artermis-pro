@@ -33,6 +33,7 @@ from uuid import uuid4
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from pydantic import BaseModel
 
 from artemis.config import (
     PAUSE_FILE,
@@ -521,6 +522,123 @@ def _inject_parent_trace_id(trace_id, *args, **kwargs):
     return args, kwargs
 
 
+class _TolerantStructuredRunnable:
+    """Structured-output chain that salvages fenced / prose JSON answers.
+
+    ``ChatOpenAI.with_structured_output`` expects a strict JSON (or tool-call)
+    answer and raises when the provider replies with prose plus a fenced
+    ```` ```json ```` block instead — common when the endpoint is an
+    OpenAI-compatible proxy in front of a model that ignores ``response_format``.
+
+    That raise happens *inside* the retry/pause policy, so the call is retried
+    (burning tokens) and the task then pauses for ``LLM_PAUSE_TIMEOUT_SECONDS``
+    (15 minutes by default). To the tester the run just looks hung — the app is
+    never launched, no step is recorded, and the console only shows
+    "Đang chạy".
+
+    Running the chain with ``include_raw=True`` keeps the raw message next to
+    the parse error, so the answer can be re-parsed through the shared tolerant
+    pipeline (:func:`parse_structured`, which already understands fences and
+    minor JSON noise) instead of failing the call.
+    """
+
+    def __init__(self, runnable: Any, schema: type[BaseModel]) -> None:
+        self.runnable = runnable
+        self.schema = schema
+
+    def __getattr__(self, item: str) -> Any:
+        # ``runnable``/``schema`` are real instance attributes; only unknown
+        # names are delegated, and never re-entrantly.
+        if item in {"runnable", "schema"}:
+            raise AttributeError(item)
+        return getattr(self.runnable, item)
+
+    async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            result = await self.runnable.ainvoke(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - re-raised when unrecoverable
+            recovered = self._recover_from_error(exc)
+            if recovered is None:
+                raise
+            return recovered
+        return self._salvage(result)
+
+    def invoke(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            result = self.runnable.invoke(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - re-raised when unrecoverable
+            recovered = self._recover_from_error(exc)
+            if recovered is None:
+                raise
+            return recovered
+        return self._salvage(result)
+
+    def _recover_from_error(self, exc: BaseException) -> Any:
+        """Salvage the raw answer carried by a strict parser's ValidationError.
+
+        ``method="json_schema"`` — the langchain-openai default since 0.3.0 — has
+        no ``include_raw`` fallback and raises anyway, so ``_salvage`` never sees
+        the text. The error still carries the model's raw answer in
+        ``errors()[*]["input"]``, which is all that is needed to re-parse it
+        tolerantly, and that costs no second LLM call.
+        """
+        for source in (exc, exc.__cause__, exc.__context__):
+            for candidate in self._error_inputs(source):
+                recovered = parse_structured(candidate, self.schema)
+                if not isinstance(recovered, ParseFailure):
+                    llm_logger.info(
+                        "Recovered %s from a strict-parser error (%d chars).",
+                        self.schema.__name__,
+                        len(candidate),
+                    )
+                    return recovered
+        return None
+
+    @staticmethod
+    def _error_inputs(exc: Any) -> list[str]:
+        """Raw string inputs carried by a Pydantic ``ValidationError``."""
+        errors = getattr(exc, "errors", None)
+        if not callable(errors):
+            return []
+        try:
+            items = errors()
+        except Exception:  # noqa: BLE001 - malformed error object
+            return []
+        inputs: list[str] = []
+        for item in items or []:
+            value = item.get("input") if isinstance(item, dict) else None
+            if isinstance(value, str) and value.strip():
+                inputs.append(value)
+        return inputs
+
+    def _salvage(self, result: Any) -> Any:
+        """Return the parsed object, recovering a non-strict answer if needed."""
+        if not isinstance(result, dict):
+            # Fake/plain models return the message directly; nothing to salvage.
+            return result
+        parsed = result.get("parsed")
+        if parsed is not None:
+            return parsed
+        text = content_to_text(getattr(result.get("raw"), "content", result.get("raw")))
+        recovered = parse_structured(text, self.schema)
+        if not isinstance(recovered, ParseFailure):
+            llm_logger.info(
+                "Recovered %s from a non-strict structured answer (%d chars).",
+                self.schema.__name__,
+                len(text),
+            )
+            return recovered
+        llm_logger.warning(
+            "Structured answer for %s is unparsable: %s",
+            self.schema.__name__,
+            recovered.error,
+        )
+        error = result.get("parsing_error")
+        if error is not None:
+            raise error
+        return None
+
+
 class RobustChatModelWrapper:
     """Universal LangChain Runnable wrapper ensuring robust execution and telemetry."""
 
@@ -594,13 +712,20 @@ class RobustChatModelWrapper:
         )
 
     def with_structured_output(self, *args, **kwargs):
-        if hasattr(self.base_model, "with_structured_output"):
-            return RobustChatModelWrapper(
-                self.base_model.with_structured_output(*args, **kwargs),
-                self.ctx,
-                endpoint=self.endpoint,
+        if not hasattr(self.base_model, "with_structured_output"):
+            raise AttributeError(
+                f"{type(self.base_model)} does not support with_structured_output"
             )
-        raise AttributeError(f"{type(self.base_model)} does not support with_structured_output")
+        # Keep the raw message beside the parse result so a non-strict answer
+        # (prose + fenced JSON, typical behind an OpenAI-compatible proxy) can be
+        # salvaged instead of raising inside the retry/pause policy.
+        caller_wants_raw = bool(kwargs.get("include_raw"))
+        kwargs.setdefault("include_raw", True)
+        structured = self.base_model.with_structured_output(*args, **kwargs)
+        schema = args[0] if args else kwargs.get("schema")
+        if not caller_wants_raw and isinstance(schema, type) and issubclass(schema, BaseModel):
+            structured = _TolerantStructuredRunnable(structured, schema)
+        return RobustChatModelWrapper(structured, self.ctx, endpoint=self.endpoint)
 
     def __or__(self, other):
         return RobustChatModelWrapper(

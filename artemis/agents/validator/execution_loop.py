@@ -57,6 +57,76 @@ from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+#: Hành động nào thì bị chặn khi lặp lại y hệt. Cuộn/vuốt lặp lại là bình thường
+#: (cuộn xuống nhiều lần để tới cuối danh sách), còn tap cùng một chỗ mãi thì không.
+REPEAT_GUARDED_ACTIONS = frozenset({"tap", "long_press"})
+
+#: Số lần liên tiếp một hành động giống hệt nhau được phép chạy trước khi bị chặn.
+#: Đo trên trace thật (``232d2382``): agent tap cùng toạ độ ``[135,631][586,670]``
+#: **10 lần liên tiếp**, màn hình không đổi, mỗi lần tốn 4-10 lượt LLM — cả lần chạy
+#: 47 lượt trong 2m35s. Chặn ở lần thứ 3 để agent buộc phải đọc lại màn hình.
+REPEAT_GUARD_LIMIT = 3
+
+#: Số hành động gần nhất được ghi nhớ để so trùng.
+REPEAT_GUARD_HISTORY = 8
+
+
+def _repeat_action_key(action_name: str, action_item: dict) -> str:
+    """Khoá nhận dạng "cùng một hành động".
+
+    Toạ độ được làm tròn về bội số 10: hai lần tap lệch nhau 1-2 pixel vẫn là cùng
+    một chỗ, còn lệch sang hàng khác thì không.
+    """
+    coords = action_item.get("coordinates") or []
+    if coords:
+        try:
+            rounded = ",".join(str(int(round(float(c) / 10.0)) * 10) for c in list(coords)[:4])
+            return f"{action_name}@{rounded}"
+        except (TypeError, ValueError):
+            pass
+    target = action_item.get("target_text") or action_item.get("text") or ""
+    return f"{action_name}:{str(target).strip()[:80]}"
+
+
+def repeat_loop_reason(node, action_name: str, action_item: dict) -> str | None:
+    """Ghi nhận hành động này; trả về lý do nếu nó đang lặp vô ích.
+
+    **Mọi** hành động đều được ghi vào lịch sử, kể cả loại không bị chặn — một lần
+    cuộn xen giữa hai lần tap nghĩa là agent vừa làm việc khác, nên chuỗi lặp phải
+    đứt. Chỉ *chặn* những hành động trong ``REPEAT_GUARDED_ACTIONS``.
+
+    Lịch sử để trên ``ctx`` chứ không trên ``State``: ``State`` là ``extra="forbid"``
+    và có manifest kiểm soát hiển thị, còn ``ArtemisContext`` thì mở.
+    """
+    ctx = getattr(node, "ctx", None)
+    if ctx is None:
+        return None
+
+    key = _repeat_action_key(action_name, action_item)
+    history = getattr(ctx, "repeat_action_history", None)
+    history = list(history) if isinstance(history, list) else []
+    history.append(key)
+    del history[:-REPEAT_GUARD_HISTORY]
+    try:
+        ctx.repeat_action_history = history
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    if action_name not in REPEAT_GUARDED_ACTIONS:
+        return None
+    if len(history) < REPEAT_GUARD_LIMIT:
+        return None
+    tail = history[-REPEAT_GUARD_LIMIT:]
+    if len(set(tail)) != 1:
+        return None
+    return (
+        f"Hành động '{action_name}' đã chạy y hệt {REPEAT_GUARD_LIMIT} lần liên tiếp "
+        f"tại cùng một chỗ ({key}) mà màn hình không thay đổi. KHÔNG lặp lại nữa: "
+        "đọc lại màn hình hiện tại rồi chọn phần tử khác, hoặc báo blocked kèm mô tả "
+        "chính xác màn hình đang thấy."
+    )
+
+
 #: ``attempts`` marker for actions a burst never reached.
 BURST_SKIPPED_MARKER = "Skipped (burst aborted)"
 
@@ -180,6 +250,21 @@ async def _process_action(
     action_item = dict(action_item)  # Make a copy to avoid mutating original state actions
     outcome = _ActionOutcome(action_item=action_item)
     attempts_log = []
+
+    # 0. Chặn vòng lặp: cùng một hành động chạy y hệt ở cùng một chỗ, lặp mãi mà màn
+    #    hình không đổi. Không áp cho burst — burst là chuỗi hành động liên tiếp có
+    #    chủ đích, cắt giữa chuỗi sẽ phá timing của nó.
+    if not burst:
+        repeat_reason = repeat_loop_reason(node, action_name, action_item)
+        if repeat_reason:
+            outcome.success = False
+            outcome.intercepted = True
+            outcome.error_msg = repeat_reason
+            outcome.error_category = ValidationErrorCategory.REPEAT_LOOP
+            attempts_log.append(repeat_reason)
+            action_item["attempts"] = list(attempts_log)
+            logger.warning(f"Chặn hành động lặp vô ích: {repeat_reason}")
+            return outcome
 
     validation_passed = True
     if not burst:

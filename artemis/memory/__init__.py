@@ -34,12 +34,19 @@ logger = get_logger(__name__)
 
 
 def ensure_step_memory(ctx):
-    """Return the session's shared step-memory service, creating it on demand.
+    """Return the session's shared step-memory service, or ``None`` when it is off.
 
     Composition root for ``ctx.step_memory`` (history redesign §6.2): the
     first caller — FlashRunner, the Pro SummarizerNode, or the Pro operator's
     transcript path — instantiates the visual-transition lens service and
     publishes it on the context so every profile shares one runtime.
+
+    Returns ``None`` when ``flash.step_summarizer.enabled`` is false.  That flag
+    used to be honoured **only** by ``FlashRunner``; every other profile built the
+    service anyway and paid for it.  Measured on a Pro run: 15 steps x 4 attempts
+    = **60 vision calls, every one a 404**, because the service calls Google
+    directly (``get_google_llm``) with a model name that endpoint does not know.
+    Callers must handle ``None``.
     """
     service = getattr(ctx, "step_memory", None)
     if service is not None:
@@ -49,11 +56,14 @@ def ensure_step_memory(ctx):
 
     kwargs: dict = {}
     model_name = None
+    enabled = True
     try:
         from artemis.config import load_agent_config
 
         cfg = load_agent_config()
-        model_name = cfg.flash.step_summarizer.model
+        summarizer_cfg = cfg.flash.step_summarizer
+        enabled = bool(summarizer_cfg.enabled)
+        model_name = summarizer_cfg.model
         kwargs = {
             "retry_limit": cfg.memory.runtime.retry_limit,
             "max_concurrency": cfg.memory.runtime.max_concurrency,
@@ -64,6 +74,13 @@ def ensure_step_memory(ctx):
             f"Agent config unavailable; using step-memory service defaults: {exc}",
             exc_info=True,
         )
+
+    if not enabled:
+        logger.info(
+            "Step summarizer tắt (flash.step_summarizer.enabled=false): "
+            "không tạo dịch vụ tóm tắt bước."
+        )
+        return None
 
     service = VisualStepSummarizer(ctx, model_name=model_name, **kwargs)
     try:

@@ -104,6 +104,10 @@ class SummarizerNode:
         )
 
         service = ensure_step_memory(self.ctx)
+        if service is None:
+            # Tóm tắt bước đang tắt (flash.step_summarizer.enabled=false). Bỏ qua
+            # là hành vi đúng, không phải lỗi — xem artemis/memory/__init__.py.
+            return
         service.dispatch(
             step_number=step_number if isinstance(step_number, int) else 0,
             action_name=action_name,

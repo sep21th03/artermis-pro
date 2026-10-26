@@ -26,6 +26,7 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan, trace
 from artemis.graph.state import State
 from artemis.graph.visibility import strict_state
+from artemis.knowledge.integration import context_meta, context_text
 from artemis.services.llm import (
     acomplete,
     get_llm,
@@ -98,15 +99,37 @@ def _checks_enabled(ctx: ArtemisContext) -> bool:
     return any(_check_gates(ctx))
 
 
-def build_planner_system_blocks(prompts_data: dict, mode: str, include_checks: bool) -> list[str]:
+def build_planner_system_blocks(
+    prompts_data: dict, mode: str, include_checks: bool, include_knowledge: bool = False
+) -> list[str]:
     """Assembly point for the planner prompt's component list (§1.3): the
-    check-related block mounts only while the checking feature is active."""
+    check-related block mounts only while the checking feature is active.
+
+    ``include_knowledge`` follows the same rule for the Workflow RAG block: it
+    mounts only when a knowledge block was actually injected, so a run without a
+    knowledge base produces a byte-identical planner prompt.
+    """
     blocks = list(prompts_data["modes"][mode]["system"])
     if include_checks:
         extra = "check_generation" if mode == "initial_plan" else "check_audit"
         if extra in prompts_data.get("blocks", {}):
             blocks.append(extra)
+    if include_knowledge and "knowledge_guidance" in prompts_data.get("blocks", {}):
+        blocks.append("knowledge_guidance")
     return blocks
+
+
+def render_planner_human(template: str, initial_goal: str, knowledge_context: str = "") -> str:
+    """Render the Planner's human message.
+
+    The knowledge block is appended, never templated into the middle: with no
+    knowledge the result is byte-identical to the pre-RAG prompt, so a deployment
+    without a knowledge base gets exactly the prompt it got before this feature.
+    """
+    block = (knowledge_context or "").strip()
+    if block:
+        block = "\n\n" + block
+    return Template(template).render(initial_goal=initial_goal, knowledge_context=block)
 
 
 class ValidationResult(BaseModel):
@@ -220,11 +243,19 @@ class PlannerNode:
 
         midway, final = _check_gates(self.ctx)
         include_checks = midway or final
+        # Knowledge retrieved for this run (empty when there is none).  Read from
+        # the context rather than the graph State: see
+        # ``artemis.knowledge.integration`` for why.
+        knowledge_context = context_text(self.ctx)
         # Assembly point (not in-template conditionals): check-generation
         # instructions only mount while the checking feature is active, so a
         # fully-disabled configuration yields a byte-identical planner prompt.
         # Inside the mounted block, the judgment moment is worded per gate.
-        system_blocks = build_planner_system_blocks(prompts_data, mode, include_checks)
+        # The knowledge block obeys the same rule: it mounts only when a block
+        # was actually injected.
+        system_blocks = build_planner_system_blocks(
+            prompts_data, mode, include_checks, include_knowledge=bool(knowledge_context)
+        )
         system_content = "\n\n".join(prompts_data["blocks"][block] for block in system_blocks)
 
         system_message = Template(system_content).render(
@@ -268,12 +299,22 @@ class PlannerNode:
             raise ValueError("Planner failed to obtain a screenshot.")
 
         human_content = mode_config["human"]
-        render_kwargs = {
-            "initial_goal": state.initial_goal,
-        }
-
-        human_message = Template(human_content).render(**render_kwargs)
-
+        human_message = render_planner_human(
+            human_content, state.initial_goal, knowledge_context
+        )
+        if knowledge_context:
+            # Direct evidence that the Planner received the workflow, independent
+            # of whether the plan ends up using it.
+            #
+            # An f-string, not %-args: ARTEMIS's logger takes a single message
+            # (``ArtemisLogger.info(self, message, **kwargs)``), and passing
+            # formatting arguments raises TypeError inside the graph node.
+            meta = context_meta(self.ctx)
+            logger.info(
+                f"Planner nhận knowledge context: {len(knowledge_context)} ký tự, "
+                f"workflow={meta.get('trusted_ids') or meta.get('workflow_ids')}, "
+                f"app={meta.get('app_id')}"
+            )
         human_message_content = [{"type": "text", "text": human_message}]
         if screenshot_b64:
             human_message_content.append(

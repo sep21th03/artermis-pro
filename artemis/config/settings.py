@@ -150,6 +150,34 @@ class Settings(BaseSettings):
     DATA_ENGINE_DB_PATH: Path = Field(default_factory=get_data_engine_db_path)
     TEMP_PATH: Path = Field(default_factory=get_temp_dir)
 
+    # ── Knowledge base (Workflow RAG) ────────────────────────────────────
+    # Retrieval is advisory: when any of this is unset or unreachable, ARTEMIS
+    # runs exactly as before with no knowledge context. See
+    # ``artemis.knowledge.service``.
+    ARTEMIS_KB_ENABLED: bool = True
+    ARTEMIS_KB_DSN: str | None = None
+    """PostgreSQL DSN, e.g. postgresql://user@localhost:5432/artemis_kb.
+    Unset means "no knowledge base" -- not an error."""
+
+    ARTEMIS_KB_EMBEDDING_MODEL: str = "gemini-embedding-2"
+    ARTEMIS_KB_EMBEDDING_PROVIDER: str = "google"
+    ARTEMIS_KB_EMBEDDING_DIM: int | None = None
+    """Optional Matryoshka truncation. None keeps the model's native width."""
+
+    ARTEMIS_KB_EMBEDDING_BATCH: int = 32
+    ARTEMIS_KB_TOP_K: int = 3
+    """How many workflows are considered; the context builder may use fewer."""
+    ARTEMIS_KB_RRF_K: int = 60
+    """Reciprocal Rank Fusion constant. 60 is the value from the original RRF
+    paper and needs no tuning to be a sane default."""
+    ARTEMIS_KB_CONTEXT_MAX_CHARS: int = 4000
+    """Hard ceiling on the knowledge block injected into the Planner prompt."""
+
+    ARTEMIS_KB_KEYWORD_MIN_COVERAGE: float = 0.6
+    """Share of a request's content words a workflow must contain for a keyword
+    hit to count as evidence. Measured: real requests score 1.0, the false
+    positive 'chụp ảnh màn hình' -> logout scores 0.5."""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @model_validator(mode="after")

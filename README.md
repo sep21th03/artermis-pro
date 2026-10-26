@@ -430,10 +430,21 @@ LOCAL_LLM=1 sh apps/test_console/run.sh                     # Ollama, 0đ
 - **App đích**: ô **Package** trên UI (mặc định `com.example.app`), hoặc `TEST_APP_PACKAGE`. 7 kịch bản
   mẫu là prompt chung (mở app, đăng nhập, danh sách, bật/tắt, giọng nói, thêm thiết bị, thông báo);
   với app khác dùng nút **Prompt tự do**.
+- **Cài app**: console **không cài app giúp bạn** — cài trước bằng `adb install -r <apk>` (hoặc
+  `./gradlew installDebug`), app React Native bản debug thì phải chạy Metro + `adb reverse tcp:8081`.
+  Hướng dẫn đầy đủ: [`apps/test_console/README.md`](./apps/test_console/README.md#cài-app-lên-điện-thoại).
 - **Không kèm dữ liệu riêng**: không có package/app cụ thể, tài khoản, serial hay key nào trong repo.
 - **Proxy LLM**: console mở `/llm/v1` tại cổng 8787. Nếu `.env` của Artemis đặt
   `OPENAI_BASE_URL=http://127.0.0.1:8787/llm/v1` thì console phải chạy, nếu không task sẽ không gọi
   được model (ngược lại, đặt thẳng `OPENAI_BASE_URL=https://api.openai.com/v1` nếu không cần chặn ngân sách).
+- **Khoá truy cập API**: `/llm/v1` yêu cầu `Authorization: Bearer <CONSOLE_ACCESS_KEY>` (mặc định
+  `21092003`). Máy chỉ chạy ARTEMIS (không chạy proxy) đặt `OPENAI_API_KEY=<khoá>` +
+  `OPENAI_BASE_URL=http://<ip-máy-chạy-console>:8787/llm/v1` — key LLM thật chỉ nằm trên máy chạy console.
+  Chế độ `LOCAL_LLM=1` (Ollama) miễn khoá.
+- **Knowledge — Workflow RAG**: tester nhập prompt gốc, console gọi Google Embedding, tìm workflow
+  gần nhất trong PostgreSQL rồi trả về **prompt hoàn chỉnh** (prompt gốc + hướng dẫn từng bước).
+  Chỉ máy chạy console cần database và khoá embedding; máy tester chỉ cần ARTEMIS và điện thoại.
+  Xem `apps/test_console/README.md`.
 - **Tài liệu**: [`apps/test_console/README.md`](./apps/test_console/README.md).
 - **Wrapper CLI**: [`scripts/artemis.sh`](./scripts/artemis.sh) (tự thêm `adb` vào PATH, tự dùng
   `.venv` hoặc `uv run`).

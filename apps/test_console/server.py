@@ -12,8 +12,13 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 import ast
+import difflib
+import hashlib
+import hmac
 import json
+import math
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import re
 import shutil
@@ -21,10 +26,17 @@ import signal
 import subprocess
 import threading
 import time
+import unicodedata
 import uuid
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import BaseModel, Field
 import httpx
 
@@ -68,8 +80,37 @@ ADB_BIN = Path(os.getenv("ADB_BIN", DEFAULT_ADB)).expanduser()
 DEFAULT_PACKAGE = os.getenv("TEST_APP_PACKAGE", "com.example.app")
 HOST = os.getenv("ARTEMIS_WEB_HOST", "127.0.0.1")
 PORT = int(os.getenv("ARTEMIS_WEB_PORT", "8787"))
+
+# --- Vai trò của tiến trình ---------------------------------------------------
+# Quyết định **bộ endpoint nào tồn tại**, không chỉ cái nào được phép gọi.
+#
+#   server — máy chủ dùng chung (VPS): chỉ AI proxy + API RAG. Không có endpoint
+#            điều khiển thiết bị, không có giao diện, không quản trị KB.
+#   edge   — máy cắm điện thoại: điều khiển thiết bị + giao diện. Không giữ key
+#            LLM thật; LLM và kiến thức đều hỏi máy chủ.
+#   all    — cả hai, MẶC ĐỊNH: giữ nguyên hành vi cũ cho máy dev chạy một mình.
+#
+# Vì sao phải tách chứ không chỉ thêm xác thực: ``/api/run`` chạy ``artemis run``
+# và ``/api/stop`` giết tiến trình; đưa chúng lên Internet là lỗ hổng thực thi
+# lệnh, còn VPS thì không có điện thoại nào để điều khiển. Tách theo *sự tồn tại*
+# của route an toàn hơn chặn bằng middleware: middleware sót một đường là mất hết.
+CONSOLE_ROLE = (os.getenv("CONSOLE_ROLE") or "all").strip().lower()
+if CONSOLE_ROLE not in {"server", "edge", "all"}:
+    print(f"⚠ CONSOLE_ROLE={CONSOLE_ROLE!r} không hợp lệ; dùng 'all'.")
+    CONSOLE_ROLE = "all"
+SERVES_DEVICE = CONSOLE_ROLE != "server"
+SERVES_SHARED = CONSOLE_ROLE != "edge"
+#: Quản trị KB (`/api/kb/*`) chỉ có trên máy dev. Nhóm route này sửa và xoá được
+#: workflow mà **không có khoá truy cập riêng**, nên nó không được xuất hiện trên
+#: máy chủ dùng chung. Người vận hành quản trị KB từ máy dev, qua SSH tunnel tới
+#: cùng database đó.
+SERVES_KB_ADMIN = CONSOLE_ROLE != "server"
 IDLE_TIMEOUT_SECONDS = int(os.getenv("TASK_IDLE_TIMEOUT_SECONDS", "120"))
 ARTEMIS_API = os.getenv("ARTEMIS_API_BASE", "http://127.0.0.1:8000").rstrip("/")
+# Khoá truy cập API. Console là proxy giữ key LLM thật, nên khi mở ra ngoài
+# (VPS/LAN) bắt buộc phải có khoá: nếu không, ai biết URL cũng tiêu hết ngân
+# sách của chủ dự án. Giá trị thật lấy từ CONSOLE_ACCESS_KEY (env hoặc .env).
+DEFAULT_ACCESS_KEY = "21092003"
 SESSION_RE = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
 )
@@ -145,10 +186,72 @@ def llm_summary() -> dict:
     return {
         "provider": provider,
         "model": model,
-        "base_url": env.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        # Hai thứ khác nhau, và trên máy chủ dùng chung thì khác hẳn nhau:
+        #   base_url = nơi client gửi request tới (OPENAI_BASE_URL)
+        #   upstream = nơi tiến trình này chuyển tiếp tới (ARTEMIS_UPSTREAM_BASE_URL)
+        # Gộp chúng từng làm /api/health báo "api.openai.com" trong khi proxy thực tế
+        # gọi "api.vilao.ai" — người debug sẽ đi sai hướng.
+        "base_url": env.get("OPENAI_BASE_URL") or f"http://127.0.0.1:{PORT}/llm/v1",
+        "upstream": upstream_base(),
         "key_present": bool(key),
         "key_hint": f"…{key[-4:]}" if key and len(key) > 8 else "",
     }
+
+
+ACCESS_TOKENS_CACHE: set[str] | None = None
+
+
+def access_key() -> str:
+    """Khoá truy cập đang có hiệu lực: biến môi trường > .env > mặc định."""
+    env = read_env_file(ARTEMIS_ENV)
+    return (
+        os.getenv("CONSOLE_ACCESS_KEY") or env.get("CONSOLE_ACCESS_KEY") or DEFAULT_ACCESS_KEY
+    ).strip()
+
+
+def valid_access_tokens() -> set[str]:
+    """Các khoá truy cập API được chấp nhận.
+
+    Gồm ``CONSOLE_ACCESS_KEY`` và key upstream trong ``.env`` (để chính máy
+    đang chạy proxy không phải cấu hình thêm gì). Đọc một lần rồi cache: đổi
+    khoá cần restart console.
+    """
+    global ACCESS_TOKENS_CACHE
+    if ACCESS_TOKENS_CACHE is None:
+        tokens = {access_key()}
+        env = read_env_file(ARTEMIS_ENV)
+        for name in ("OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+            value = env.get(name, "").strip()
+            if value:
+                tokens.add(value)
+        ACCESS_TOKENS_CACHE = {token for token in tokens if token}
+    return ACCESS_TOKENS_CACHE
+
+
+def presented_token(request: Request) -> str:
+    """Khoá client gửi lên: ``Authorization: Bearer <khoá>`` hoặc ``x-api-key``."""
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        return header[7:].strip()
+    return (request.headers.get("x-api-key") or "").strip()
+
+
+def access_denied(request: Request, local: bool = False) -> bool:
+    """True khi request phải bị từ chối vì thiếu/sai khoá truy cập.
+
+    Chế độ Ollama local miễn kiểm tra: máy đó không tiêu tiền cloud, và
+    ``LOCAL_LLM=1 ./run.sh`` phải chạy được mà không cần khoá.
+    """
+    if local:
+        return False
+    token = presented_token(request)
+    if not token:
+        return True
+    raw = token.encode("utf-8", "ignore")
+    return not any(
+        hmac.compare_digest(raw, known.encode("utf-8", "ignore"))
+        for known in valid_access_tokens()
+    )
 
 
 def safe_name(value: str) -> str:
@@ -172,6 +275,131 @@ def list_devices() -> list[dict]:
         model = next((p.split(":", 1)[1] for p in parts if p.startswith("model:")), "")
         devices.append({"serial": parts[0], "state": state, "model": model.replace("_", " ")})
     return devices
+
+
+# --- Package đã cài trên thiết bị ---------------------------------------------
+# Chạy task với package không tồn tại thì ARTEMIS vẫn "thử" 3 lần × 15s rồi mới
+# bỏ cuộc, nên tester chỉ thấy task treo mà app không hề mở. Kiểm tra trước khi
+# chạy để báo lỗi rõ ràng ngay.
+
+PACKAGE_CACHE_TTL = 30.0
+_package_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def installed_packages(serial: str = "") -> list[str]:
+    """Tên package đã cài trên thiết bị; [] khi không đọc được.
+
+    Cache 30s vì ``pm list packages`` mất ~1s mỗi lần gọi.
+    """
+    key = serial or "-"
+    now = time.time()
+    cached = _package_cache.get(key)
+    if cached and now - cached[0] < PACKAGE_CACHE_TTL:
+        return cached[1]
+    args = (["-s", serial] if serial else []) + ["shell", "pm", "list", "packages"]
+    try:
+        out = run_adb(args, timeout=20).stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return cached[1] if cached else []
+    names = sorted(
+        line.strip().removeprefix("package:")
+        for line in out.splitlines()
+        if line.strip().startswith("package:")
+    )
+    _package_cache[key] = (now, names)
+    return names
+
+
+def suggest_packages(package: str, installed: list[str], limit: int = 5) -> list[str]:
+    """Package đã cài gần giống tên tester gõ, để gợi ý sửa.
+
+    Ưu tiên cùng tiền tố (``com.iot.`` → ``com.iot.hunonic``), rồi tới chuỗi con,
+    rồi tới độ giống chuỗi (difflib). Gợi ý yếu bị bỏ để không đưa ra 5 cái tên rác.
+    """
+    needle = package.strip().lower()
+    if not needle or not installed:
+        return []
+    prefix = ".".join(needle.split(".")[:2]) + "." if "." in needle else ""
+    tail = needle.rsplit(".", 1)[-1]
+    scored: dict[str, int] = {}
+
+    def bump(name: str, points: int) -> None:
+        scored[name] = scored.get(name, 0) + points
+
+    for name in installed:
+        lowered = name.lower()
+        if lowered == needle:
+            bump(name, 100)
+        if prefix and lowered.startswith(prefix):
+            bump(name, 8)
+        if len(needle) > 6 and needle in lowered:
+            bump(name, 15)
+        if len(tail) > 3 and lowered.rsplit(".", 1)[-1] == tail:
+            bump(name, 6)
+    # cutoff 0.8: dưới ngưỡng đó difflib trả về cả loạt tên chỉ chung tiền tố.
+    for name in difflib.get_close_matches(needle, installed, n=limit * 2, cutoff=0.8):
+        bump(name, 20)
+    ordered = sorted(scored.items(), key=lambda item: (-item[1], item[0]))
+    return [name for name, score in ordered if score >= 8][:limit]
+
+
+# --- Metro của app React Native bản debug ------------------------------------
+# Bản debug không nhúng JS bundle: thiếu `adb reverse` + Metro là app kẹt ở splash
+# mãi mãi. Agent không biết, cứ chờ rồi chạm lung tung — trông như "chạy linh tinh".
+
+RN_METRO_PORT = os.getenv("CONSOLE_RN_METRO_PORT", "8081").strip()
+
+
+def _metro_check_enabled(port: str) -> bool:
+    """Kiểm tra Metro chỉ có nghĩa khi port là số khác 0 (0 = tắt hẳn)."""
+    return port.isdigit() and port != "0"
+
+
+def metro_reverse_ready(serial: str, port: str = RN_METRO_PORT) -> bool:
+    """True khi thiết bị đã có ``adb reverse tcp:<port>`` (hoặc không kiểm tra được)."""
+    if not _metro_check_enabled(port):
+        return True
+    args = (["-s", serial] if serial else []) + ["reverse", "--list"]
+    try:
+        out = run_adb(args, timeout=10).stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return True  # không kiểm tra được thì đừng báo động sai
+    return f"tcp:{port}" in out
+
+
+def metro_warning(serial: str, port: str = RN_METRO_PORT) -> str:
+    """Cảnh báo tester khi thiếu đường Metro cho app debug (rỗng = không có gì)."""
+    if not _metro_check_enabled(port) or metro_reverse_ready(serial, port):
+        return ""
+    return (
+        f"Chưa thấy `adb reverse tcp:{port}` trên thiết bị. Nếu app đang test là bản "
+        f"React Native **debug**, app sẽ kẹt ở màn hình splash vì không tải được JS "
+        f"bundle. Chạy: `adb reverse tcp:{port} tcp:{port}` và bật Metro (`yarn start`)."
+    )
+
+
+# `--locked-app` của ARTEMIS chỉ đảm bảo app ở foreground **lúc khởi động**; nó
+# không ràng buộc hành động sau đó và agent cũng không được thông báo. Đo thực tế:
+# agent tự force-stop app khác ("Tuya Smart"), bấm HOME, mở app switcher rồi chạm
+# lung tung khi prompt không nêu tên app. Nhắc thẳng trong prompt để chặn việc đó.
+APP_LOCK_HINT_ENABLED = os.getenv("CONSOLE_APP_LOCK_HINT", "1") == "1"
+APP_LOCK_HEADER = "[APP ĐANG TEST — chỉ thao tác trong app này]"
+
+
+def app_lock_hint(package: str) -> str:
+    """Khối nhắc agent bám đúng app cần test (tắt bằng CONSOLE_APP_LOCK_HINT=0)."""
+    if not APP_LOCK_HINT_ENABLED or not package.strip():
+        return ""
+    return (
+        f"{APP_LOCK_HEADER}\n"
+        f"- App cần test: {package.strip()}\n"
+        "- Chỉ thao tác trong app này. Không tự mở hay tắt app khác, không bấm HOME, "
+        "không mở danh sách ứng dụng (app switcher).\n"
+        "- Chỉ rời khỏi app khi mục tiêu yêu cầu rõ ràng (ví dụ mở Cài đặt để cấp "
+        "quyền), và quay lại app ngay sau đó.\n"
+        "- Nếu không thấy màn hình/nút mà mục tiêu nói tới: báo FAILED kèm mô tả màn "
+        "hình đang thấy, đừng thử lung tung."
+    )
 
 
 class Budget:
@@ -409,6 +637,12 @@ class Task:
     package: str
     serial: str
     test_name: str
+    # Prompt thực sự gửi cho ARTEMIS: goal + khối gợi ý vị trí (nếu khớp).
+    # `goal` vẫn là nguyên văn tester nhập, để lịch sử/UI không bị lẫn.
+    goal_sent: str = ""
+    # "stdout" = đọc từ log của chính lần chạy này (chính xác);
+    # "guess" = đoán theo nội dung prompt (chỉ dùng tạm khi chưa có stdout).
+    session_source: str = ""
     max_seconds: int = 0
     session_id: str = ""
     cost_vnd: float = 0.0
@@ -511,6 +745,14 @@ class Runner:
             return next((t for t in self._tasks if t.id == task_id), None)
 
     def start(self, req: RunRequest) -> Task:
+        goal = req.goal.strip()
+        package = req.package.strip() or DEFAULT_PACKAGE
+        # Prompt gửi cho ARTEMIS là prompt gốc, TRỪ khi tester đã xem và sửa prompt
+        # hoàn chỉnh trong tab Knowledge — lúc đó dùng bản đã sửa và báo ARTEMIS
+        # đừng ghép kiến thức lần nữa (xem ARTEMIS_KB_PRESUPPLIED).
+        override = req.prompt_override.strip()
+        goal_sent = override or goal
+
         with self._lock:
             if self._proc and self._proc.poll() is None:
                 raise RuntimeError("Một task đang chạy. Hãy dừng hoặc đợi task hiện tại xong.")
@@ -527,9 +769,10 @@ class Runner:
             log_path = LOG_DIR / f"{now.strftime('%Y%m%d_%H%M%S')}_{test_name}_{task_id}.log"
             task = Task(
                 id=task_id,
-                goal=req.goal.strip(),
+                goal=goal,
+                goal_sent=goal_sent,
                 profile=req.profile,
-                package=req.package.strip() or DEFAULT_PACKAGE,
+                package=package,
                 serial=req.serial.strip(),
                 test_name=test_name,
                 max_seconds=req.max_seconds,
@@ -548,7 +791,7 @@ class Runner:
         )
 
         cmd = [
-            *launcher, "run", task.goal,
+            *launcher, "run", task.goal_sent,
             "--profile", task.profile, "--test-name", task.test_name,
         ]
         if task.package:
@@ -563,8 +806,19 @@ class Runner:
         env["PYTHONUNBUFFERED"] = "1"
         if task.serial:
             env["ADB_DEVICE_SERIAL"] = task.serial
+        if override:
+            # Prompt đã chứa khối kiến thức console ghép sẵn ⇒ ARTEMIS không được
+            # lấy thêm lần nữa, nếu không khối đó vào prompt hai lần.
+            env["ARTEMIS_KB_PRESUPPLIED"] = "1"
 
         self._append(f"$ {' '.join(cmd)}")
+        if app_lock_hint(task.package):
+            self._append(f"🔒 Đã nhắc agent chỉ thao tác trong app: {task.package}")
+        if override:
+            self._append(
+                "📋 Dùng prompt hoàn chỉnh tester đã sửa "
+                f"({len(override)} ký tự) — ARTEMIS sẽ không ghép kiến thức lần nữa."
+            )
         proc = subprocess.Popen(
             cmd,
             cwd=str(ARTEMIS_DIR),
@@ -580,6 +834,8 @@ class Runner:
         budget.start_task(task.id)
         threading.Thread(target=self._pump, args=(proc, task), daemon=True).start()
         threading.Thread(target=self._watchdog, args=(proc, task), daemon=True).start()
+        # Log thật của agent nằm trong file trace, không nằm trên stdout của CLI.
+        threading.Thread(target=self._tail_trace, args=(task,), daemon=True).start()
         return task
 
     def _trace_active(self, started_at: float) -> bool:
@@ -625,16 +881,61 @@ class Runner:
         with self._lock:
             return bool(self._proc and self._proc.poll() is None)
 
+    def note(self, text: str) -> None:
+        """Ghi một cảnh báo vào log của task đang chạy để tester thấy trên UI."""
+        self._append(f"⚠ {text}")
+
+    def _tail_trace(self, task: Task) -> None:
+        """Đọc output thật của agent từ ``traces/<session>/stdout.log``.
+
+        ``artemis run`` giao việc cho Artemis Daemon rồi chỉ in mấy dòng lịch
+        trình, nên stdout của tiến trình CLI gần như trống — đo trên một lần chạy
+        thật: **12 dòng cho cả task**, không một dòng nào về LLM hay hành động.
+        Output thật nằm ở file này. Không đọc nó thì người test chỉ thấy task
+        "treo" mà không biết agent đang làm gì, và mọi thứ đi qua VPS (RAG, từng
+        lượt LLM) đều vô hình.
+
+        Đọc **từ đầu file** chứ không phải từ cuối, để lấy cả phần đã xảy ra trước
+        khi biết session id; và đọc nốt phần còn lại sau khi tiến trình kết thúc.
+        """
+        path: Path | None = None
+        offset = 0
+        deadline = time.time() + max(task.max_seconds, 60) + 180
+        while True:
+            if path is None and task.session_id:
+                candidate = ARTEMIS_DIR / "traces" / task.session_id / "stdout.log"
+                if candidate.exists():
+                    path = candidate
+                    self._append(
+                        f"--- log agent ({task.session_id[:8]}) — "
+                        "nguồn: traces/<session>/stdout.log ---"
+                    )
+            if path is not None:
+                try:
+                    with path.open("r", encoding="utf-8", errors="replace") as handle:
+                        handle.seek(offset)
+                        for raw in handle:
+                            self._append(raw.rstrip("\n"))
+                        offset = handle.tell()
+                except OSError:
+                    pass
+            if task.ended_at is not None or time.time() > deadline:
+                break
+            time.sleep(0.7)
+
     def _pump(self, proc: subprocess.Popen[str], task: Task) -> None:
         assert proc.stdout is not None
         try:
             for raw in proc.stdout:
                 text = raw.rstrip("\n")
                 self._append(text)
-                if not task.session_id:
+                # stdout là nguồn chính xác: ghi đè cả bản đoán tạm, nếu không
+                # chạy lại cùng một prompt sẽ mãi hiển thị session của lần trước.
+                if task.session_source != "stdout":
                     match = SESSION_RE.search(text)
                     if match:
                         task.session_id = match.group(0)
+                        task.session_source = "stdout"
         finally:
             rc = proc.wait()
             self._append(f"[artemis exited with code {rc}]")
@@ -717,23 +1018,45 @@ def _http_json(url: str, timeout: float = 10.0):
 
 
 def _resolve_session(task: Task) -> str:
-    if task.session_id:
+    """Session của CHÍNH lần chạy này.
+
+    Chỉ đoán theo nội dung prompt khi stdout chưa kịp in session, và chỉ nhận
+    session **bắt đầu sau** khi task này chạy. Trước đây hàm này nhận mọi session
+    cùng prompt trong ±180s rồi cache lại, nên chạy lại một prompt sẽ hiển thị
+    session (và bước) của lần chạy TRƯỚC đó.
+    """
+    if task.session_id and task.session_source == "stdout":
         return task.session_id
     try:
         sessions = _http_json(f"{ARTEMIS_API}/api/sessions", timeout=6)
     except Exception:  # noqa: BLE001 - Artemis UI may be down
-        return ""
+        return task.session_id if task.session_source == "guess" else ""
+    target = task.goal_sent or task.goal
+    claimed = {
+        str(item.get("session_id"))
+        for item in runner.history(500)
+        if item.get("session_id") and item.get("id") != task.id
+    }
+    best: tuple[float, str] | None = None
     for session in sessions:
-        if session.get("initial_goal") != task.goal:
+        session_id = str(session.get("session_id") or "")
+        if not session_id or session_id in claimed:
+            continue
+        if session.get("initial_goal") != target:
             continue
         try:
-            delta = abs(float(session.get("start_time", 0)) - task.started_at)
+            start = float(session.get("start_time", 0))
         except (TypeError, ValueError):
             continue
-        if delta < 180:
-            task.session_id = session.get("session_id", "")
-            return task.session_id
-    return ""
+        if start < task.started_at - 5:
+            continue
+        if best is None or start < best[0]:
+            best = (start, session_id)
+    if best:
+        task.session_id = best[1]
+        task.session_source = "guess"
+        return task.session_id
+    return task.session_id if task.session_source == "guess" else ""
 
 
 ACTION_LABELS = {
@@ -798,6 +1121,9 @@ def _fetch_steps(task: Task) -> list[dict]:
             "result": (item.get("last_execution_result") or {}).get("status", ""),
             "detail": (item.get("last_execution_result") or {}).get("result", ""),
             "tokens": item.get("total_tokens") or 0,
+            # Lý do agent chọn hành động này — có bước nhãn rỗng (nút chỉ có icon)
+            # nên đây là thứ duy nhất giải thích được nó đang làm gì.
+            "thinking": _clean_target(item.get("operator_raw_thinking"))[:300],
         })
     return steps
 
@@ -813,11 +1139,154 @@ def _trace_text(task: Task) -> str:
         return ""
 
 
+TURN_RE = re.compile(r"---\s*Artemis\s+(\w+)\s+Turn\s+(\d+)/(\d+)\s*---")
+TOOL_RE = re.compile(r"Executing Flash tool:\s*([a-z_]+)\((.*)")
+# Dòng hạ tầng, không phải việc agent làm.
+ACTIVITY_SKIP = (
+    "HTTP Request:",
+    "Processing request of type",
+    "Delaying ",
+    "Recorded step",
+    "LLM usage for session",
+    "DataEngine",
+    "scrcpy",
+    "Compiling trace",
+    "Found ",
+    "Video created",
+    "Trace compiled",
+    "Traces located",
+    "Session ended:",
+    "Waiting for ",
+)
+ACTIVITY_INFO = (
+    "is already in foreground",
+    "attempting to launch",
+    "Launch attempt",
+    "not in foreground",
+    "Starting initial app launch",
+)
+ACTIVITY_MAX_ITEMS = 80
+
+
+def _activity(task: Task) -> list[dict]:
+    """Diễn biến thật của agent, đọc từ trace.
+
+    Có task agent chỉ quan sát rồi kết luận — không có thao tác chạm/vuốt nào —
+    nên tab "Các bước" trống trơn dù đã tốn thời gian và tiền. Danh sách này cho
+    tester thấy nó đã thực sự làm gì.
+    """
+    trace = _trace_text(task)
+    if not trace:
+        return []
+    items: list[dict] = []
+    for raw in trace.splitlines():
+        line = raw.strip()
+        if not line or any(skip in line for skip in ACTIVITY_SKIP):
+            continue
+        if turn := TURN_RE.search(line):
+            items.append({"kind": "turn", "label": f"Lượt {turn.group(2)}/{turn.group(3)}", "detail": ""})
+            continue
+        if tool := TOOL_RE.search(line):
+            name, args = tool.group(1), tool.group(2).rstrip(")")
+            items.append({
+                "kind": "tool",
+                "label": ACTION_LABELS.get(name, name),
+                "detail": _clean_target(args)[:200],
+            })
+            continue
+        if line.startswith("❌"):
+            items.append({"kind": "error", "label": line.lstrip("❌ ").strip()[:240], "detail": ""})
+            continue
+        if "FlashRunner failed:" in line:
+            items.append({
+                "kind": "error",
+                "label": line.split("FlashRunner failed:", 1)[1].strip()[:240],
+                "detail": "",
+            })
+            continue
+        if line.startswith("⚠"):
+            items.append({"kind": "warn", "label": line.lstrip("⚠ ").strip()[:240], "detail": ""})
+            continue
+        if any(marker in line for marker in ACTIVITY_INFO):
+            items.append({"kind": "info", "label": line.lstrip("ℹ ").strip()[:240], "detail": ""})
+    return items[-ACTIVITY_MAX_ITEMS:]
+
+
 def _read_log(task: Task) -> str:
     try:
         return Path(task.log_path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def parse_run_outcome(trace: str) -> dict | None:
+    """Đọc dòng ``Run outcome:`` mà exit settlement ghi vào trace.
+
+    Dòng này là **bằng chứng duy nhất** cho biết có bao nhiêu tiêu chí đã được
+    Checker chấm. Không có nó nghĩa là run không đi qua graph (profile ``flash``
+    dùng ``FlashRunner``) nên không tiêu chí nào được chấm cả.
+    """
+    match = re.search(
+        r"Run outcome: task_status=(\w+),\s*tests\(passed=(\d+),\s*failed=(\d+),"
+        r"\s*inconclusive=(\d+),\s*unchecked=(\d+)",
+        trace,
+    )
+    if not match:
+        return None
+    return {
+        "task_status": match.group(1),
+        "passed": int(match.group(2)),
+        "failed": int(match.group(3)),
+        "inconclusive": int(match.group(4)),
+        "unchecked": int(match.group(5)),
+    }
+
+
+def verified_verdict(outcome: dict | None) -> tuple[str, str, list[str]]:
+    """Kết luận cho một run mà agent **tự báo** đã hoàn thành.
+
+    Đây là chỗ dễ nói dối nhất trong cả hệ thống: agent gọi
+    ``report_task_status(status="completed")`` và trước đây console tin ngay,
+    nên một task không làm được gì vẫn hiện **ĐẠT**. Nay chỉ ĐẠT khi có tiêu chí
+    được Checker xác minh.
+
+    Trả ``(verdict, conclusion, issues)``.
+    """
+    if outcome is None:
+        return (
+            "unverified",
+            "CHƯA XÁC MINH – agent tự báo hoàn thành nhưng KHÔNG có tiêu chí nào "
+            "được kiểm chứng (profile flash không có Checker).",
+            [
+                "Không có bằng chứng xác minh: chỉ có lời tự báo của agent.",
+                "Muốn có kết luận thật, chạy lại bằng profile pro để Planner khai "
+                "tiêu chí và Checker chấm chúng.",
+            ],
+        )
+    if outcome["failed"]:
+        return (
+            "fail",
+            f"KHÔNG ĐẠT – {outcome['failed']} tiêu chí đã kiểm chứng và THẤT BẠI.",
+            [f"{outcome['failed']} tiêu chí thất bại theo Checker."],
+        )
+    if outcome["inconclusive"]:
+        return (
+            "unverified",
+            f"CHƯA XÁC MINH – Checker không kết luận được ({outcome['inconclusive']} "
+            "tiêu chí chưa rõ; thường do hết ngân sách LLM hoặc thiếu bằng chứng).",
+            [f"{outcome['inconclusive']} tiêu chí chưa có kết luận."],
+        )
+    if outcome["passed"]:
+        return (
+            "pass",
+            f"ĐẠT – {outcome['passed']} tiêu chí đã được Checker xác minh.",
+            [],
+        )
+    return (
+        "unverified",
+        "CHƯA XÁC MINH – task không khai tiêu chí nào nên không có gì để chấm.",
+        ["Task không có tiêu chí kiểm chứng (check line)."],
+    )
 
 
 def _task_summary(task: Task) -> dict:
@@ -845,8 +1314,10 @@ def _task_summary(task: Task) -> dict:
         issues.append(reason)
         conclusion = f"ĐÃ DỪNG – {reason}"
     elif task.status == "success" and not failed_match:
-        verdict = "pass"
-        conclusion = "ĐẠT – Agent báo đã hoàn thành mục tiêu."
+        # Agent tự báo hoàn thành. KHÔNG tin ngay: phải có tiêu chí được Checker
+        # chấm thì mới gọi là ĐẠT, nếu không là CHƯA XÁC MINH.
+        verdict, conclusion, verified_issues = verified_verdict(parse_run_outcome(trace))
+        issues.extend(verified_issues)
     elif task.status == "running":
         # Chưa chốt xong (worker vừa thoát hoặc task còn chạy): không được
         # kết luận KHÔNG ĐẠT khi chưa có bằng chứng thất bại.
@@ -906,35 +1377,153 @@ class RunRequest(BaseModel):
     serial: str = ""
     test_name: str = ""
     max_seconds: int = Field(default=300, ge=60, le=3600)
+    #: Prompt hoàn chỉnh tester đã xem và sửa trong tab Knowledge. Có thì dùng nó
+    #: thay cho ``goal``, và báo ARTEMIS đừng ghép kiến thức lần nữa.
+    prompt_override: str = Field(default="", max_length=12000)
 
 
 app = FastAPI(title="Mobile Test Console", docs_url=None, redoc_url=None)
+
+
+def edge_route(method: str, path: str, **kwargs):
+    """Endpoint điều khiển thiết bị — chỉ tồn tại trên máy cắm điện thoại."""
+
+    def decorator(func):
+        return getattr(app, method)(path, **kwargs)(func) if SERVES_DEVICE else func
+
+    return decorator
+
+
+def shared_route(method: str, path: str, **kwargs):
+    """Endpoint dùng chung (AI proxy, API RAG) — không có trên máy tester."""
+
+    def decorator(func):
+        return getattr(app, method)(path, **kwargs)(func) if SERVES_SHARED else func
+
+    return decorator
+
+
+# Knowledge base (Workflow RAG). Mounted only where the operator manages it (the dev
+# machine), never on the shared `server` role: /api/kb/* lets a caller edit and delete
+# workflows and carries no access key of its own.
+if SERVES_KB_ADMIN:
+    try:
+        from artemis.knowledge.api import router as knowledge_router
+
+        app.include_router(knowledge_router)
+    except Exception as exc:  # noqa: BLE001 - the KB is optional
+        print(f"⚠ Không nạp được API knowledge base: {exc}")
 runner = Runner()
 budget = Budget()
 
 
-@app.get("/")
+@edge_route("get", "/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+#: Trang trạng thái của vai trò ``server``. Không dùng chung giao diện console vì
+#: giao diện đó gắn chặt với việc điều khiển điện thoại (danh sách thiết bị, màn
+#: hình trực tiếp, chạy task) — trên VPS mọi mục đều sẽ hỏng.
+_SERVER_PAGE = """<!doctype html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ARTEMIS — máy chủ RAG + AI proxy</title>
+<style>
+ body{{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      margin:0;padding:40px 20px;background:#f7f9fd;color:#1b2333}}
+ .box{{max-width:640px;margin:0 auto;background:#fff;border:1px solid #e3e8f0;
+      border-radius:14px;padding:26px 30px}}
+ h1{{margin:0 0 4px;font-size:19px}} .sub{{color:#6b7688;margin:0 0 22px}}
+ table{{border-collapse:collapse;width:100%}} td{{padding:7px 0;vertical-align:top;
+      border-bottom:1px solid #eef1f6}} td:first-child{{width:190px;color:#6b7688}}
+ code{{background:#f2f5fa;padding:2px 6px;border-radius:5px;font-size:13px}}
+ .ok{{color:#1a7f4b;font-weight:600}} .warn{{color:#a15c00;font-weight:600}}
+</style></head><body><div class="box">
+<h1>ARTEMIS — máy chủ dùng chung</h1>
+<p class="sub">Máy này chỉ phục vụ AI proxy và API RAG. Không điều khiển thiết bị.</p>
+<table>
+ <tr><td>Vai trò</td><td><code>server</code></td></tr>
+ <tr><td>AI proxy</td><td><code>POST /llm/v1/chat/completions</code><br>
+   <span class="sub">Cần <code>Authorization: Bearer &lt;khoá truy cập&gt;</code></span></td></tr>
+ <tr><td>API RAG</td><td><code>POST /api/knowledge/context</code><br>
+   <span class="sub">Gửi prompt gốc, nhận prompt hoàn chỉnh. Cũng cần khoá truy cập.</span></td></tr>
+ <tr><td>Sức khoẻ</td><td><code>GET /api/health</code></td></tr>
+ <tr><td>Knowledge base</td><td>{kb}</td></tr>
+ <tr><td>Khoá truy cập</td><td>{access}</td></tr>
+</table>
+<p class="sub" style="margin-top:20px">Giao diện điều khiển thiết bị nằm trên máy
+cắm điện thoại (<code>CONSOLE_ROLE=edge</code> hoặc <code>all</code>).</p>
+</div></body></html>
+"""
+
+
+if not SERVES_DEVICE:
+
+    @app.get("/")
+    def server_status() -> HTMLResponse:
+        """Trang trạng thái thay cho giao diện điều khiển."""
+        kb = "<span class='warn'>chưa cấu hình</span>"
+        try:
+            from artemis.knowledge.service import get_service
+
+            service = get_service()
+            if service.available:
+                count = len(service._store.list_workflows())
+                kb = f"<span class='ok'>sẵn sàng</span> · {count} workflow"
+            else:
+                kb = f"<span class='warn'>suy giảm</span> · {service.degraded_reason}"
+        except Exception as exc:  # noqa: BLE001 - trang trạng thái không được vỡ
+            kb = f"<span class='warn'>lỗi</span> · {str(exc)[:120]}"
+        access = (
+            "<span class='ok'>bắt buộc</span>"
+            if not is_local_llm()
+            else "<span class='warn'>đang tắt (LOCAL_LLM)</span>"
+        )
+        return HTMLResponse(_SERVER_PAGE.format(kb=kb, access=access))
+
+
 @app.get("/api/health")
 def health() -> dict:
+    """Sức khoẻ tiến trình. Nội dung phụ thuộc vai trò.
+
+    Vai trò ``server`` không trả đường dẫn adb/ARTEMIS hay danh sách thiết bị: máy
+    chủ dùng chung không nên mô tả hệ thống tập tin của mình cho người gọi qua
+    Internet, và nó cũng không có thiết bị nào để liệt kê.
+    """
+    base = {
+        "role": CONSOLE_ROLE,
+        "llm": llm_summary(),
+        # Client phải gửi đúng khoá này (Authorization: Bearer) mới gọi được
+        # /llm/v1. Không trả về khoá, chỉ trả về việc có bắt buộc hay không.
+        "access": {
+            "required": not is_local_llm(),
+            "key_hint": f"…{access_key()[-4:]}" if len(access_key()) > 4 else "",
+        },
+    }
+    if not SERVES_DEVICE:
+        return base
     return {
+        **base,
         "artemis_ok": artemis_launcher() is not None,
         "adb_path": adb_path(),
         "artemis_dir": str(ARTEMIS_DIR),
         "devices": list_devices(),
-        "llm": llm_summary(),
     }
 
 
-@app.get("/api/devices")
+@edge_route("get", "/api/devices")
 def devices() -> list[dict]:
     return list_devices()
 
 
-@app.get("/api/screenshot")
+@edge_route("get", "/api/packages")
+def packages(serial: str = Query(default="")) -> dict:
+    """App đã cài trên thiết bị, cho ô Package chọn thay vì gõ tay."""
+    return {"serial": serial, "packages": installed_packages(serial)}
+
+
+@edge_route("get", "/api/screenshot")
 def screenshot(serial: str = Query(default="")) -> Response:
     if not serial:
         ready = [d for d in list_devices() if d["state"] == "device"]
@@ -958,19 +1547,19 @@ def screenshot(serial: str = Query(default="")) -> Response:
     )
 
 
-@app.get("/api/status")
+@edge_route("get", "/api/status")
 def status(since: int = 0) -> dict:
     data = runner.status(since)
     data["budget"] = budget.snapshot()
     return data
 
 
-@app.get("/api/tasks")
+@edge_route("get", "/api/tasks")
 def tasks(limit: int = 30) -> list[dict]:
     return runner.history(limit)
 
 
-@app.get("/api/tasks/{task_id}/log")
+@edge_route("get", "/api/tasks/{task_id}/log")
 def task_log(task_id: str) -> FileResponse:
     path = runner.task_log(task_id)
     if not path:
@@ -978,15 +1567,19 @@ def task_log(task_id: str) -> FileResponse:
     return FileResponse(path, media_type="text/plain; charset=utf-8")
 
 
-@app.get("/api/tasks/{task_id}/steps")
+@edge_route("get", "/api/tasks/{task_id}/steps")
 def task_steps(task_id: str) -> dict:
     task = runner.get_task(task_id)
     if not task:
         raise HTTPException(404, "Không tìm thấy task.")
-    return {"session_id": _resolve_session(task), "steps": _fetch_steps(task)}
+    return {
+        "session_id": _resolve_session(task),
+        "steps": _fetch_steps(task),
+        "activity": _activity(task),
+    }
 
 
-@app.get("/api/tasks/{task_id}/summary")
+@edge_route("get", "/api/tasks/{task_id}/summary")
 def task_summary(task_id: str) -> dict:
     task = runner.get_task(task_id)
     if not task:
@@ -994,7 +1587,7 @@ def task_summary(task_id: str) -> dict:
     return _task_summary(task)
 
 
-@app.get("/api/tasks/{task_id}/final.png")
+@edge_route("get", "/api/tasks/{task_id}/final.png")
 def task_final_image(task_id: str) -> FileResponse:
     path = LOG_DIR / f"{task_id}_final.png"
     if not path.exists():
@@ -1002,7 +1595,7 @@ def task_final_image(task_id: str) -> FileResponse:
     return FileResponse(path, media_type="image/png")
 
 
-@app.get("/api/tasks/{task_id}/image/{image_name}")
+@edge_route("get", "/api/tasks/{task_id}/image/{image_name}")
 def task_image(task_id: str, image_name: str) -> Response:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", image_name):
         raise HTTPException(400, "Tên ảnh không hợp lệ.")
@@ -1019,18 +1612,92 @@ def task_image(task_id: str, image_name: str) -> Response:
                     headers={"Cache-Control": "public, max-age=3600"})
 
 
-@app.post("/api/run")
+@edge_route("post", "/api/run")
 def run(req: RunRequest) -> dict:
+    package = req.package.strip() or DEFAULT_PACKAGE
+    installed = installed_packages(req.serial.strip())
+    if installed and package not in installed:
+        # Chạy với package không tồn tại: ARTEMIS thử 3 lần × 15s rồi mới bỏ cuộc,
+        # tester chỉ thấy task treo mà app không hề mở. Chặn ngay tại đây.
+        hints = suggest_packages(package, installed)
+        message = f"App “{package}” chưa cài trên thiết bị."
+        if hints:
+            message += " Có phải bạn muốn: " + ", ".join(hints) + "?"
+        else:
+            message += " Chọn app ở ô Package (bấm ↻ Thiết bị để tải lại danh sách)."
+        raise HTTPException(400, message)
     try:
         task = runner.start(req)
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
-    return {"ok": True, "task": asdict(task)}
+    warnings = [w for w in (metro_warning(req.serial.strip()),) if w]
+    for warning in warnings:
+        runner.note(warning)
+    return {"ok": True, "task": asdict(task), "warnings": warnings}
 
 
-@app.post("/api/stop")
+@edge_route("post", "/api/stop")
 def stop() -> dict:
     return {"ok": True, "message": runner.stop()}
+
+
+class KnowledgeContextRequest(BaseModel):
+    goal: str = Field(default="", max_length=4000)
+    app_package: str | None = Field(default=None, max_length=200)
+    run_id: str | None = Field(default=None, max_length=80)
+
+
+@shared_route("post", "/api/knowledge/context")
+def knowledge_context(req: KnowledgeContextRequest, request: Request) -> dict:
+    """Prompt hoàn chỉnh cho một yêu cầu — máy tester gọi qua mạng.
+
+    Đây là điểm vào duy nhất của luồng mới: tester gửi **prompt gốc**, máy chủ
+    console gọi Google Embedding, tìm workflow tương tự trong PostgreSQL rồi ghép
+    thành prompt hoàn chỉnh và trả về. Máy tester không cần PostgreSQL, không cần
+    khoá embedding, không cần key LLM — chỉ cần ARTEMIS để chạy ADB.
+
+    Có kiểm tra khoá truy cập **khi console đang ở vai trò ``server``**: lúc đó nó
+    phục vụ qua LAN/VPS nên phải có khoá. Ở vai trò ``all``/``edge`` console là công
+    cụ tại chỗ, phần còn lại của ``/api/*`` cũng không có khoá, nên UI gọi được mà
+    không phải nhúng khoá vào trang.
+    """
+    if CONSOLE_ROLE == "server" and access_denied(request):
+        raise HTTPException(401, "Thiếu hoặc sai khoá truy cập.")
+
+    kb_block = ""
+    kb_meta: dict = {}
+    try:
+        from artemis.knowledge.integration import resolve_app_id
+        from artemis.knowledge.service import get_service
+
+        service = get_service()
+        if not service.available:
+            kb_meta = {"degraded": True, "reason": service.degraded_reason}
+        else:
+            app_id = resolve_app_id(req.app_package, service)
+            if app_id is None:
+                kb_meta = {"app_id": None, "found": False, "reason": "app chưa có trong KB"}
+            else:
+                result, kb_block = service.context_for(req.goal, app_id, run_id=req.run_id)
+                kb_meta = {
+                    "app_id": app_id,
+                    "found": result.found,
+                    "workflows": [hit.workflow.id for hit in result.hits],
+                    "trusted": [hit.workflow.id for hit in result.hits if hit.trusted],
+                }
+    except Exception as exc:  # noqa: BLE001 - KB hỏng thì trả prompt gốc, không làm gãy chạy
+        kb_meta = {"degraded": True, "reason": str(exc)[:200]}
+
+    # Chỉ ghép khi có bằng chứng từ vựng (``found``): khớp chỉ nhờ vector là "máy
+    # đoán", và máy đoán không được lái agent. Không ghép được gì thì trả lại đúng
+    # prompt gốc — tester vẫn chạy được, y như khi chưa có knowledge base.
+    prompt = "\n\n".join(part for part in (req.goal, kb_block if kb_meta.get("found") else "") if part)
+    return {
+        "prompt": prompt,
+        "found": bool(kb_meta.get("found")),
+        "kb_prompt": kb_block if kb_meta.get("found") else "",
+        "kb": kb_meta,
+    }
 
 
 def upstream_base() -> str:
@@ -1063,25 +1730,41 @@ def is_local_llm() -> bool:
         return False
 
 
-@app.get("/api/budget")
+@edge_route("get", "/api/budget")
 def budget_status() -> dict:
     return budget.snapshot()
 
 
-@app.post("/api/budget/reset")
+@edge_route("post", "/api/budget/reset")
 def budget_reset() -> dict:
     """Clear the current task's spend counters and its 429 block reason."""
     budget.reset()
     return {"ok": True, "budget": budget.snapshot()}
 
 
-@app.api_route("/llm/v1/{path:path}", methods=["GET", "POST", "OPTIONS"])
+@shared_route("api_route", "/llm/v1/{path:path}", methods=["GET", "POST", "OPTIONS"])
 async def llm_proxy(path: str, request: Request) -> Response:
     """OpenAI-compatible proxy that meters every Artemis LLM call."""
     if request.method == "OPTIONS":
         return Response(status_code=204)
-    raw = await request.body()
     local = is_local_llm()
+    if access_denied(request, local):
+        # Không trả về khoá trong thông báo lỗi: người gọi sai không được biết khoá.
+        return JSONResponse(
+            {
+                "error": {
+                    "message": (
+                        "Khoá truy cập API thiếu hoặc sai. Đặt "
+                        "OPENAI_API_KEY=<khoá truy cập> trong .env của máy chạy "
+                        "ARTEMIS (xin khoá từ quản trị dự án)."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "invalid_api_key",
+                }
+            },
+            status_code=401,
+        )
+    raw = await request.body()
     env_key = read_env_file(ARTEMIS_ENV).get("OPENAI_API_KEY", "")
     key = env_key or "ollama-local"
     if not local and not env_key:
@@ -1188,7 +1871,7 @@ async def llm_proxy(path: str, request: Request) -> Response:
     return Response(content=content, status_code=upstream.status_code, media_type=response_type)
 
 
-@app.post("/api/llm-test")
+@edge_route("post", "/api/llm-test")
 def llm_test() -> JSONResponse:
     """GET {OPENAI_BASE_URL}/models to verify the key and endpoint."""
     import urllib.error
