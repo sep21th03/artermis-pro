@@ -155,6 +155,124 @@ UI là một file HTML viết tay nên `tests/unit/test_console_kb_ui.py` kiểm
 mọi `$('id')` phải tồn tại, không id trùng, mọi đường dẫn `/api/kb/…` phải có route, và
 script phải parse được bằng `node --check`.
 
+## AI Prompt Preparation — `POST /api/knowledge/prepare`
+
+`retrieve()` cho agent biết **kiến thức**; bước chuẩn bị biến kiến thức đó thành
+**một prompt thực thi** mà tester đã xem và duyệt.
+
+```
+Prompt gốc
+   │
+   ├─ 1. Hiểu mục tiêu (1 lượt LLM)      tasks[] có điều kiện + final_goal
+   │        mỗi việc phải bám vào câu của tester; định danh phải được giữ
+   │
+   ├─ 2. Truy xuất theo TỪNG việc        KnowledgeService.retrieve() × số việc
+   │        (đúng service của RAG: RRF + trust policy + kb_retrieval_log)
+   │
+   ├─ 3. Phân loại vai trò               PRIMARY / SUPPORTING / IRRELEVANT
+   │        vai trò quyết định *nội dung nào được phép vào prompt*
+   │
+   ├─ 4. Tổng hợp (1 lượt LLM)           LLM viết lại thành 5 mục cố định
+   │
+   ├─ 5. Kiểm tra chất lượng             10 tiêu chí bằng máy
+   │
+   └─ 6. Dự phòng nếu trượt              prompt gốc + kiến thức dựng bằng luật
+                                          (cùng 5 mục) + status="fallback"
+   │
+   ▼  tester xem/sửa → Chạy              prompt_override + ARTEMIS_KB_PRESUPPLIED
+```
+
+Mã nguồn: `artemis/knowledge/intent.py` (hiểu mục tiêu + phân loại vai trò + dựng phần
+kiến thức) và `artemis/knowledge/prepare.py` (điều phối, cache, hạn mức, kiểm tra chất
+lượng) + endpoint trong `apps/test_console/server.py`.
+
+### Vì sao phải hiểu mục tiêu trước
+
+Lỗi đã gặp: `mở app và đăng nhập rồi chuyển sang nhà dled` được coi là **một** truy vấn,
+nên mọi workflow trùng từ đều vào prompt như nhau:
+
+| Workflow | Vì sao nó lọt vào | Hậu quả |
+| --- | --- | --- |
+| `home.switch_house_modal` | alias "chuyển nhà", "đổi nhà" | luật đóng modal bị viết thành **bước chuyển nhà** ("nhấn Huỷ") |
+| `auth.switch_account` | alias "đăng nhập tài khoản" | mặc định là tài khoản **đã lưu sẵn** |
+| `auth.logout` | alias "đăng nhập tài khoản khác" | đăng xuất xuất hiện dù tester không yêu cầu |
+
+Không có lỗi nào ở tầng RRF: mọi hit đều chia sẻ từ ngữ với câu. Thiếu bước **hiểu câu là
+ba việc có điều kiện** và thiếu khái niệm **workflow liên quan nhưng không phải mục tiêu**.
+
+### Vai trò quyết định nội dung (chốt chặn cơ học)
+
+| Vai trò | Cách xác định | Được vào prompt phần nào |
+| --- | --- | --- |
+| **PRIMARY** | tên workflow phủ hành động của việc (≥ `NAME_COVERAGE_FLOOR`) **và** hit có bằng chứng từ vựng (`trusted`) | mục `KIẾN THỨC ỨNG DỤNG`: mô tả, điều kiện phải kiểm tra, cảnh báo, tiêu chí |
+| **SUPPORTING** | workflow luật/modal (tag `rule`/`modal`), hoặc chỉ mô tả/alias phủ hành động | mục `BỐI CẢNH / CẢNH BÁO`: **chỉ tên + mô tả một dòng** |
+| **IRRELEVANT** | không phủ hành động nào | không vào prompt; báo trong `excluded_workflows` |
+
+Vì tiêu chí và các bước của workflow SUPPORTING **không bao giờ** được gửi cho LLM, một
+luật không thể trở thành việc phải làm — kể cả khi LLM muốn. Thêm một chốt thứ hai ở tầng
+kiểm tra: nhãn UI trong ngoặc kép của workflow phụ (ví dụ `'Huỷ'`) không được xuất hiện
+trong hai mục chỉ dẫn, nếu không thì bản LLM bị từ chối và dự phòng được dùng.
+
+### Năm mục của phần kiến thức
+
+```
+KẾ HOẠCH:                 các việc theo thứ tự, kèm điều kiện thực hiện
+KIẾN THỨC ỨNG DỤNG:       cách làm của workflow THỰC HIỆN (không có bước cứng)
+BỐI CẢNH / CẢNH BÁO:      luật/modal — nêu rõ KHÔNG phải mục tiêu, không phải bước
+KB CHƯA CÓ HƯỚNG DẪN:     việc KB không có workflow: tự khám phá UI, không tự suy diễn
+TIÊU CHÍ XÁC MINH:        mục tiêu cuối + tiêu chí của workflow THỰC HIỆN
+```
+
+Khi hết hạn mức ký tự, thứ tự bị cắt là: bối cảnh → kiến thức chi tiết. Kế hoạch, khoảng
+trống và tiêu chí luôn ở lại — mất chúng nguy hiểm hơn mất một dòng mô tả.
+
+### Trạng thái trả về
+
+| `status` | Nghĩa | LLM có được gọi? | `ready` |
+| --- | --- | --- | --- |
+| `llm` | Tổng hợp thành công, qua đủ 10 kiểm tra | có (2 lượt) | `true` |
+| `fallback` | LLM lỗi / quá hạn / không đạt kiểm tra ⇒ bản dựng bằng luật | có (nếu lỗi từ LLM) | `true` |
+| `no_knowledge` | KB không có workflow nào phục vụ các việc ⇒ giữ nguyên prompt gốc | **không** | `false` |
+| `degraded` | Không truy cập được KB ⇒ giữ nguyên prompt gốc | **không** | `false` |
+
+`ready` nghĩa là *bản trả về đã được kiểm tra chất lượng và dùng được ngay*; `false` chỉ
+nói rằng hệ thống không thêm gì được, không phải prompt gốc hỏng — tester vẫn đọc, sửa và
+chạy bình thường.
+
+Hai dòng cuối là lý do không có lượt gọi LLM nào khi KB không có gì để nói: tổng hợp một
+khoảng trống vừa tốn tiền vừa mời model bịa. `knowledge_gaps` vẫn được trả về trong hai
+trường hợp đó, nên tester thấy ngay *việc nào* thiếu kiến thức.
+
+### Kiểm tra chất lượng (10 tiêu chí)
+
+`original_preserved`, `identifiers_preserved`, `no_invented_data`, `no_hard_ui`,
+`knowledge_grounded`, `sections_ok`, `tasks_kept` (soi **phần chỉ dẫn**, vì prompt gốc luôn
+chứa đủ từ của mọi việc), `primary_knowledge_kept`, `supporting_not_a_step`, `size_ok`.
+Trượt một tiêu chí ⇒ không dùng bản LLM, và lý do được ghi vào `fallback_reason`.
+
+### Cache, hạn mức, đo đạc
+
+* **Cache tra trước cả lượt phân tích mục tiêu.** Khoá là `(câu hỏi, app, profile)`; tính
+  đúng đắn nằm ở chỗ fingerprint của các workflow đã dùng được **tính lại từ database** khi
+  tra cứu (vài lượt đọc theo khoá chính, không embedding, không LLM). Sửa hoặc xoá một
+  workflow trong số đó là cache tự vô hiệu.
+* **Không cache bản fallback** — một lần LLM hỏng thoáng qua không được ghim tester vào bản
+  suy giảm suốt TTL.
+* **Rate limit** theo khoá truy cập (hoặc IP ở máy dev), mặc định 30 lần/phút, trả `429`
+  kèm `Retry-After`. Chi phí của bước chuẩn bị vào hạn mức **ngày** của console
+  (`Budget.record_prepare`), không vào hạn mức của task.
+* **`metrics`** trả về `intent_ms`, `retrieval_ms`, `synthesis_ms`, `total_ms`, `llm_calls`,
+  `usage` (token), `queries`, `plan_source`, `primary/supporting/excluded/gaps` — đủ để biết
+  chi phí và độ trễ của từng giai đoạn.
+
+### Phân công
+
+RAG cung cấp kiến thức. LLM hiểu mục tiêu và tổng hợp. Tester duyệt. Agent thao tác và xác
+minh trên UI thực tế — và **không** truy xuất KB lần thứ hai: console đặt
+`ARTEMIS_KB_PRESUPPLIED=1` khi chạy prompt đã duyệt, và `retrieve_for_run()` trả về ngay
+"không có kiến thức" để khối đó không vào prompt hai lần.
+
+
 ## Chưa làm (Phase 4)
 
 * **Học workflow từ phiên chạy thành công**: thu thập action history của một run ĐẠT, tổng

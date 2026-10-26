@@ -30,6 +30,16 @@ _WHITESPACE = re.compile(r"\s+")
 _PUNCT = re.compile(r"[^\w\s.]", re.UNICODE)
 
 
+def nfc(text: str) -> str:
+    """Unicode NFC — the normal form every piece of system-generated text uses.
+
+    Vietnamese renders the same word in two byte-different ways (composed vs
+    combining marks).  Mixing them inside one prompt makes every exact comparison
+    unreliable, so all generated text goes through here.
+    """
+    return unicodedata.normalize("NFC", text or "")
+
+
 def strip_diacritics(text: str) -> str:
     """Drop combining marks, and the stroke on đ/Đ which is not a combining mark."""
     decomposed = unicodedata.normalize("NFD", text)
@@ -188,3 +198,25 @@ def coverage(query_tokens: list[str], document: str) -> float:
         if re.search(rf"(?<![0-9a-z]){re.escape(token)}(?![0-9a-z])", document):
             found += 1
     return found / len(query_tokens)
+
+
+#: Định danh của tester phải sống sót nguyên vẹn qua mọi bước sinh văn bản: số điện
+#: thoại, email, mã thiết bị, URL.  Một LLM "chuẩn hoá" chúng là hành vi phá hoại
+#: im lặng — test sẽ chạy trên một tài khoản khác.
+_IDENTITY_PATTERNS = (
+    re.compile(r"(?<!\w)(?:\+?\d[\d\s.\-]{7,}\d)(?!\w)"),
+    re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+"),
+    re.compile(r"\b[A-Z0-9]{2,}(?:[-_][A-Z0-9]+)+\b"),
+    re.compile(r"https?://\S+"),
+)
+
+
+def identity_tokens(text: str) -> list[str]:
+    """Định danh trong ``text`` — thứ không được phép đổi ở bất kỳ bước nào."""
+    out: list[str] = []
+    for pattern in _IDENTITY_PATTERNS:
+        for match in pattern.findall(text or ""):
+            token = match.strip()
+            if token and token not in out:
+                out.append(token)
+    return out

@@ -1,5 +1,119 @@
 # Changelog — ARTEMIS Pro
 
+## [Unreleased]
+
+### Changed
+
+- **Bước chuẩn bị prompt nay *hiểu mục tiêu* trước khi truy xuất.** Trước đây cả câu của
+  tester là **một** truy vấn, rồi top-K workflow được nối vào prompt như nhau. Với
+  `mở app và đăng nhập rồi chuyển sang nhà dled` điều đó cho ra: modal 'Chuyển nhà' bị
+  viết thành **bước chuyển nhà** ("nhấn Huỷ"), `auth.switch_account` bị coi là cách đăng
+  nhập mặc định, và `auth.logout` lọt vào vì một alias đọc là "đăng nhập tài khoản khác" —
+  trong khi việc chuyển nhà thật ra **không có workflow nào trong KB**.
+
+  Pipeline mới: **hiểu mục tiêu (LLM) → truy xuất theo TỪNG việc → phân loại vai trò
+  workflow → tổng hợp (LLM) → 10 kiểm tra chất lượng → dự phòng dựng bằng luật**.
+
+  - `artemis/knowledge/intent.py` **(mới)** — tách câu thành các việc có điều kiện
+    (`action`/`target`/`condition` + `final_goal`). Mỗi việc phải bám vào chính câu của
+    tester (độ phủ token ≥ 0.6) nên không thể tự thêm "đăng xuất"; định danh (tên nhà, số
+    điện thoại) phải được giữ nguyên, nếu không thì lùi về kế hoạch một việc.
+  - **Truy xuất theo từng việc** qua đúng `KnowledgeService.retrieve()` của RAG — mỗi việc
+    một dòng `kb_retrieval_log`.
+  - **Vai trò quyết định nội dung**: PRIMARY (tên workflow phủ hành động **và** hit có
+    bằng chứng từ vựng) vào mục kiến thức; SUPPORTING (luật/modal, hoặc chỉ trùng từ) chỉ
+    còn **một dòng bối cảnh** — tiêu chí và bước của nó không bao giờ được gửi cho LLM, nên
+    một luật không thể trở thành việc phải làm; IRRELEVANT bị loại và báo trong
+    `excluded_workflows`.
+  - **Khoảng trống được báo ra**: việc không có workflow THỰC HIỆN ⇒ `knowledge_gaps` +
+    mục `KB CHƯA CÓ HƯỚNG DẪN` (tự khám phá UI, không tự suy diễn quy trình) thay vì để
+    LLM bịa một quy trình.
+  - **Enhanced Prompt có cấu trúc 5 mục**: `KẾ HOẠCH` / `KIẾN THỨC ỨNG DỤNG` /
+    `BỐI CẢNH / CẢNH BÁO` / `KB CHƯA CÓ HƯỚNG DẪN` / `TIÊU CHÍ XÁC MINH`. Hết hạn mức thì
+    cắt bối cảnh và kiến thức chi tiết trước; kế hoạch, khoảng trống và tiêu chí luôn ở lại.
+  - **Kiểm tra chất lượng từ 9 lên 10 tiêu chí**, thêm `sections_ok`, `tasks_kept` (soi
+    *phần chỉ dẫn*, vì prompt gốc luôn chứa đủ từ của mọi việc), `supporting_not_a_step`
+    (nhãn UI trong ngoặc kép của workflow phụ — ví dụ `'Huỷ'` — không được xuất hiện trong
+    phần chỉ dẫn); `preconditions_kept`/`success_criteria_kept`/`warnings_kept` gộp thành
+    `primary_knowledge_kept` và chỉ áp cho workflow THỰC HIỆN.
+  - **Cache tra trước cả lượt phân tích mục tiêu**: khoá `(câu hỏi, app, profile)`, xác
+    nhận lại bằng fingerprint của các workflow đã dùng **tính từ database** khi tra cứu —
+    lần lặp lại không tốn embedding, không tốn LLM.
+  - **`metrics` theo từng giai đoạn**: `intent_ms`, `retrieval_ms`, `synthesis_ms`,
+    `total_ms`, `llm_calls`, `usage`, `queries`, `plan_source`, số primary/supporting/
+    excluded/gaps.
+  - Hợp đồng trả về thêm `tasks`, `plan`, `excluded_workflows`, `knowledge_gaps`,
+    `warnings`, `metrics`, `ready`; `matched_workflows` mỗi dòng có `role`, `role_reason`,
+    `evidence`. Web UI hiển thị các thông tin này ngay dưới ô prompt.
+  - Cấu hình mới: `ARTEMIS_PREPARE_INTENT_ENABLED`, `ARTEMIS_PREPARE_MAX_TASKS`,
+    `ARTEMIS_PREPARE_INTENT_MAX_TOKENS`, `ARTEMIS_PREPARE_INTENT_TIMEOUT`,
+    `ARTEMIS_PREPARE_NAME_COVERAGE_FLOOR`, `ARTEMIS_PREPARE_INTENT_COVERAGE_FLOOR`,
+    `ARTEMIS_PREPARE_CONFLICT_FLOOR`.
+  - Test: `tests/unit/test_knowledge_intent.py` (27 ca), `tests/unit/test_prepare_cases.py`
+    (34 ca — đúng sáu ca bắt buộc), `tests/unit/test_knowledge_prepare.py` (39 ca cơ chế),
+    `tests/unit/test_console_prepare_api.py` (36 ca), `tests/unit/test_console_prepare_ui.py`
+    (20 ca), `tests/integration/test_prepare_pipeline.py` (9 ca). Không hardcode từ khoá
+    theo miền nghiệp vụ: từ vựng duy nhất mà hệ thống biết là *schema của KB* (một workflow
+    gắn tag `rule`/`modal` là luật) và chính câu của tester.
+
+### Added
+
+- **AI Prompt Preparation — bước chuẩn bị prompt tập trung trên máy chủ.** Trước đây
+  console nối **nguyên khối workflow** vào prompt của tester: prompt dài, đầy hướng dẫn
+  UI cứng, và agent đọc một kịch bản thay vì một mục tiêu. Nay có
+  `POST /api/knowledge/prepare` (`CONSOLE_ROLE=server` và `all`, **không** đăng ký ở
+  `edge`): nhận prompt gốc + `app_id`/`app_package` + `profile`, truy xuất workflow qua
+  **đúng** `KnowledgeService.retrieve` của RAG (một lần, có ghi `kb_retrieval_log`), gọi
+  LLM **qua chính AI proxy hiện có** để tổng hợp thành một Enhanced Prompt ngắn, rồi trả
+  về `original_prompt` / `enhanced_prompt` / `matched_workflows` / `source` / `status`.
+  Không tạo RAG thứ hai, không đổi kiến trúc server–edge.
+
+  Bất biến được cưỡng chế bằng máy, không bằng lời hứa: Enhanced Prompt **luôn** bắt đầu
+  bằng prompt gốc nguyên văn (LLM chỉ viết phần kiến thức phía sau), 9 kiểm tra chất
+  lượng chạy trên bản LLM — `original_preserved`, `identifiers_preserved`,
+  `no_invented_data`, `no_hard_ui`, `knowledge_grounded`, `preconditions_kept`,
+  `success_criteria_kept`, `warnings_kept`, `size_ok`. Trượt một kiểm tra ⇒ **fallback**:
+  prompt gốc + kiến thức rút gọn bằng logic xác định (`condense_knowledge`), kèm
+  `status="fallback"` và lý do cụ thể để tester biết. Không có workflow nào phù hợp thì
+  **không gọi LLM** (`status="no_knowledge"`).
+
+  Không sao chép workflow (bước không bao giờ vào prompt; chỉ mô tả, điều kiện trước,
+  cảnh báo, tiêu chí hoàn thành) và không toạ độ (`sanitize_ui_instructions` xoá bounds
+  `[x,y,x,y]`, cặp `(x, y)`, `px/dp`, chữ "toạ độ"). Có timeout, cache **theo phiên bản
+  KB** (sửa workflow là tự vô hiệu; không cache bản fallback), trần token/ký tự, xác thực
+  bằng `CONSOLE_ACCESS_KEY` ở vai trò `server`, và rate limit trả `429` kèm `Retry-After`.
+
+- **Web UI: nút ⚡ Chuẩn bị prompt trong Mobile Test Console.** Tester nhập prompt → bấm
+  *Chuẩn bị* → thấy Enhanced Prompt trong ô sửa được kèm một dòng trạng thái (LLM hay
+  fallback, workflow nào, `app_id`, phiên bản KB, cache, kiểm tra nào trượt, lý do) →
+  *✔ Dùng bản này* → *Chạy*. Ở vai trò `edge` (không có route) nút bấm báo đúng địa chỉ
+  máy chủ, lấy từ trường `kb_api` mới của `GET /api/health`.
+
+- **Flash và Pro chạy đúng prompt đã duyệt, không truy xuất lần thứ hai.**
+  `prompt_override` đi thẳng vào CLI và console đặt `ARTEMIS_KB_PRESUPPLIED=1`, nên
+  `retrieve_for_run()` trả về ngay "không có kiến thức" thay vì chèn khối đó lần nữa —
+  đúng cho cả `--profile flash` (vốn không có Planner) và `--profile pro`.
+
+- `ARTEMIS_PREPARE_*` trong `.env` (bật/tắt, trần kiến thức, trần prompt, `max_tokens`,
+  timeout, ngưỡng độ phủ, TTL/kích thước cache, rate limit, `top_k`). Chi phí lượt tổng
+  hợp vào **hạn mức ngày** (`Budget.record_prepare`), không vào hạn mức của task.
+
+### Fixed
+
+- **Tên model trong `config/artemis.jsonc` được nội suy trước khi gọi LLM.** Trên VPS
+  model là `${env:GEMINI35FLASHLITE_DEFAULT:-ts/gemini-3.5-flash-lite}`; hàm đọc config
+  của console là regex nên trả về chuỗi **thô**, và gửi nguyên chuỗi đó làm tên model thì
+  gateway trả 404 — trông như AI proxy hỏng. `resolve_model_name()` dùng đúng
+  `artemis.config.core.interpolator` của ARTEMIS, nên bước chuẩn bị gọi đúng
+  `ts/gemini-3.5-flash-lite`.
+
+- Test: `tests/unit/test_knowledge_prepare.py` (44 ca), `tests/unit/test_console_prepare_api.py`
+  (34 ca, gồm vai trò server/edge/all, xác thực, 429, fallback, cache, và lệnh CLI thật của
+  Flash/Pro), `tests/unit/test_console_prepare_ui.py` (kiểm tra tĩnh giao diện),
+  `tests/integration/test_prepare_pipeline.py` (luồng chuẩn bị → duyệt → sửa → chạy với
+  truy xuất thật, store trong bộ nhớ).
+
+
 ## [0.4.9] — 2026-10-26
 
 ### Fixed

@@ -28,6 +28,9 @@ nên dùng được cho bất kỳ app nào bạn nhập ở ô **Package**.
 - **Knowledge — Workflow RAG**: tester nhập prompt, console gọi Google Embedding, tìm workflow
   gần nhất trong PostgreSQL rồi trả về **prompt hoàn chỉnh** (prompt gốc + hướng dẫn từng bước).
   Chỉ máy chạy console cần database và khoá embedding; máy tester chỉ cần ARTEMIS và điện thoại.
+- **Chuẩn bị prompt bằng AI** (`⚡ Chuẩn bị prompt`): RAG cung cấp kiến thức, LLM tổng hợp thành
+  **một prompt thực thi ngắn** (không bước, không toạ độ), tester duyệt/sửa rồi mới chạy. Xem
+  *Chuẩn bị prompt bằng AI* bên dưới.
 
 
 ## Chạy
@@ -157,6 +160,7 @@ Console làm hai việc rất khác nhau, và trộn chúng lên Internet là l�
 | --- | --- | --- |
 | AI proxy `/llm/v1` | ✅ | — |
 | API RAG `/api/knowledge/context` | ✅ | — |
+| API chuẩn bị prompt `/api/knowledge/prepare` | ✅ | — |
 | Quản trị KB `/api/kb/*` | — | ✅ |
 | Điều khiển thiết bị, `/api/run`, `/api/stop` | **không đăng ký** | ✅ |
 | Giao diện | trang trạng thái | giao diện đầy đủ |
@@ -408,6 +412,12 @@ curl -s http://127.0.0.1:8787/api/health | python3 -c 'import json,sys; print(js
 
 ```
 Tester nhập prompt gốc
+   ↓  POST /api/knowledge/prepare  (khuyến nghị — có LLM tổng hợp, tester duyệt)
+Máy chủ: RAG lấy kiến thức → LLM tổng hợp thành Enhanced Prompt ngắn
+   ↓  tester xem/sửa trong UI → ✔ Dùng bản này
+Tester chạy agent (ADB) với prompt đã duyệt
+   ↓  (hoặc, luồng cũ, không qua LLM)
+Tester nhập prompt gốc
    ↓  POST /api/knowledge/context   (prompt gốc)
 Console: gọi Google Embedding → tìm workflow gần nhất trong PostgreSQL
    ↓  ghép prompt gốc + hướng dẫn của workflow
@@ -416,11 +426,78 @@ Prompt hoàn chỉnh trả về cho tester
 Tester chạy agent (ADB) với prompt hoàn chỉnh đó
 ```
 
-Console **không sửa prompt của tester** — nó chỉ nối thêm khối hướng dẫn vào cuối. Không tìm
-được workflow nào thì trả lại **đúng prompt gốc**, và tester vẫn chạy được bình thường.
+Cả hai đường đều **không sửa prompt của tester**: prompt gốc luôn nằm nguyên vẹn ở
+đầu, phần thêm vào là hướng dẫn/kiến thức ở sau. Không tìm được workflow nào thì trả
+lại **đúng prompt gốc**, và tester vẫn chạy được bình thường.
 
 Đây là lý do chỉ **một máy** cần PostgreSQL và khoá embedding: máy đó gọi Google Embedding và
 đọc database, còn máy tester chỉ gửi prompt đi rồi nhận prompt về.
+
+## Chuẩn bị prompt bằng AI (nút ⚡ Chuẩn bị prompt)
+
+Đây là bước **bắt buộc trước khi chạy** nếu app có workflow trong KB. Thay vì nối
+nguyên khối workflow vào prompt (dài, đầy hướng dẫn UI cứng), máy chủ **hiểu mục
+tiêu** rồi tổng hợp kiến thức liên quan thành **một prompt thực thi ngắn**, và tester
+duyệt trước khi chạy.
+
+```
+Tester nhập prompt gốc
+   ↓  POST /api/knowledge/prepare  {prompt, app_package, profile}
+Máy chủ: hiểu mục tiêu → truy xuất theo TỪNG việc → phân loại vai trò workflow
+   ↓  LLM (qua chính AI proxy này) tổng hợp thành Enhanced Prompt 5 mục
+   ↓  10 kiểm tra chất lượng bằng máy
+Tester xem/sửa trong ô "prompt agent sẽ nhận"  →  ✔ Dùng bản này  →  Chạy
+   ↓  ARTEMIS nhận đúng bản đã duyệt (prompt_override + ARTEMIS_KB_PRESUPPLIED=1)
+```
+
+Ví dụ, `mở app và đăng nhập rồi chuyển sang nhà dled` cho ra:
+
+```
+KẾ HOẠCH:
+1. mở app — chỉ khi app chưa mở — kiến thức: KB chưa có hướng dẫn
+2. đăng nhập — chỉ khi chưa đăng nhập — kiến thức: auth.switch_account
+3. chuyển nhà dled — kiến thức: KB chưa có hướng dẫn
+KIẾN THỨC ỨNG DỤNG: … điều kiện phải kiểm tra trên UI (không được mặc định là đúng) …
+BỐI CẢNH / CẢNH BÁO: chỉ là bối cảnh — KHÔNG phải mục tiêu, KHÔNG phải bước phải làm
+KB CHƯA CÓ HƯỚNG DẪN: … tự khám phá UI hiện tại, KHÔNG tự suy diễn ra quy trình
+TIÊU CHÍ XÁC MINH: - Mục tiêu cuối: nhà hiện tại = dled.
+```
+
+Điểm khác biệt so với trước: modal 'Chuyển nhà' chỉ còn là **bối cảnh**, không còn
+bị viết thành bước ("nhấn Huỷ"); việc chuyển nhà được báo là **KB chưa có hướng dẫn**
+thay vì bịa một quy trình; `dled` được giữ nguyên.
+
+Prompt gốc **luôn** nguyên vẹn ở đầu Enhanced Prompt — LLM chỉ được viết phần kiến
+thức phía sau, nên không thể mất mục tiêu hay đổi số điện thoại/tài khoản.
+
+Dòng trạng thái dưới ô prompt cho biết: các việc đã tách, **workflow thực hiện**,
+**bối cảnh**, **workflow đã loại**, **việc thiếu kiến thức**, `app`, phiên bản KB,
+cache, số lượt LLM, token, và lý do nếu phải dùng bản dự phòng.
+
+| Trạng thái | Nghĩa | Việc cần làm |
+| --- | --- | --- |
+| `llm` | Đã tổng hợp, qua đủ kiểm tra | đọc rồi Chạy |
+| `fallback` | LLM lỗi/quá hạn/không đạt kiểm tra ⇒ bản dựng bằng luật | vẫn chạy được; xem lý do ở dòng trạng thái |
+| `no_knowledge` | KB không có workflow nào phục vụ các việc này | thêm workflow/alias trong tab Knowledge |
+| `degraded` | Không truy cập được KB | kiểm tra `ARTEMIS_KB_DSN` / `ARTEMIS_KB_API` |
+
+Gọi thẳng từ máy khác (đúng endpoint máy tester dùng):
+
+```bash
+curl -s -X POST https://sep21th03.com/artemis/api/knowledge/prepare \
+  -H 'Content-Type: application/json' -H 'Authorization: Bearer <khoá truy cập>' \
+  -d '{"prompt":"mở app và đăng nhập rồi chuyển sang nhà dled","app_package":"com.iot.hunonic","profile":"pro"}'
+# → {"original_prompt":"…","enhanced_prompt":"…","status":"llm","ready":true,
+#    "tasks":[{"action":"chuyển nhà","target":"dled","condition":""},…],
+#    "matched_workflows":[{"workflow_id":"auth.switch_account","role":"primary",…}],
+#    "excluded_workflows":[…],"knowledge_gaps":[…],"warnings":[…],
+#    "source":{…},"checks":[…],"metrics":{"llm_calls":2,…}}
+```
+
+⚠️ **Endpoint này chỉ có ở `CONSOLE_ROLE=server` và `all`, không có ở `edge`.** Máy
+cắm điện thoại không giữ key LLM, nên ở đó nút bấm sẽ báo phải gọi máy chủ (địa chỉ
+lấy từ `ARTEMIS_KB_API`, hiện trong `GET /api/health` ở trường `kb_api`). Tinh chỉnh
+bằng `ARTEMIS_PREPARE_*` trong `.env` — xem mục cuối `.env.example`.
 
 ## Knowledge — Workflow RAG (tab “Knowledge”)
 

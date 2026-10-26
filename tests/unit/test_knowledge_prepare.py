@@ -1,0 +1,687 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""AI Prompt Preparation — cơ chế: hiểu mục tiêu, truy xuất theo việc, phân loại, dự phòng.
+
+Sáu tính chất được khoá ở đây, mỗi tính chất là một cách hỏng khác nhau:
+
+1. **Mỗi việc một truy vấn** — câu nhiều việc không còn là một truy vấn duy nhất.
+2. **Vai trò quyết định nội dung** — luật/modal là bối cảnh, không bao giờ là mục tiêu;
+   workflow chỉ trùng từ bị loại và được báo ra.
+3. **Bất biến của prompt gốc** — mục tiêu và định danh không đổi.
+4. **Không bỏ sót việc** — mọi việc trong kế hoạch còn trong prompt.
+5. **Không bịa, không UI cứng** — không workflow lạ, không toạ độ.
+6. **Không bao giờ chặn tester** — LLM/KB hỏng thì trả bản dựng bằng luật + lý do.
+"""
+
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from artemis.knowledge.intent import (
+    SECTION_CONTEXT,
+    SECTION_CRITERIA,
+    SECTION_GAP,
+    SECTION_KNOWLEDGE,
+    SECTION_PLAN,
+    sanitize_ui_instructions,
+)
+from artemis.knowledge.models import RetrievalResult, Workflow, WorkflowHit
+from artemis.knowledge.prepare import (
+    STATUS_DEGRADED,
+    STATUS_FALLBACK,
+    STATUS_LLM,
+    STATUS_NO_KNOWLEDGE,
+    PrepareCache,
+    PrepareOptions,
+    RateLimiter,
+    prepare_prompt,
+)
+from artemis.knowledge.text import identity_tokens
+
+PROMPT = "mở app và đăng nhập rồi chuyển sang nhà dled"
+OPTS = PrepareOptions(
+    cache_ttl=60.0,
+    cache_size=8,
+    max_knowledge_chars=1600,
+    max_enhanced_chars=4000,
+    intent_timeout=5.0,
+)
+PLAN = {
+    "tasks": [
+        {"action": "mở app", "condition": "chỉ khi app chưa mở", "required": True},
+        {"action": "đăng nhập", "condition": "chỉ khi chưa đăng nhập", "required": True},
+        {"action": "chuyển nhà", "target": "dled", "required": True},
+    ],
+    "final_goal": {"type": "nhà hiện tại", "expected_value": "dled"},
+}
+
+
+def workflow(
+    workflow_id: str,
+    name: str,
+    description: str = "",
+    *,
+    aliases=(),
+    preconditions=(),
+    success_criteria=(),
+    tags=(),
+    steps=(),
+    metadata=None,
+) -> Workflow:
+    return Workflow(
+        id=workflow_id,
+        app_id="hunonic",
+        name=name,
+        description=description,
+        aliases=list(aliases),
+        preconditions=list(preconditions),
+        success_criteria=list(success_criteria),
+        tags=list(tags),
+        steps=[{"action": "tap", "target": target} for target in steps],
+        metadata=dict(metadata or {}),
+        status="verified",
+        revision_no=1,
+        updated_at="2026-10-26T10:00:00",
+    )
+
+
+LOGOUT = workflow(
+    "auth.logout",
+    "Đăng xuất tài khoản",
+    "Đăng xuất khỏi tài khoản đang đăng nhập",
+    aliases=["đăng xuất", "đăng nhập tài khoản khác"],
+    preconditions=["Người dùng đã đăng nhập"],
+    success_criteria=["Màn hình đăng nhập hiện ra"],
+    tags=["auth"],
+    steps=["Mục 'Đăng xuất' ở cuối danh sách Menu"],
+    metadata={"warnings": ["Hàng trên 'Đăng xuất' là 'Đánh giá 5 sao' — đừng tap nhầm"]},
+)
+SWITCH_ACCOUNT = workflow(
+    "auth.switch_account",
+    "Đăng nhập bằng tài khoản đã lưu (Chuyển tài khoản)",
+    "Mở danh sách tài khoản đã từng đăng nhập rồi chọn một tài khoản để đăng nhập.",
+    aliases=["đăng nhập tài khoản", "chuyển tài khoản"],
+    preconditions=["Tài khoản đã từng đăng nhập trên máy này"],
+    success_criteria=["Màn hình chính của app hiện ra"],
+    tags=["auth"],
+    steps=["Mũi tên caret-down cuối ô số điện thoại"],
+)
+MODAL = workflow(
+    "home.switch_house_modal",
+    "Xử lý modal 'Chuyển nhà' hiện sau khi vào Trang chủ",
+    "Modal 'Chuyển nhà' là GỢI Ý ĐỔI NHÀ của app, KHÔNG phải lỗi.",
+    aliases=["modal chuyển nhà", "chuyển nhà", "đổi nhà"],
+    preconditions=["Đã đăng nhập và vừa vào Trang chủ"],
+    success_criteria=["Không còn modal 'Chuyển nhà' che màn hình"],
+    tags=["rule", "modal"],
+    steps=["nút 'Huỷ' trong modal 'Chuyển nhà' để đóng modal"],
+)
+
+
+class FakeService:
+    """Truy xuất giả theo độ phủ token — đúng tinh thần kênh keyword của RAG."""
+
+    available = True
+    degraded_reason = ""
+
+    def __init__(self, workflows=(), *, app_id: str | None = "hunonic") -> None:
+        self._workflows = list(workflows)
+        self._app_id = app_id
+        self._store = self
+        self.queries: list[str] = []
+
+    def find_app_by_package(self, package):
+        return self._app_id if package == "com.iot.hunonic" else None
+
+    def get_workflow(self, workflow_id):
+        """Store thật có hàm này; cache dùng nó để xác nhận phiên bản KB."""
+        return next((item for item in self._workflows if item.id == workflow_id), None)
+
+    def retrieve(self, query, app_id, version_id=None, top_k=None, run_id=None):
+        from artemis.knowledge.text import content_tokens, coverage, normalize
+
+        self.queries.append(query)
+        tokens = content_tokens(query)
+        hits = []
+        for index, item in enumerate(self._workflows):
+            score = coverage(tokens, normalize(item.embedding_text()))
+            if score > 0:
+                hits.append(
+                    WorkflowHit(
+                        workflow=item,
+                        score=score,
+                        channels={"keyword": index + 1},
+                        trusted=score >= 0.6,
+                    )
+                )
+        hits.sort(key=lambda found: -found.score)
+        return RetrievalResult(
+            found=any(found.trusted for found in hits),
+            query=query,
+            app_id=app_id,
+            hits=hits[:3],
+            reason="" if hits else "không tìm thấy",
+        )
+
+
+def synthesizer(plan: dict | None = None, *, synthesis: str | None = None, error=None):
+    """LLM giả hai lượt: JSON cho phân tích, văn bản cho tổng hợp.
+
+    Mặc định lượt tổng hợp trả lại đúng phần kiến thức đã gửi — hành vi của một LLM
+    "đúng nhưng lười", đủ để mọi kiểm tra chất lượng đi qua.
+    """
+
+    def call(messages, *, max_tokens, timeout):
+        call.calls.append(messages)
+        if error is not None:
+            raise error
+        if "tách một yêu cầu" in messages[0]["content"]:
+            return json.dumps(plan if plan is not None else PLAN, ensure_ascii=False)
+        if synthesis is not None:
+            return synthesis
+        body = messages[1]["content"].split("nguồn duy nhất được dùng]", 1)[-1]
+        return body.split("[PROFILE CHẠY]", 1)[0].strip()
+
+    call.calls = []
+    return call
+
+
+def prepare(service, synth=None, **kwargs):
+    kwargs.setdefault("options", OPTS)
+    kwargs.setdefault("cache", PrepareCache())
+    kwargs.setdefault("app_package", "com.iot.hunonic")
+    return prepare_prompt(PROMPT, service=service, synthesizer=synth, **kwargs)
+
+
+# ── Đường hạnh phúc ──────────────────────────────────────────────────────
+def test_each_task_is_retrieved_separately():
+    service = FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL])
+
+    prepare(service, synthesizer())
+
+    assert service.queries == ["mở app", "đăng nhập", "chuyển nhà dled"]
+
+
+def test_the_llm_path_returns_a_structured_prompt():
+    outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer())
+
+    assert outcome.status == STATUS_LLM
+    assert outcome.enhanced_prompt.startswith(PROMPT)
+    assert [task["query"] for task in outcome.tasks] == ["mở app", "đăng nhập", "chuyển nhà dled"]
+    for section in (SECTION_PLAN, SECTION_CRITERIA, SECTION_GAP, SECTION_KNOWLEDGE):
+        assert section in outcome.enhanced_prompt
+    assert outcome.ready is True
+
+
+def test_roles_decide_what_enters_the_prompt():
+    outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer())
+
+    roles = {row["workflow_id"]: row["role"] for row in outcome.matched_workflows}
+    assert roles["auth.switch_account"] == "primary"
+    assert roles["home.switch_house_modal"] == "supporting"
+    assert roles["auth.logout"] == "supporting"
+    # Bối cảnh chỉ vào prompt bằng tên + mô tả, không kèm tiêu chí hay bước.
+    assert "nút 'Huỷ'" not in outcome.enhanced_prompt
+    assert "Không còn modal" not in outcome.enhanced_prompt
+    assert "KHÔNG phải mục tiêu" in outcome.enhanced_prompt
+
+
+def test_gaps_are_declared_for_tasks_without_a_primary_workflow():
+    outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer())
+
+    assert [gap["task"]["query"] for gap in outcome.knowledge_gaps] == [
+        "mở app",
+        "chuyển nhà dled",
+    ]
+    assert "dled" in outcome.enhanced_prompt
+    assert "tự khám phá UI" in outcome.enhanced_prompt
+
+
+def test_two_llm_calls_and_stage_metrics_are_reported():
+    call = synthesizer()
+    outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), call)
+
+    assert len(call.calls) == 2
+    assert outcome.metrics["llm_calls"] == 2
+    assert outcome.metrics["plan_source"] == "llm"
+    assert outcome.metrics["queries"] == ["mở app", "đăng nhập", "chuyển nhà dled"]
+    for key in ("intent_ms", "retrieval_ms", "synthesis_ms", "total_ms"):
+        assert key in outcome.metrics
+
+
+def test_the_source_reports_per_query_hits():
+    outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer())
+
+    per_query = {row["query"]: row["hits"] for row in outcome.source["per_query"]}
+    assert per_query["chuyển nhà dled"][0] == "home.switch_house_modal"
+    assert "auth.switch_account" in per_query["đăng nhập"]
+    assert outcome.source["kb_version"]
+
+
+def test_primary_conditions_and_warnings_are_kept_as_things_to_check():
+    outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer())
+
+    assert "không được mặc định là đúng" in outcome.enhanced_prompt
+    assert "Tài khoản đã từng đăng nhập trên máy này" in outcome.enhanced_prompt
+
+
+def test_warnings_from_primary_workflows_are_reported():
+    plan = {"tasks": [{"action": "đăng xuất", "required": True}]}
+    outcome = prepare_prompt(
+        "đăng xuất khỏi tài khoản đang dùng",
+        app_package="com.iot.hunonic",
+        service=FakeService([LOGOUT]),
+        synthesizer=synthesizer(plan),
+        options=PrepareOptions(cache_ttl=0.0),
+    )
+
+    assert any("Đánh giá 5 sao" in warning for warning in outcome.warnings)
+    assert "Đánh giá 5 sao" in outcome.enhanced_prompt
+
+
+# ── Không có kiến thức: không gọi LLM ────────────────────────────────────
+def test_no_hits_at_all_means_no_llm_call():
+    call = synthesizer()
+    outcome = prepare(FakeService([]), call)
+
+    assert outcome.status == STATUS_NO_KNOWLEDGE
+    assert outcome.enhanced_prompt == PROMPT
+    assert len(call.calls) == 1  # chỉ lượt phân tích mục tiêu
+    assert [gap["task"]["query"] for gap in outcome.knowledge_gaps] == [
+        "mở app",
+        "đăng nhập",
+        "chuyển nhà dled",
+    ]
+
+
+def test_an_unregistered_app_returns_the_original_prompt():
+    service = FakeService([LOGOUT], app_id=None)
+
+    outcome = prepare(service, synthesizer(), app_package="com.la.hoac")
+
+    assert outcome.status == STATUS_NO_KNOWLEDGE
+    assert "com.la.hoac" in outcome.fallback_reason
+    assert service.queries == []
+
+
+def test_an_unavailable_service_returns_the_original_prompt(monkeypatch):
+    import artemis.knowledge.service as service_module
+
+    monkeypatch.setattr(service_module, "get_service", lambda: service_module.KnowledgeService())
+
+    outcome = prepare_prompt(PROMPT, synthesizer=synthesizer(), options=OPTS)
+
+    assert outcome.status == STATUS_DEGRADED
+    assert outcome.enhanced_prompt == PROMPT
+
+
+def test_a_service_that_raises_never_escapes(monkeypatch):
+    import artemis.knowledge.service as service_module
+
+    def explode():
+        raise RuntimeError("database mất kết nối")
+
+    monkeypatch.setattr(service_module, "get_service", explode)
+
+    outcome = prepare_prompt(PROMPT, synthesizer=synthesizer(), options=OPTS)
+
+    assert outcome.status == STATUS_DEGRADED
+    assert "database mất kết nối" in outcome.fallback_reason
+
+
+def test_a_degraded_retrieval_returns_the_original_prompt():
+    class Degraded(FakeService):
+        def retrieve(self, query, app_id, version_id=None, top_k=None, run_id=None):
+            return RetrievalResult(
+                found=False,
+                query=query,
+                app_id=app_id,
+                degraded=True,
+                reason="database is down",
+            )
+
+    outcome = prepare(Degraded([LOGOUT]), synthesizer())
+
+    assert outcome.status == STATUS_DEGRADED
+    assert outcome.enhanced_prompt == PROMPT
+
+
+def test_an_empty_prompt_is_answered_not_rejected():
+    outcome = prepare_prompt("   ", service=FakeService([LOGOUT]), options=OPTS)
+
+    assert outcome.status == STATUS_NO_KNOWLEDGE
+
+
+# ── LLM hỏng ⇒ dự phòng dựng bằng luật ───────────────────────────────────
+def test_a_broken_llm_falls_back_with_the_same_structure():
+    outcome = prepare(
+        FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer(error=RuntimeError("proxy 502"))
+    )
+
+    assert outcome.status == STATUS_FALLBACK
+    assert "502" in outcome.fallback_reason
+    assert outcome.enhanced_prompt.startswith(PROMPT)
+    for section in (SECTION_PLAN, SECTION_CRITERIA, SECTION_GAP):
+        assert section in outcome.enhanced_prompt
+    assert outcome.source["synthesis"] == "deterministic"
+    assert outcome.checks == []
+
+
+def test_without_an_llm_the_plan_is_the_whole_sentence():
+    service = FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL])
+
+    outcome = prepare(service, None)
+
+    assert outcome.status == STATUS_FALLBACK
+    assert service.queries == [PROMPT]
+    assert outcome.metrics["plan_source"] == "deterministic"
+    assert "Chưa cấu hình LLM" in outcome.fallback_reason
+
+
+def test_an_empty_synthesis_falls_back():
+    outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer(synthesis="   "))
+
+    assert outcome.status == STATUS_FALLBACK
+    assert "rỗng" in outcome.fallback_reason
+
+
+# ── Kiểm tra chất lượng từ chối bản LLM sai ──────────────────────────────
+def test_a_synthesis_that_drops_a_task_falls_back():
+    bad = f"{SECTION_PLAN}\n1. mở app\n2. đăng nhập\n{SECTION_CRITERIA}\n- xong"
+
+    outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer(synthesis=bad))
+
+    assert outcome.status == STATUS_FALLBACK
+    assert "tasks_kept" in outcome.fallback_reason
+
+
+def test_a_synthesis_that_turns_the_modal_into_a_step_falls_back():
+    """Đúng lỗi đã gặp: prompt yêu cầu chuyển nhà mà lại hướng dẫn nhấn 'Huỷ'."""
+    bad = (
+        f"{SECTION_PLAN}\n1. mở app\n2. đăng nhập\n"
+        "3. chuyển nhà dled: mở modal rồi nhấn 'Huỷ' để đóng\n"
+        f"{SECTION_GAP}\n- chuyển nhà dled: KB chưa có hướng dẫn\n"
+        f"{SECTION_CRITERIA}\n- nhà hiện tại là dled"
+    )
+
+    outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer(synthesis=bad))
+
+    assert outcome.status == STATUS_FALLBACK
+    assert "supporting_not_a_step" in outcome.fallback_reason
+
+
+def test_a_synthesis_that_changes_a_phone_number_falls_back():
+    prompt = "đăng nhập tài khoản 0972842548 rồi kiểm tra thông báo"
+    plan = {
+        "tasks": [
+            {"action": "đăng nhập", "target": "0972842548", "required": True},
+            {"action": "kiểm tra thông báo", "required": True},
+        ]
+    }
+    bad = (
+        f"{SECTION_PLAN}\n1. đăng nhập tài khoản 0123456789\n2. kiểm tra thông báo\n"
+        f"{SECTION_KNOWLEDGE}\n- dùng tài khoản 0123456789\n{SECTION_CRITERIA}\n- đã đăng nhập"
+    )
+
+    outcome = prepare_prompt(
+        prompt,
+        app_package="com.iot.hunonic",
+        service=FakeService([SWITCH_ACCOUNT]),
+        synthesizer=synthesizer(plan, synthesis=bad),
+        options=PrepareOptions(cache_ttl=0.0),
+    )
+
+    assert outcome.status == STATUS_FALLBACK
+    assert "no_invented_data" in outcome.fallback_reason
+    assert "0972842548" in outcome.enhanced_prompt
+
+
+def test_a_synthesis_that_mentions_an_unknown_workflow_falls_back():
+    bad = (
+        f"{SECTION_PLAN}\n1. chuyển nhà dled\n"
+        f"{SECTION_KNOWLEDGE}\n- dùng auth.login để vào app\n"
+        f"{SECTION_CRITERIA}\n- xong"
+    )
+
+    outcome = prepare(FakeService([MODAL]), synthesizer(synthesis=bad))
+
+    assert outcome.status == STATUS_FALLBACK
+    assert "knowledge_grounded" in outcome.fallback_reason
+
+
+def test_coordinates_are_stripped_from_the_synthesis():
+    bad = (
+        f"{SECTION_PLAN}\n1. chuyển nhà dled\n"
+        f"{SECTION_KNOWLEDGE}\n- nhấn nút tại (648, 1514)\n"
+        f"{SECTION_GAP}\n- chuyển nhà dled: KB chưa có hướng dẫn\n"
+        f"{SECTION_CRITERIA}\n- xong"
+    )
+
+    outcome = prepare(FakeService([MODAL]), synthesizer(synthesis=bad))
+
+    assert "648" not in outcome.enhanced_prompt
+    assert "1514" not in outcome.enhanced_prompt
+
+
+def test_an_overlong_synthesis_falls_back_and_is_truncated():
+    options = PrepareOptions(cache_ttl=0.0, max_knowledge_chars=1600, max_enhanced_chars=600)
+    bad = (
+        f"{SECTION_PLAN}\n1. chuyển nhà dled\n"
+        f"{SECTION_GAP}\n- chuyển nhà dled: KB chưa có hướng dẫn\n"
+        f"{SECTION_CRITERIA}\n- xong\n" + "x" * 900
+    )
+
+    outcome = prepare(FakeService([MODAL]), synthesizer(synthesis=bad), options=options)
+
+    assert outcome.status == STATUS_FALLBACK
+    assert "size_ok" in outcome.fallback_reason
+    assert len(outcome.enhanced_prompt) <= 600
+
+
+# ── Cache theo phiên bản KB ──────────────────────────────────────────────
+def test_a_second_identical_request_is_served_from_cache():
+    cache = PrepareCache(ttl=60)
+    service = FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL])
+    call = synthesizer()
+
+    first = prepare(service, call, cache=cache)
+    second = prepare(service, call, cache=cache)
+
+    assert first.cached is False
+    assert second.cached is True
+    assert second.enhanced_prompt == first.enhanced_prompt
+    assert second.source["cached"] is True
+    assert second.metrics["llm_calls"] == 0
+    assert len(call.calls) == 2  # chỉ lần đầu gọi LLM
+
+
+def test_editing_a_workflow_invalidates_the_cache():
+    cache = PrepareCache(ttl=60)
+    call = synthesizer()
+
+    prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), call, cache=cache)
+    edited = MODAL.model_copy(update={"revision_no": 9, "updated_at": "2026-10-27T09:00:00"})
+    after_edit = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, edited]), call, cache=cache)
+
+    assert after_edit.cached is False
+
+
+def test_use_cache_false_bypasses_the_cache():
+    cache = PrepareCache(ttl=60)
+    call = synthesizer()
+
+    prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), call, cache=cache)
+    again = prepare(
+        FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), call, cache=cache, use_cache=False
+    )
+
+    assert again.cached is False
+
+
+def test_the_cache_never_stores_a_fallback():
+    cache = PrepareCache(ttl=60)
+    broken = {"on": True}
+
+    def call(messages, *, max_tokens, timeout):
+        if "tách một yêu cầu" in messages[0]["content"]:
+            return json.dumps(PLAN, ensure_ascii=False)
+        if broken["on"]:
+            raise RuntimeError("proxy 502")
+        body = messages[1]["content"].split("nguồn duy nhất được dùng]", 1)[-1]
+        return body.split("[PROFILE CHẠY]", 1)[0].strip()
+
+    first = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), call, cache=cache)
+    broken["on"] = False
+    second = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), call, cache=cache)
+
+    assert first.status == STATUS_FALLBACK
+    assert second.status == STATUS_LLM
+    assert second.cached is False
+
+
+# ── Hạn mức và cấu hình ──────────────────────────────────────────────────
+def test_the_rate_limiter_blocks_the_nth_plus_one_request():
+    limiter = RateLimiter(max_events=2, window_seconds=30)
+
+    assert limiter.allow("k") == (True, 0.0)
+    assert limiter.allow("k")[0] is True
+    allowed, retry_after = limiter.allow("k")
+
+    assert allowed is False
+    assert 0 < retry_after <= 30
+    assert limiter.allow("other")[0] is True
+
+
+def test_the_rate_limiter_forgets_old_events(monkeypatch):
+    import artemis.knowledge.prepare as prepare_module
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(prepare_module, "time", SimpleNamespace(time=lambda: clock["now"]))
+    limiter = RateLimiter(max_events=1, window_seconds=60)
+
+    assert limiter.allow("k")[0] is True
+    assert limiter.allow("k")[0] is False
+    clock["now"] += 61
+
+    assert limiter.allow("k")[0] is True
+
+
+def test_options_come_from_the_environment():
+    fake = SimpleNamespace(
+        ARTEMIS_PREPARE_MAX_KNOWLEDGE_CHARS=500,
+        ARTEMIS_PREPARE_MAX_PROMPT_CHARS=2000,
+        ARTEMIS_PREPARE_MAX_OUTPUT_TOKENS=123,
+        ARTEMIS_PREPARE_TIMEOUT=3.5,
+        ARTEMIS_PREPARE_CACHE_TTL=5.0,
+        ARTEMIS_PREPARE_CACHE_SIZE=7,
+        ARTEMIS_PREPARE_RATE_LIMIT=4,
+        ARTEMIS_PREPARE_RATE_WINDOW=9.0,
+        ARTEMIS_PREPARE_COVERAGE_FLOOR=0.7,
+        ARTEMIS_PREPARE_TOP_K=2,
+        ARTEMIS_PREPARE_INTENT_ENABLED=False,
+        ARTEMIS_PREPARE_MAX_TASKS=2,
+        ARTEMIS_PREPARE_INTENT_MAX_TOKENS=111,
+        ARTEMIS_PREPARE_INTENT_TIMEOUT=4.5,
+        ARTEMIS_PREPARE_NAME_COVERAGE_FLOOR=0.8,
+        ARTEMIS_PREPARE_INTENT_COVERAGE_FLOOR=0.7,
+        ARTEMIS_PREPARE_CONFLICT_FLOOR=0.9,
+    )
+
+    options = PrepareOptions.from_settings(fake)
+
+    assert options.max_knowledge_chars == 500
+    assert options.max_enhanced_chars == 2000
+    assert options.intent_enabled is False
+    assert options.max_tasks == 2
+    assert options.intent_max_tokens == 111
+    assert options.intent_timeout == 4.5
+    assert options.name_coverage_floor == 0.8
+    assert options.intent_coverage_floor == 0.7
+    assert options.conflict_floor == 0.9
+    assert options.top_k == 2
+
+
+def test_options_fall_back_to_defaults_without_settings():
+    options = PrepareOptions.from_settings(SimpleNamespace())
+
+    assert options.max_knowledge_chars == 1200
+    assert options.intent_enabled is True
+    assert options.max_tasks == 4
+    assert options.rate_limit == 30
+
+
+def test_intent_analysis_can_be_switched_off():
+    options = PrepareOptions(intent_enabled=False, cache_ttl=0.0)
+    call = synthesizer()
+    service = FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL])
+
+    outcome = prepare(service, call, options=options)
+
+    assert service.queries == [PROMPT]
+    assert outcome.metrics["plan_source"] == "deterministic"
+    assert len(call.calls) == 1
+
+
+def test_the_top_k_override_reaches_retrieval():
+    service = FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL])
+    captured: list = []
+    original = service.retrieve
+
+    def spy(query, app_id, version_id=None, top_k=None, run_id=None):
+        captured.append(top_k)
+        return original(query, app_id, version_id=version_id, top_k=top_k, run_id=run_id)
+
+    service.retrieve = spy
+
+    prepare(service, synthesizer(), options=PrepareOptions(top_k=1, cache_ttl=0.0))
+
+    assert captured == [1, 1, 1]
+
+
+# ── Chuẩn hoá và định danh ───────────────────────────────────────────────
+@pytest.mark.parametrize(
+    "text",
+    [
+        "chạm vào (648, 1514) rồi thoát",
+        "bounds [28,1093,692,1198] là nút đăng xuất",
+        "nút ở 648,1514 px",
+        "dùng toạ độ 120dp để chạm",
+    ],
+)
+def test_coordinates_and_pixels_are_stripped(text):
+    cleaned = sanitize_ui_instructions(text)
+
+    assert "648" not in cleaned
+    assert "1093" not in cleaned
+    assert "120" not in cleaned
+
+
+def test_sanitizing_keeps_ordinary_numbers():
+    """Số điện thoại và số lượng của tester không được coi là toạ độ."""
+    assert sanitize_ui_instructions("gọi 0987654321 đặt 2 thiết bị") == (
+        "gọi 0987654321 đặt 2 thiết bị"
+    )
+
+
+def test_identity_tokens_find_the_data_that_must_not_change():
+    assert identity_tokens("gọi 0987654321, mail a.b@x.vn, mã DEV-01, xem https://a.b/c") == [
+        "0987654321",
+        "a.b@x.vn",
+        "DEV-01",
+        "https://a.b/c",
+    ]

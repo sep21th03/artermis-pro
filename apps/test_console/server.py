@@ -15,6 +15,7 @@ import ast
 import difflib
 import hashlib
 import hmac
+import importlib.util
 import json
 import math
 import os
@@ -24,6 +25,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import unicodedata
@@ -134,13 +136,18 @@ def artemis_launcher() -> list[str] | None:
 
     Prefers the repo's own venv binary; on a fresh clone without `.venv` it
     falls back to `uv run`, so the console works from any checkout path.
-    Returns None when neither is available.
+    Windows (and any box without `uv`) has neither, so the last resort is the
+    interpreter already serving this console: `python -m artemis` drives the same
+    checkout without installing anything.  Returns None when none of the three is
+    available, and the caller turns that into a clear message.
     """
     if ARTEMIS_BIN.exists():
         return [str(ARTEMIS_BIN)]
     uv = shutil.which("uv")
     if uv:
         return [uv, "run", "--project", str(ARTEMIS_DIR), "artemis"]
+    if importlib.util.find_spec("artemis") is not None:
+        return [sys.executable, "-m", "artemis"]
     return None
 
 
@@ -589,8 +596,42 @@ class Budget:
                 threading.Thread(target=active.stop, daemon=True).start()
         return cost
 
+    def record_prepare(self, prompt_tokens: int, completion_tokens: int) -> float:
+        """Ghi chi phí một lượt LLM của bước *chuẩn bị prompt* vào hạn mức NGÀY.
+
+        Bước chuẩn bị chạy ngoài một lần chạy test, nên nó không được tiêu vào hạn
+        mức của task (``BUDGET_MAX_REQUESTS``/``BUDGET_MAX_TASK_COST_VND``) — làm
+        vậy thì một lần bấm "Chuẩn bị" cũng đủ khiến task sau bị 429.  Nhưng tiền
+        là tiền: nó vẫn vào hạn mức ngày, và chạm hạn mức ngày thì proxy vẫn chặn.
+        """
+        prompt_tokens = max(0, int(prompt_tokens or 0))
+        completion_tokens = max(0, int(completion_tokens or 0))
+        if is_local_llm():
+            cost = 0.0
+        else:
+            cost = (
+                prompt_tokens * self.price_input + completion_tokens * self.price_output
+            ) / 1_000_000
+            cost = max(self.min_request_cost, cost)
+        with self._lock:
+            today = datetime.now().strftime("%Y-%m-%d")
+            if self._day != today:
+                self._day = today
+                self._daily_spent = 0.0
+                self._daily_requests = 0
+            self._daily_spent += cost
+            self._daily_requests += 1
+            self._save_daily()
+            if not self._exceeded and self._spent_today() >= self.max_daily_cost_vnd:
+                self._exceeded = (
+                    f"Hôm nay đã tiêu {self._spent_today():.0f}đ, chạm giới hạn ngày "
+                    f"{self.max_daily_cost_vnd:.0f}đ."
+                )
+        return cost
+
 
 def _estimate_prompt_tokens(body: dict) -> int:
+
     total = 0
     for message in body.get("messages", []) or []:
         content = message.get("content") if isinstance(message, dict) else None
@@ -1483,6 +1524,21 @@ if not SERVES_DEVICE:
         return HTMLResponse(_SERVER_PAGE.format(kb=kb, access=access))
 
 
+def kb_api_base() -> str:
+    """Base URL của máy chủ phục vụ AI proxy + API RAG, nếu máy này không tự phục vụ.
+
+    Máy cắm điện thoại (``edge``) không có endpoint chuẩn bị prompt và không giữ key
+    LLM; nó được cấu hình ``ARTEMIS_KB_API`` trỏ về máy chủ.  Trả về đây để giao
+    diện chỉ đúng địa chỉ cho tester thay vì để họ đoán.
+    """
+    try:
+        from artemis.knowledge.integration import remote_api_url
+
+        return remote_api_url()
+    except Exception:  # noqa: BLE001 - thiếu module knowledge thì coi như không có
+        return ""
+
+
 @app.get("/api/health")
 def health() -> dict:
     """Sức khoẻ tiến trình. Nội dung phụ thuộc vai trò.
@@ -1508,6 +1564,8 @@ def health() -> dict:
         "artemis_ok": artemis_launcher() is not None,
         "adb_path": adb_path(),
         "artemis_dir": str(ARTEMIS_DIR),
+        # Máy này không phục vụ AI proxy/RAG (vai trò edge) ⇒ chỉ cho biết máy chủ ở đâu.
+        "kb_api": kb_api_base(),
         "devices": list_devices(),
     }
 
@@ -1700,7 +1758,185 @@ def knowledge_context(req: KnowledgeContextRequest, request: Request) -> dict:
     }
 
 
+class PrepareRequest(BaseModel):
+    """Yêu cầu chuẩn bị prompt: prompt gốc + app + profile.
+
+    ``app_id`` là id trong knowledge base; ``app_package`` là package Android mà
+    tester đang thấy trong ô Package.  Gửi ``app_package`` là đủ — console tra ra
+    ``app_id`` bằng đúng hàm mà lúc chạy vẫn dùng.
+    """
+
+    prompt: str = Field(min_length=5, max_length=4000)
+    app_id: str | None = Field(default=None, max_length=120)
+    app_package: str | None = Field(default=None, max_length=200)
+    profile: str = Field(default="pro", pattern="^(flash|pro)$")
+    version_id: str | None = Field(default=None, max_length=80)
+    run_id: str | None = Field(default=None, max_length=80)
+    #: Tester bấm "Chuẩn bị lại": bỏ qua cache, gọi LLM mới.
+    refresh: bool = False
+
+
+def prepare_client_key(request: Request) -> str:
+    """Khoá rate limit: khoá truy cập nếu có, nếu không thì địa chỉ client.
+
+    Trên VPS luôn có khoá truy cập nên mỗi người dùng một hạn mức; ở máy dev
+    (vai trò ``all``, không khoá) thì IP là thứ duy nhất phân biệt được.
+    """
+    token = presented_token(request)
+    if token:
+        return (
+            "token:" + hmac.new(b"prepare", token.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+        )
+    host = request.client.host if request.client else "unknown"
+    return f"ip:{host}"
+
+
+def resolve_model_name(value: str) -> str:
+    """Resolve ``${env:NAME:-default}`` trong tên model, đúng như ARTEMIS vẫn làm.
+
+    ``config/artemis.jsonc`` dùng cơ chế nội suy của chính ARTEMIS, còn hàm đọc
+    config trong console là regex nên trả về chuỗi **thô** (ví dụ
+    ``${env:GEMINI35FLASHLITE_DEFAULT:-ts/gemini-3.5-flash-lite}``). Gửi nguyên
+    chuỗi đó làm tên model thì gateway trả 404 — trông như proxy hỏng, trong khi
+    thật ra chỉ là một chi tiết cấu hình chưa được nội suy.
+    """
+    if not value or "${" not in value:
+        return value
+    try:
+        from artemis.config.core.interpolator import interpolate_config_value
+
+        return str(interpolate_config_value(value))
+    except Exception:  # noqa: BLE001 - thiếu module thì trả nguyên bản, có lý do fallback
+        return value
+
+
+def console_llm_chat(messages: list[dict], *, max_tokens: int, timeout: float) -> str:
+    """Một lượt chat qua **AI proxy hiện có** — đúng upstream mà ``/llm/v1`` phục vụ.
+
+    Không tạo client LLM thứ hai: console này vốn là proxy (nó giữ key thật và
+    chuyển tiếp ``/llm/v1/chat/completions``), nên bước chuẩn bị dùng chính
+    ``upstream_base()`` + key trong ``.env``.  Nhờ vậy máy tester không cần key LLM,
+    và chỉ có một nơi cấu hình model.
+    """
+    env = read_env_file(ARTEMIS_ENV)
+    key = (env.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+    local = is_local_llm()
+    if not local and not key:
+        raise RuntimeError("Thiếu OPENAI_API_KEY trong Artemis .env")
+    model = LOCAL_MODEL if local else resolve_model_name(llm_summary().get("model") or "")
+    if not model:
+        raise RuntimeError("Chưa xác định được model trong config/artemis.jsonc")
+    body = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max(1, int(max_tokens)),
+        "temperature": 0,
+        "stream": False,
+    }
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(
+                f"{upstream_base()}/chat/completions", json=body, headers=headers
+            )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"Không gọi được AI proxy: {exc}") from exc
+    if response.status_code >= 400:
+        raise RuntimeError(f"AI proxy trả {response.status_code}: {response.text[:200]}")
+    try:
+        payload = response.json()
+        content = payload["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"AI proxy trả dữ liệu không đọc được: {exc}") from exc
+    usage = payload.get("usage") or {}
+    try:
+        budget.record_prepare(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+    except Exception as exc:  # noqa: BLE001 - kế toán hỏng không được chặn tester
+        print(f"⚠ Không ghi được chi phí chuẩn bị prompt: {exc}")
+    if isinstance(content, list):  # một số gateway trả content dạng mảng part
+        content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+    return content if isinstance(content, str) else ""
+
+
+@shared_route("post", "/api/knowledge/prepare")
+def knowledge_prepare(req: PrepareRequest, request: Request) -> dict:
+    """Chuẩn bị Enhanced Prompt — endpoint trung tâm, chạy trên máy chủ.
+
+    Luồng: prompt gốc → RAG truy xuất workflow → LLM tổng hợp thành một prompt thực
+    thi ngắn → trả về cho tester xem/sửa rồi chạy.  Không sao chép workflow, không
+    toạ độ, prompt gốc nguyên vẹn (xem ``artemis.knowledge.prepare``).
+
+    Endpoint này **không tồn tại** ở vai trò ``edge``: máy cắm điện thoại không giữ
+    key LLM.  Nó có ở ``server`` (VPS) và ``all`` (máy dev chạy một mình).
+
+    Không bao giờ trả 5xx vì lỗi LLM: LLM hỏng thì trả prompt gốc kèm kiến thức rút
+    gọn và ``status="fallback"`` — tester luôn có gì đó để chạy.
+    """
+    if CONSOLE_ROLE == "server" and access_denied(request):
+        raise HTTPException(401, "Thiếu hoặc sai khoá truy cập.")
+
+    from artemis.knowledge.prepare import (
+        STATUS_DEGRADED,
+        STATUS_FALLBACK,
+        get_rate_limiter,
+        prepare_prompt,
+    )
+
+    limiter = get_rate_limiter()
+    allowed, retry_after = limiter.allow(prepare_client_key(request))
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Quá nhiều yêu cầu chuẩn bị prompt (giới hạn {limiter.max_events} lần/"
+                f"{limiter.window_seconds:.0f}s). Thử lại sau {retry_after:.0f}s."
+            ),
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
+
+    try:
+        from artemis.config.settings import settings as artemis_settings
+
+        prepare_enabled = bool(getattr(artemis_settings, "ARTEMIS_PREPARE_ENABLED", True))
+    except Exception:  # noqa: BLE001 - thiếu config thì coi như bật
+        prepare_enabled = True
+
+    model = resolve_model_name(llm_summary().get("model") or "")
+    outcome = prepare_prompt(
+        req.prompt,
+        app_id=req.app_id,
+        app_package=req.app_package,
+        profile=req.profile,
+        version_id=req.version_id,
+        run_id=req.run_id,
+        synthesizer=console_llm_chat if prepare_enabled else None,
+        use_cache=not req.refresh,
+        model=model,
+    )
+
+    if outcome.status == STATUS_FALLBACK:
+        print(f"⚠ Chuẩn bị prompt: fallback — {outcome.fallback_reason}")
+    elif outcome.status == STATUS_DEGRADED:
+        print(f"⚠ Chuẩn bị prompt: knowledge base suy giảm — {outcome.fallback_reason}")
+
+    return {
+        **outcome.as_dict(),
+        # `found` giữ tương thích với /api/knowledge/context để UI đọc cùng một cách.
+        "found": bool(outcome.source.get("found")),
+        "llm": {
+            "used": outcome.used_llm,
+            "model": model if outcome.used_llm else "",
+            "synthesis": outcome.source.get("synthesis"),
+        },
+    }
+
+
 def upstream_base() -> str:
+
+
+
     env = read_env_file(ARTEMIS_ENV)
     # Biến môi trường của tiến trình phải thắng .env, nếu không thì
     # `LOCAL_LLM=1 ./run.sh` không chuyển được sang Ollama (vì .env đã có sẵn

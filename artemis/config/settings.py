@@ -178,6 +178,62 @@ class Settings(BaseSettings):
     hit to count as evidence. Measured: real requests score 1.0, the false
     positive 'chụp ảnh màn hình' -> logout scores 0.5."""
 
+    # ── AI Prompt Preparation (``POST /api/knowledge/prepare``) ──────────
+    # RAG cung cấp kiến thức → LLM tổng hợp thành một prompt thực thi ngắn → tester
+    # duyệt.  Xem ``artemis.knowledge.prepare``.  Mọi giá trị dưới đây chỉ ảnh
+    # hưởng bước chuẩn bị, không ảnh hưởng lúc chạy.
+    ARTEMIS_PREPARE_ENABLED: bool = True
+    """``0`` = không gọi LLM; API trả bản rút gọn xác định kèm ``status=fallback``."""
+
+    ARTEMIS_PREPARE_MAX_KNOWLEDGE_CHARS: int = 1200
+    """Trần phần kiến thức rút gọn (không tính prompt gốc của tester)."""
+
+    ARTEMIS_PREPARE_MAX_PROMPT_CHARS: int = 6000
+    """Trần Enhanced Prompt cuối cùng."""
+
+    ARTEMIS_PREPARE_MAX_OUTPUT_TOKENS: int = 700
+    """``max_tokens`` cho lượt LLM tổng hợp."""
+
+    ARTEMIS_PREPARE_TIMEOUT: float = 20.0
+    """Hard timeout của lượt LLM tổng hợp, tính bằng giây."""
+
+    ARTEMIS_PREPARE_COVERAGE_FLOOR: float = 0.5
+    """Độ phủ token tối thiểu để coi là đã giữ điều kiện/tiêu chí/cảnh báo."""
+
+    ARTEMIS_PREPARE_CACHE_TTL: float = 600.0
+    """Cache theo phiên bản KB; 0 = tắt cache."""
+
+    ARTEMIS_PREPARE_CACHE_SIZE: int = 256
+    ARTEMIS_PREPARE_RATE_LIMIT: int = 30
+    """Số lần gọi chuẩn bị tối đa cho mỗi khoá trong một cửa sổ."""
+
+    ARTEMIS_PREPARE_RATE_WINDOW: float = 60.0
+    ARTEMIS_PREPARE_TOP_K: int | None = None
+    """Ghi đè ``ARTEMIS_KB_TOP_K`` riêng cho bước chuẩn bị."""
+
+    # ── Hiểu mục tiêu & phân loại vai trò workflow ───────────────────────
+    ARTEMIS_PREPARE_INTENT_ENABLED: bool = True
+    """``0`` = không phân tích mục tiêu; coi cả câu là một việc (hành vi cũ)."""
+
+    ARTEMIS_PREPARE_MAX_TASKS: int = 4
+    """Số việc tối đa tách ra từ một câu. Mỗi việc là một truy vấn embedding."""
+
+    ARTEMIS_PREPARE_INTENT_MAX_TOKENS: int = 400
+    """``max_tokens`` cho lượt LLM phân tích mục tiêu."""
+
+    ARTEMIS_PREPARE_INTENT_TIMEOUT: float = 20.0
+    """Hard timeout của lượt phân tích mục tiêu; hết hạn ⇒ kế hoạch một việc."""
+
+    ARTEMIS_PREPARE_NAME_COVERAGE_FLOOR: float = 0.6
+    """Độ phủ token của *tên* workflow để coi nó THỰC HIỆN đúng việc (PRIMARY)."""
+
+    ARTEMIS_PREPARE_INTENT_COVERAGE_FLOOR: float = 0.6
+    """Độ phủ token trên mô tả/alias để coi workflow là bối cảnh (SUPPORTING)."""
+
+    ARTEMIS_PREPARE_CONFLICT_FLOOR: float = 0.8
+    """Ngưỡng mà tiêu chí/bước của workflow phụ không được vượt — vượt nghĩa là nó đã
+    bị biến thành việc phải làm, và bản LLM bị từ chối."""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @model_validator(mode="after")

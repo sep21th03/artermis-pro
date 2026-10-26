@@ -35,6 +35,13 @@ from artemis.knowledge.models import (
     WorkflowHit,
     WorkflowStep,
 )
+from artemis.knowledge.prepare import (
+    PrepareCache,
+    PrepareOptions,
+    PrepareOutcome,
+    RateLimiter,
+    prepare_prompt,
+)
 from artemis.knowledge.service import (
     KnowledgeService,
     get_service,
@@ -46,6 +53,10 @@ __all__ = [
     "KnowledgeContext",
     "KnowledgeService",
     "KnowledgeUnavailable",
+    "PrepareCache",
+    "PrepareOptions",
+    "PrepareOutcome",
+    "RateLimiter",
     "RetrievalResult",
     "Workflow",
     "WorkflowHit",
@@ -55,6 +66,7 @@ __all__ = [
     "context_meta",
     "context_text",
     "get_service",
+    "prepare_prompt",
     "record_outcome",
     "reset_service",
     "retrieve_for_run",

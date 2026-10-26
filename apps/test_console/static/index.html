@@ -227,15 +227,18 @@
           <div class="hint" style="margin-top:6px">Có thể sửa prompt của kịch bản mẫu. Nhấn <span class="kbd">⌘/Ctrl + Enter</span> để chạy nhanh.</div>
           <div class="hint" style="margin-top:4px">Prompt càng rõ càng ít đi linh tinh: nói rõ <b>làm gì</b>, <b>thành công khi nào</b>, và <b>giới hạn bao nhiêu bước</b>.</div>
           <div class="actions" style="margin-top:8px">
+            <button class="btn small primary" id="btnPreparePrompt">⚡ Chuẩn bị prompt</button>
             <button class="btn small" id="btnPreviewPrompt">🔍 Xem prompt hoàn chỉnh</button>
             <span class="muted" id="promptPreviewNote" style="font-size:12px"></span>
           </div>
           <div id="promptPreviewBox" style="display:none;margin-top:10px">
             <div class="hint" style="margin-bottom:6px">Đây là <b>prompt agent sẽ nhận</b> (prompt của anh + hướng dẫn từ workflow khớp). Sửa được — bấm <b>Dùng bản này</b> rồi Chạy.</div>
+            <div id="prepareStatus" class="hint" style="margin-bottom:6px;font-size:12px"></div>
             <textarea id="promptPreview" rows="10" spellcheck="false" style="width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5"></textarea>
             <div class="actions" style="margin-top:6px">
               <button class="btn small primary" id="btnUsePrompt">✔ Dùng bản này</button>
               <button class="btn small" id="btnResetPrompt">Bỏ bản sửa</button>
+              <button class="btn small" id="btnReprepare" title="Bỏ cache, gọi lại máy chủ">↻ Chuẩn bị lại</button>
             </div>
           </div>
         </div>
@@ -464,7 +467,7 @@ const PRESETS = [
 ];
 
 const $ = (id) => document.getElementById(id);
-const state = {seq:0, running:false, wasRunning:false, budgetWarned:false, profile:'flash', serial:'', autoScreen:true, tab:'steps', task:null, taskId:null, lastStepCount:-1, lastActivityCount:-1, lastStepsFetch:0, summaryShown:false, viewingTaskId:null, startTs:0, maxSeconds:300, timer:null, followSteps:true};
+const state = {seq:0, running:false, wasRunning:false, budgetWarned:false, profile:'flash', serial:'', autoScreen:true, tab:'steps', task:null, taskId:null, lastStepCount:-1, lastActivityCount:-1, lastStepsFetch:0, summaryShown:false, viewingTaskId:null, startTs:0, maxSeconds:300, timer:null, followSteps:true, kbApi:''};
 
 function fmtDuration(ms){
   if(!ms || ms < 0) return '00:00';
@@ -616,6 +619,8 @@ function openModal(title, html){
 async function loadHealth(){
   try{
     const h = await api('/api/health');
+    // Máy chủ knowledge/AI proxy mà máy này trỏ tới (vai trò edge không tự phục vụ).
+    state.kbApi = h.kb_api || '';
     const ready = (h.devices || []).filter(d => d.state === 'device');
     const select = $('device');
     const previous = state.serial || select.value;
@@ -1031,7 +1036,106 @@ async function knowledgePreflight(goal){
   }
 }
 
+/* ---- AI Prompt Preparation: chuẩn bị prompt trên máy chủ (VPS) ----
+
+   Luồng: tester nhập prompt → console (máy chủ) truy xuất workflow trong KB rồi gọi
+   LLM tổng hợp thành một prompt thực thi ngắn → tester xem/sửa → Chạy.  Agent chỉ
+   nhận prompt đã duyệt (prompt_override) và KHÔNG truy xuất KB lần thứ hai
+   (xem ARTEMIS_KB_PRESUPPLIED trong apps/test_console/server.py).
+
+   Endpoint chỉ tồn tại ở vai trò server/all.  Ở vai trò edge (máy cắm điện thoại)
+   route không được đăng ký, nên đây là chỗ báo cho tester biết phải gọi máy chủ. */
+const PREPARE_STATUS_LABEL = {
+  llm: '✅ Đã tổng hợp bằng LLM',
+  fallback: '⚠ LLM không dùng được — dùng bản rút gọn xác định (fallback)',
+  no_knowledge: 'ℹ KB không có workflow phù hợp — giữ nguyên prompt gốc',
+  degraded: '⚠ Knowledge base không truy cập được — giữ nguyên prompt gốc'
+};
+
+async function preparePrompt(refresh){
+  const goal = $('goal').value.trim();
+  if(goal.length < 5){ toast('Nhập prompt ít nhất 5 ký tự rồi mới chuẩn bị được.', 'err'); return; }
+  $('promptPreviewBox').style.display = 'block';
+  $('promptPreview').value = 'Đang chuẩn bị trên máy chủ (truy xuất KB → tổng hợp LLM)…';
+  $('prepareStatus').textContent = '';
+  $('btnPreparePrompt').disabled = true;
+  promptOverride = '';
+  try{
+    const r = await api('/api/knowledge/prepare', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        prompt: goal,
+        app_package: ($('pkg').value || '').trim(),
+        profile: state.profile,
+        refresh: !!refresh
+      })
+    });
+    $('promptPreview').value = r.enhanced_prompt || goal;
+    $('promptPreviewNote').textContent = 'Đã chuẩn bị xong — xem trạng thái bên dưới rồi bấm Dùng bản này.';
+    $('prepareStatus').textContent = describePrepare(r);
+  }catch(e){
+    $('promptPreview').value = goal;
+    $('prepareStatus').textContent = prepareErrorHint(e);
+  }finally{
+    $('btnPreparePrompt').disabled = false;
+  }
+}
+
+/* Một dòng nói rõ: bản này từ đâu, KB có gì, có đạt kiểm tra chất lượng không. */
+function describePrepare(r){
+  const bits = [];
+  bits.push(PREPARE_STATUS_LABEL[r.status] || ('Trạng thái: ' + (r.status || '?')));
+
+  const tasks = r.tasks || [];
+  if(tasks.length){
+    bits.push('việc: ' + tasks.map(t => (t.target ? t.action + ' ' + t.target : t.action)
+      + (t.condition ? ' (' + t.condition + ')' : '')).join(' → '));
+  }
+
+  const matched = r.matched_workflows || [];
+  const primary = matched.filter(w => w.role === 'primary').map(w => w.workflow_id);
+  const supporting = matched.filter(w => w.role === 'supporting').map(w => w.workflow_id);
+  const excluded = (r.excluded_workflows || []).map(w => w.workflow_id);
+  if(primary.length) bits.push('workflow thực hiện: ' + primary.join(', '));
+  if(supporting.length) bits.push('bối cảnh: ' + supporting.join(', '));
+  if(excluded.length) bits.push('đã loại: ' + excluded.join(', '));
+  if(!primary.length) bits.push('KB chưa có workflow thực hiện việc chính');
+
+  const gaps = r.knowledge_gaps || [];
+  if(gaps.length) bits.push('thiếu kiến thức: ' + gaps.map(g => g.task.query || g.task.action).join(', '));
+
+  const src = r.source || {};
+  if(src.app_id) bits.push('app ' + src.app_id);
+  if(src.kb_version) bits.push('KB ' + src.kb_version);
+  if(r.cached) bits.push('lấy từ cache');
+  if(typeof r.elapsed_ms === 'number') bits.push(Math.round(r.elapsed_ms) + 'ms');
+
+  const metrics = r.metrics || {};
+  if(typeof metrics.llm_calls === 'number') bits.push(metrics.llm_calls + ' lượt LLM');
+  if(metrics.usage && metrics.usage.total_tokens) bits.push(metrics.usage.total_tokens + ' token');
+
+  const failed = (r.checks || []).filter(c => !c.ok);
+  if(failed.length) bits.push('không đạt: ' + failed.map(c => c.name).join(', '));
+  if(r.fallback_reason) bits.push('lý do: ' + r.fallback_reason);
+  return bits.join(' · ');
+}
+
+
+/* 404/405 = máy này không có API chuẩn bị (vai trò edge).  Nói rõ phải gọi ở đâu
+   thay vì để tester đọc một dòng lỗi mơ hồ. */
+function prepareErrorHint(e){
+  const message = String((e && e.message) || e);
+  if(/404|405|Not Found|Method Not Allowed/i.test(message)){
+    const base = (state.kbApi || '').replace(/\/+$/, '');
+    return base
+      ? 'Máy này không chạy vai trò chuẩn bị prompt (edge). Gọi máy chủ: POST ' + base + '/api/knowledge/prepare'
+      : 'Máy này không chạy vai trò chuẩn bị prompt (edge). Đặt ARTEMIS_KB_API trỏ về máy chủ để dùng.';
+  }
+  return 'Không chuẩn bị được prompt: ' + message;
+}
+
 /* ---- Prompt hoàn chỉnh: xem trước và sửa trước khi chạy ---- */
+
 // Prompt tester đã sửa. Rỗng = chưa sửa gì, chạy bằng prompt gốc.
 let promptOverride = '';
 
@@ -1062,7 +1166,8 @@ function usePreviewedPrompt(){
   const text = $('promptPreview').value.trim();
   if(text.length < 5){ toast('Prompt hoàn chỉnh quá ngắn.', 'err'); return; }
   promptOverride = text;
-  toast('Sẽ chạy bằng prompt hoàn chỉnh này (' + text.length + ' ký tự).', 'ok');
+  // Nói rõ hệ quả: agent nhận đúng bản này và không tự lấy thêm kiến thức lần nữa.
+  toast('Sẽ chạy bằng prompt hoàn chỉnh này (' + text.length + ' ký tự). Agent không truy xuất KB lần nữa.', 'ok');
 }
 
 function resetPreviewedPrompt(){
@@ -1619,6 +1724,8 @@ function bindEvents(){
   $('btnRun').onclick = runTask;
   $('btnStop').onclick = stopTask;
   $('btnLlmTest').onclick = testLlm;
+  $('btnPreparePrompt').onclick = () => preparePrompt(false);
+  $('btnReprepare').onclick = () => preparePrompt(true);
   $('btnPreviewPrompt').onclick = previewPrompt;
   $('btnUsePrompt').onclick = usePreviewedPrompt;
   $('btnResetPrompt').onclick = resetPreviewedPrompt;
@@ -1661,6 +1768,7 @@ function bindEvents(){
     // Prompt gốc đổi thì bản hoàn chỉnh đã sửa không còn khớp nữa — bỏ đi, nếu
     // không sẽ chạy một prompt chứa nội dung của lần gõ trước.
     if(promptOverride){ promptOverride = ''; $('promptPreviewNote').textContent = 'Prompt đã đổi — bấm xem lại.'; }
+    $('prepareStatus').textContent = '';
   });
   $('btnFreePrompt').onclick = () => {
     $('goal').value = '';
