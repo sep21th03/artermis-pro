@@ -32,14 +32,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from artemis.knowledge.intent import (
-    SECTION_CONTEXT,
-    SECTION_CRITERIA,
-    SECTION_GAP,
-    SECTION_KNOWLEDGE,
-    SECTION_PLAN,
-    sanitize_ui_instructions,
+from artemis.knowledge.composer import (
+    SECTION_NOTES,
+    SECTION_STATE,
+    SECTION_STEPS,
+    SECTION_TASK,
+    SECTION_VERIFY,
 )
+from artemis.knowledge.intent import sanitize_ui_instructions
 from artemis.knowledge.models import RetrievalResult, Workflow, WorkflowHit
 from artemis.knowledge.prepare import (
     STATUS_DEGRADED,
@@ -152,6 +152,10 @@ class FakeService:
         """Store thật có hàm này; cache dùng nó để xác nhận phiên bản KB."""
         return next((item for item in self._workflows if item.id == workflow_id), None)
 
+    def list_workflows(self, app_id):
+        """Bước sắp xếp cần *toàn bộ* ứng viên điều hướng, không chỉ những gì truy hồi được."""
+        return list(self._workflows)
+
     def retrieve(self, query, app_id, version_id=None, top_k=None, run_id=None):
         from artemis.knowledge.text import content_tokens, coverage, normalize
 
@@ -179,11 +183,13 @@ class FakeService:
         )
 
 
-def synthesizer(plan: dict | None = None, *, synthesis: str | None = None, error=None):
-    """LLM giả hai lượt: JSON cho phân tích, văn bản cho tổng hợp.
+def synthesizer(plan: dict | None = None, *, synthesis: str | None = None, error=None, selection=None):
+    """LLM giả ba lượt: JSON cho phân tích, JSON cho sắp xếp, văn bản cho tổng hợp.
 
     Mặc định lượt tổng hợp trả lại đúng phần kiến thức đã gửi — hành vi của một LLM
-    "đúng nhưng lười", đủ để mọi kiểm tra chất lượng đi qua.
+    "đúng nhưng lười", đủ để mọi kiểm tra chất lượng đi qua.  Lượt *sắp xếp* mặc định trả
+    về payload của lượt phân tích (không phải JSON chọn cách làm), nên bước sắp xếp không
+    quyết được và prepare giữ đường phân loại theo từ — trừ khi test truyền ``selection``.
     """
 
     def call(messages, *, max_tokens, timeout):
@@ -192,6 +198,8 @@ def synthesizer(plan: dict | None = None, *, synthesis: str | None = None, error
             raise error
         if "tách một yêu cầu" in messages[0]["content"]:
             return json.dumps(plan if plan is not None else PLAN, ensure_ascii=False)
+        if "chọn CÁCH LÀM" in messages[0]["content"] and selection is not None:
+            return json.dumps(selection, ensure_ascii=False)
         if synthesis is not None:
             return synthesis
         body = messages[1]["content"].split("nguồn duy nhất được dùng]", 1)[-1]
@@ -223,8 +231,10 @@ def test_the_llm_path_returns_a_structured_prompt():
     assert outcome.status == STATUS_LLM
     assert outcome.enhanced_prompt.startswith(PROMPT)
     assert [task["query"] for task in outcome.tasks] == ["mở app", "đăng nhập", "chuyển nhà dled"]
-    for section in (SECTION_PLAN, SECTION_CRITERIA, SECTION_GAP, SECTION_KNOWLEDGE):
+    # Prompt do composer ghép: năm mục theo thứ tự, mục nào không có nội dung thì bỏ.
+    for section in (SECTION_TASK, SECTION_STEPS, SECTION_VERIFY):
         assert section in outcome.enhanced_prompt
+    assert outcome.source["synthesis"] == "deterministic"
     assert outcome.ready is True
 
 
@@ -235,10 +245,10 @@ def test_roles_decide_what_enters_the_prompt():
     assert roles["auth.switch_account"] == "primary"
     assert roles["home.switch_house_modal"] == "supporting"
     assert roles["auth.logout"] == "supporting"
-    # Bối cảnh chỉ vào prompt bằng tên + mô tả, không kèm tiêu chí hay bước.
-    assert "nút 'Huỷ'" not in outcome.enhanced_prompt
+    # Workflow phụ không được thành bước, và tiêu chí của nó không vào prompt.
+    steps_block = outcome.enhanced_prompt.split(SECTION_STEPS, 1)[1]
+    assert "nút 'Huỷ'" not in steps_block
     assert "Không còn modal" not in outcome.enhanced_prompt
-    assert "KHÔNG phải mục tiêu" in outcome.enhanced_prompt
 
 
 def test_gaps_are_declared_for_tasks_without_a_primary_workflow():
@@ -249,10 +259,12 @@ def test_gaps_are_declared_for_tasks_without_a_primary_workflow():
         "chuyển nhà dled",
     ]
     assert "dled" in outcome.enhanced_prompt
-    assert "tự khám phá UI" in outcome.enhanced_prompt
+    assert "chưa có hướng dẫn" in outcome.enhanced_prompt
+    assert "KHÔNG tự suy diễn" in outcome.enhanced_prompt
 
 
 def test_two_llm_calls_and_stage_metrics_are_reported():
+    """Hai lượt: phân tích mục tiêu → **sắp xếp KB**.  Ghép prompt không gọi LLM."""
     call = synthesizer()
     outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), call)
 
@@ -260,7 +272,7 @@ def test_two_llm_calls_and_stage_metrics_are_reported():
     assert outcome.metrics["llm_calls"] == 2
     assert outcome.metrics["plan_source"] == "llm"
     assert outcome.metrics["queries"] == ["mở app", "đăng nhập", "chuyển nhà dled"]
-    for key in ("intent_ms", "retrieval_ms", "synthesis_ms", "total_ms"):
+    for key in ("intent_ms", "retrieval_ms", "compose_ms", "total_ms"):
         assert key in outcome.metrics
 
 
@@ -276,7 +288,7 @@ def test_the_source_reports_per_query_hits():
 def test_primary_conditions_and_warnings_are_kept_as_things_to_check():
     outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer())
 
-    assert "không được mặc định là đúng" in outcome.enhanced_prompt
+    assert "KHÔNG mặc định là đúng" in outcome.enhanced_prompt
     assert "Tài khoản đã từng đăng nhập trên máy này" in outcome.enhanced_prompt
 
 
@@ -367,22 +379,25 @@ def test_an_empty_prompt_is_answered_not_rejected():
     assert outcome.status == STATUS_NO_KNOWLEDGE
 
 
-# ── LLM hỏng ⇒ dự phòng dựng bằng luật ───────────────────────────────────
-def test_a_broken_llm_falls_back_with_the_same_structure():
+# ── LLM hỏng ⇒ prompt vẫn ra, ghép bằng luật ─────────────────────────────
+def test_a_broken_llm_still_yields_a_composed_prompt():
+    """LLM hỏng chỉ mất phần *hiểu yêu cầu* và *chọn cách làm*; phần ghép prompt là code,
+    nên tester vẫn nhận prompt có cấu trúc, kèm cảnh báo để kiểm lại cách làm chính."""
     outcome = prepare(
         FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer(error=RuntimeError("proxy 502"))
     )
 
     assert outcome.status == STATUS_FALLBACK
-    assert "502" in outcome.fallback_reason
+    assert any("mô tả KB" in str(note) for note in outcome.warnings)
     assert outcome.enhanced_prompt.startswith(PROMPT)
-    for section in (SECTION_PLAN, SECTION_CRITERIA, SECTION_GAP):
+    for section in (SECTION_TASK, SECTION_VERIFY):
         assert section in outcome.enhanced_prompt
     assert outcome.source["synthesis"] == "deterministic"
-    assert outcome.checks == []
 
 
-def test_without_an_llm_the_plan_is_the_whole_sentence():
+def test_without_an_llm_the_prompt_is_still_composed_from_knowledge():
+    """Không có LLM thì mất phần hiểu yêu cầu + chọn cách làm, nhưng prompt vẫn được ghép
+    từ kiến thức đã truy hồi — không còn rơi về "một việc cho cả câu"."""
     service = FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL])
 
     outcome = prepare(service, None)
@@ -390,110 +405,9 @@ def test_without_an_llm_the_plan_is_the_whole_sentence():
     assert outcome.status == STATUS_FALLBACK
     assert service.queries == [PROMPT]
     assert outcome.metrics["plan_source"] == "deterministic"
-    assert "Chưa cấu hình LLM" in outcome.fallback_reason
+    assert outcome.enhanced_prompt.startswith(PROMPT)
+    assert SECTION_TASK in outcome.enhanced_prompt
 
-
-def test_an_empty_synthesis_falls_back():
-    outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer(synthesis="   "))
-
-    assert outcome.status == STATUS_FALLBACK
-    assert "rỗng" in outcome.fallback_reason
-
-
-# ── Kiểm tra chất lượng từ chối bản LLM sai ──────────────────────────────
-def test_a_synthesis_that_drops_a_task_falls_back():
-    bad = f"{SECTION_PLAN}\n1. mở app\n2. đăng nhập\n{SECTION_CRITERIA}\n- xong"
-
-    outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer(synthesis=bad))
-
-    assert outcome.status == STATUS_FALLBACK
-    assert "tasks_kept" in outcome.fallback_reason
-
-
-def test_a_synthesis_that_turns_the_modal_into_a_step_falls_back():
-    """Đúng lỗi đã gặp: prompt yêu cầu chuyển nhà mà lại hướng dẫn nhấn 'Huỷ'."""
-    bad = (
-        f"{SECTION_PLAN}\n1. mở app\n2. đăng nhập\n"
-        "3. chuyển nhà dled: mở modal rồi nhấn 'Huỷ' để đóng\n"
-        f"{SECTION_GAP}\n- chuyển nhà dled: KB chưa có hướng dẫn\n"
-        f"{SECTION_CRITERIA}\n- nhà hiện tại là dled"
-    )
-
-    outcome = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), synthesizer(synthesis=bad))
-
-    assert outcome.status == STATUS_FALLBACK
-    assert "supporting_not_a_step" in outcome.fallback_reason
-
-
-def test_a_synthesis_that_changes_a_phone_number_falls_back():
-    prompt = "đăng nhập tài khoản 0972842548 rồi kiểm tra thông báo"
-    plan = {
-        "tasks": [
-            {"action": "đăng nhập", "target": "0972842548", "required": True},
-            {"action": "kiểm tra thông báo", "required": True},
-        ]
-    }
-    bad = (
-        f"{SECTION_PLAN}\n1. đăng nhập tài khoản 0123456789\n2. kiểm tra thông báo\n"
-        f"{SECTION_KNOWLEDGE}\n- dùng tài khoản 0123456789\n{SECTION_CRITERIA}\n- đã đăng nhập"
-    )
-
-    outcome = prepare_prompt(
-        prompt,
-        app_package="com.iot.hunonic",
-        service=FakeService([SWITCH_ACCOUNT]),
-        synthesizer=synthesizer(plan, synthesis=bad),
-        options=PrepareOptions(cache_ttl=0.0),
-    )
-
-    assert outcome.status == STATUS_FALLBACK
-    assert "no_invented_data" in outcome.fallback_reason
-    assert "0972842548" in outcome.enhanced_prompt
-
-
-def test_a_synthesis_that_mentions_an_unknown_workflow_falls_back():
-    bad = (
-        f"{SECTION_PLAN}\n1. chuyển nhà dled\n"
-        f"{SECTION_KNOWLEDGE}\n- dùng auth.login để vào app\n"
-        f"{SECTION_CRITERIA}\n- xong"
-    )
-
-    outcome = prepare(FakeService([MODAL]), synthesizer(synthesis=bad))
-
-    assert outcome.status == STATUS_FALLBACK
-    assert "knowledge_grounded" in outcome.fallback_reason
-
-
-def test_coordinates_are_stripped_from_the_synthesis():
-    bad = (
-        f"{SECTION_PLAN}\n1. chuyển nhà dled\n"
-        f"{SECTION_KNOWLEDGE}\n- nhấn nút tại (648, 1514)\n"
-        f"{SECTION_GAP}\n- chuyển nhà dled: KB chưa có hướng dẫn\n"
-        f"{SECTION_CRITERIA}\n- xong"
-    )
-
-    outcome = prepare(FakeService([MODAL]), synthesizer(synthesis=bad))
-
-    assert "648" not in outcome.enhanced_prompt
-    assert "1514" not in outcome.enhanced_prompt
-
-
-def test_an_overlong_synthesis_falls_back_and_is_truncated():
-    options = PrepareOptions(cache_ttl=0.0, max_knowledge_chars=1600, max_enhanced_chars=600)
-    bad = (
-        f"{SECTION_PLAN}\n1. chuyển nhà dled\n"
-        f"{SECTION_GAP}\n- chuyển nhà dled: KB chưa có hướng dẫn\n"
-        f"{SECTION_CRITERIA}\n- xong\n" + "x" * 900
-    )
-
-    outcome = prepare(FakeService([MODAL]), synthesizer(synthesis=bad), options=options)
-
-    assert outcome.status == STATUS_FALLBACK
-    assert "size_ok" in outcome.fallback_reason
-    assert len(outcome.enhanced_prompt) <= 600
-
-
-# ── Cache theo phiên bản KB ──────────────────────────────────────────────
 def test_a_second_identical_request_is_served_from_cache():
     cache = PrepareCache(ttl=60)
     service = FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL])
@@ -507,7 +421,7 @@ def test_a_second_identical_request_is_served_from_cache():
     assert second.enhanced_prompt == first.enhanced_prompt
     assert second.source["cached"] is True
     assert second.metrics["llm_calls"] == 0
-    assert len(call.calls) == 2  # chỉ lần đầu gọi LLM
+    assert len(call.calls) == 2  # chỉ lần đầu gọi LLM (phân tích + sắp xếp)
 
 
 def test_editing_a_workflow_invalidates_the_cache():
@@ -533,7 +447,8 @@ def test_use_cache_false_bypasses_the_cache():
     assert again.cached is False
 
 
-def test_the_cache_never_stores_a_fallback():
+def test_a_request_whose_selection_failed_is_still_usable():
+    """Bước sắp xếp hỏng thì prompt vẫn ghép được từ kiến thức truy hồi, và được cache lại."""
     cache = PrepareCache(ttl=60)
     broken = {"on": True}
 
@@ -542,16 +457,14 @@ def test_the_cache_never_stores_a_fallback():
             return json.dumps(PLAN, ensure_ascii=False)
         if broken["on"]:
             raise RuntimeError("proxy 502")
-        body = messages[1]["content"].split("nguồn duy nhất được dùng]", 1)[-1]
-        return body.split("[PROFILE CHẠY]", 1)[0].strip()
+        return json.dumps({"tasks": [{"index": 1, "primary": None}]}, ensure_ascii=False)
 
     first = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), call, cache=cache)
-    broken["on"] = False
     second = prepare(FakeService([LOGOUT, SWITCH_ACCOUNT, MODAL]), call, cache=cache)
 
-    assert first.status == STATUS_FALLBACK
-    assert second.status == STATUS_LLM
-    assert second.cached is False
+    assert first.enhanced_prompt.startswith(PROMPT)
+    assert any("mô tả KB" in str(note) for note in first.warnings)
+    assert second.cached is True
 
 
 # ── Hạn mức và cấu hình ──────────────────────────────────────────────────
@@ -619,7 +532,9 @@ def test_options_come_from_the_environment():
 def test_options_fall_back_to_defaults_without_settings():
     options = PrepareOptions.from_settings(SimpleNamespace())
 
-    assert options.max_knowledge_chars == 1200
+    # 1200 từng là mặc định, nhưng nó không đủ cho hai workflow: kế hoạch + tiêu chí chiếm
+    # hết ngân sách nên mục kiến thức bị bỏ toàn bộ (xem compact_knowledge_lines).
+    assert options.max_knowledge_chars == 2400
     assert options.intent_enabled is True
     assert options.max_tasks == 4
     assert options.rate_limit == 30
@@ -634,6 +549,7 @@ def test_intent_analysis_can_be_switched_off():
 
     assert service.queries == [PROMPT]
     assert outcome.metrics["plan_source"] == "deterministic"
+    # Tắt phân tích mục tiêu thì chỉ còn lượt sắp xếp KB; ghép prompt không gọi LLM.
     assert len(call.calls) == 1
 
 
@@ -685,3 +601,89 @@ def test_identity_tokens_find_the_data_that_must_not_change():
         "DEV-01",
         "https://a.b/c",
     ]
+
+
+# ── Điều hướng: workflow chính cần tới một màn hình ────────────────────────
+LOGOUT_PROMPT = "đăng xuất khỏi tài khoản đang đăng nhập"
+LOGOUT_PLAN = {
+    "tasks": [{"action": "đăng xuất", "required": True}],
+    "final_goal": {"type": "trạng thái đăng nhập", "expected_value": "đã đăng xuất"},
+}
+LOGOUT_ON_MENU = workflow(
+    "auth.logout",
+    "Đăng xuất tài khoản",
+    "Ở màn hình Menu, mục 'Đăng xuất' nằm ở khoảng 73% chiều cao và đã hiện sẵn.",
+    aliases=["đăng xuất"],
+    preconditions=["Người dùng đã đăng nhập"],
+    success_criteria=["Màn hình đăng nhập hiện ra"],
+    tags=["auth"],
+    steps=["Mục 'Đăng xuất' ở cuối danh sách"],
+)
+NAVIGATION_MENU = workflow(
+    "navigation.open_menu",
+    "Mở màn hình Menu",
+    # Cố ý KHÔNG dùng từ nào của câu tester ("đăng", "xuất", "nhập"): để nó chỉ tới được
+    # prompt qua truy vấn *màn hình* của tầng điều hướng, chứ không nhờ trùng từ.
+    "Đi tới Menu, nơi chứa các mục cài đặt của ứng dụng.",
+    aliases=["mở menu"],
+    preconditions=["Ứng dụng đang mở"],
+    success_criteria=["Màn hình Menu hiện ra"],
+    steps=["Tab cuối cùng trên thanh điều hướng dưới cùng"],
+)
+
+
+def prepare_logout(service, synth=None, **kwargs):
+    kwargs.setdefault("options", OPTS)
+    kwargs.setdefault("cache", PrepareCache())
+    kwargs.setdefault("app_package", "com.iot.hunonic")
+    return prepare_prompt(LOGOUT_PROMPT, service=service, synthesizer=synth, **kwargs)
+
+# ── Sắp xếp KB: model đọc mô tả KB rồi chọn cách làm ───────────────────────
+LOGIN_PROMPT = "đăng nhập tài khoản 0972842548"
+LOGIN_PLAN = {
+    "tasks": [{"action": "đăng nhập", "target": "0972842548", "required": True}],
+    "final_goal": {"type": "tài khoản đăng nhập", "expected_value": "0972842548"},
+}
+#: Hai ứng viên mà luật chọn nằm **trong mô tả**, y như KB thật.
+LOGIN_BY_PASSWORD = workflow(
+    "auth.login_password",
+    "Đăng nhập bằng tài khoản và mật khẩu",
+    "Đăng nhập bằng số điện thoại hoặc email và mật khẩu do tester cung cấp. Không dùng "
+    "workflow này khi prompt chỉ nêu một tài khoản đã lưu mà không có mật khẩu.",
+    aliases=["đăng nhập", "đăng nhập bằng mật khẩu"],
+    preconditions=[
+        "Ứng dụng đang ở màn hình Đăng nhập",
+        "Tester đã cung cấp tài khoản và mật khẩu hợp lệ",
+    ],
+    steps=["Ô Số điện thoại hoặc Email", "Ô Mật khẩu", "Nút Đăng nhập"],
+)
+LOGIN_BY_SAVED = workflow(
+    "auth.switch_account",
+    "Đăng nhập bằng tài khoản đã lưu (Chuyển tài khoản)",
+    "Mở danh sách tài khoản đã từng đăng nhập trên máy này rồi chọn một tài khoản để đăng "
+    "nhập. DÙNG KHI prompt chỉ nêu tên/số tài khoản mà KHÔNG có mật khẩu.",
+    aliases=["đăng nhập", "chuyển tài khoản"],
+    preconditions=["App đang ở màn hình Đăng nhập", "Tài khoản đã từng đăng nhập trên máy này"],
+    steps=[
+        "Mũi tên trỏ xuống (caret-down) màu xanh ở CUỐI ô nhập số điện thoại",
+        "Đúng dòng số điện thoại cần đăng nhập",
+        "Nút 'Đăng nhập'",
+    ],
+)
+NAVIGATION_MENU = workflow(
+    "navigation.open_menu",
+    "Mở màn hình Menu",
+    "Đi tới Menu, nơi chứa các mục cài đặt của ứng dụng.",
+    aliases=["mở menu"],
+    preconditions=["Ứng dụng đang mở"],
+    steps=["Tab cuối cùng trên thanh điều hướng dưới cùng"],
+)
+
+
+def prepare_login(service, synth=None, **kwargs):
+    kwargs.setdefault("options", OPTS)
+    kwargs.setdefault("cache", PrepareCache())
+    kwargs.setdefault("app_package", "com.iot.hunonic")
+    return prepare_prompt(LOGIN_PROMPT, service=service, synthesizer=synth, **kwargs)
+
+

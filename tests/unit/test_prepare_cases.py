@@ -31,13 +31,11 @@ import json
 
 import pytest
 
-from artemis.knowledge.intent import (
-    ROLE_PRIMARY,
-    SECTION_CONTEXT,
-    SECTION_CRITERIA,
-    SECTION_GAP,
-    SECTION_KNOWLEDGE,
-    SECTION_PLAN,
+from artemis.knowledge.intent import ROLE_PRIMARY
+from artemis.knowledge.composer import (
+    SECTION_NOTES,
+    SECTION_STEPS,
+    SECTION_VERIFY,
 )
 from artemis.knowledge.models import RetrievalResult, Workflow, WorkflowHit
 from artemis.knowledge.prepare import (
@@ -216,7 +214,7 @@ def test_case1_logout_is_never_the_workflow_that_executes():
 
     assert roles(outcome)["auth.logout"] != ROLE_PRIMARY
     # Nhắc tới nó như *bối cảnh* thì được; đưa nó vào phần chỉ dẫn thì không.
-    instructions = outcome.enhanced_prompt.split(SECTION_CONTEXT, 1)[0]
+    instructions = outcome.enhanced_prompt.split(SECTION_NOTES, 1)[0]
     assert "auth.logout" not in instructions
     assert "Đăng xuất" not in instructions
     # Và tiêu chí/bước của nó không bao giờ vào prompt.
@@ -230,21 +228,21 @@ def test_case1_the_modal_is_not_presented_as_the_way_to_switch_house():
     assert "Huỷ" not in outcome.enhanced_prompt
     assert "Không còn modal" not in outcome.enhanced_prompt
     # Nhưng thông tin hữu ích của luật đó vẫn còn, ở mục bối cảnh.
-    assert SECTION_CONTEXT in outcome.enhanced_prompt
+    assert SECTION_NOTES in outcome.enhanced_prompt
     assert "KHÔNG phải lỗi" in outcome.enhanced_prompt
 
 
 def test_case1_the_completion_criterion_verifies_the_current_house():
     outcome = run(CASE1_PROMPT, CASE1_PLAN, [LOGOUT, SWITCH_ACCOUNT, MODAL])
 
-    criteria = outcome.enhanced_prompt.split(SECTION_CRITERIA, 1)[1]
+    criteria = outcome.enhanced_prompt.split(SECTION_VERIFY, 1)[1]
     assert "dled" in criteria
 
 
 def test_case1_the_missing_switch_house_workflow_is_declared():
     outcome = run(CASE1_PROMPT, CASE1_PLAN, [LOGOUT, SWITCH_ACCOUNT, MODAL])
 
-    assert SECTION_GAP in outcome.enhanced_prompt
+    assert "chưa có hướng dẫn" in outcome.enhanced_prompt
     assert [gap["task"]["query"] for gap in outcome.knowledge_gaps] == [
         "mở app",
         "chuyển nhà dled",
@@ -274,7 +272,7 @@ def test_case2_the_account_number_is_preserved_and_verified():
     outcome = run(CASE2_PROMPT, CASE2_PLAN, [LOGOUT, SWITCH_ACCOUNT, MODAL])
 
     assert "0972842548" in outcome.enhanced_prompt
-    criteria = outcome.enhanced_prompt.split(SECTION_CRITERIA, 1)[1]
+    criteria = outcome.enhanced_prompt.split(SECTION_VERIFY, 1)[1]
     assert "0972842548" in criteria
 
 
@@ -282,14 +280,14 @@ def test_case2_a_saved_account_is_not_assumed():
     """Điều kiện của workflow phải được trình bày như *điều phải kiểm tra*."""
     outcome = run(CASE2_PROMPT, CASE2_PLAN, [LOGOUT, SWITCH_ACCOUNT, MODAL])
 
-    assert "không được mặc định là đúng" in outcome.enhanced_prompt
+    assert "KHÔNG mặc định là đúng" in outcome.enhanced_prompt
     assert "đã từng đăng nhập trên máy này" in outcome.enhanced_prompt
 
 
 def test_case2_the_modal_rule_stays_out_of_the_instructions():
     outcome = run(CASE2_PROMPT, CASE2_PLAN, [LOGOUT, SWITCH_ACCOUNT, MODAL])
 
-    plan_and_knowledge = outcome.enhanced_prompt.split(SECTION_CONTEXT, 1)[0]
+    plan_and_knowledge = outcome.enhanced_prompt.split(SECTION_NOTES, 1)[0]
     assert "Huỷ" not in plan_and_knowledge
 
 
@@ -312,7 +310,7 @@ def test_case3_no_login_or_logout_is_added():
 def test_case3_an_already_correct_house_ends_the_task_after_verification():
     outcome = run(CASE3_PROMPT, CASE3_PLAN, [LOGOUT, SWITCH_ACCOUNT, MODAL])
 
-    criteria = outcome.enhanced_prompt.split(SECTION_CRITERIA, 1)[1]
+    criteria = outcome.enhanced_prompt.split(SECTION_VERIFY, 1)[1]
     assert "nhà hiện tại" in criteria
     assert "dled" in criteria
 
@@ -373,74 +371,30 @@ def test_case5_the_goal_is_kept_so_the_agent_can_explore():
 
 
 # ── Ca 6: workflow phụ có chỉ dẫn mâu thuẫn ──────────────────────────────
+#: Đầu ra của một LLM "cố tình viết sai".  Từ khi prompt do composer ghép, văn bản này
+#: **không** còn đường vào prompt — nhưng vẫn giữ ca kiểm để chứng minh điều đó.
 CONTRADICTORY = (
-    f"{SECTION_PLAN}\n"
     "1. mở app\n"
     "2. đăng nhập\n"
     "3. chuyển nhà dled: mở modal 'Chuyển nhà' rồi nhấn 'Huỷ' cho nhanh\n"
-    f"{SECTION_GAP}\n"
-    "- chuyển nhà dled: KB chưa có workflow thực hiện việc này\n"
-    f"{SECTION_CRITERIA}\n"
     "- nhà hiện tại là dled"
 )
 
 
-def test_case6_a_contradicting_instruction_is_rejected():
+def test_case6_a_contradicting_instruction_never_reaches_the_prompt():
+    """Ca 6: luật phụ mâu thuẫn với mục tiêu (\"nhấn Huỷ để đóng modal\").
+
+    Bản trước phải *từ chối* bản LLM viết lại (và rơi về bản dự phòng) vì LLM có thể biến
+    luật thành bước.  Nay prompt do composer ghép nên chỉ workflow được chọn mới có bước:
+    chỉ dẫn sai không thể xuất hiện ngay từ cấu trúc, không cần cơ chế từ chối.
+    """
     outcome = run(
         CASE1_PROMPT, CASE1_PLAN, [LOGOUT, SWITCH_ACCOUNT, MODAL], synthesis=CONTRADICTORY
     )
 
-    assert outcome.status == STATUS_FALLBACK
-    assert "supporting_not_a_step" in outcome.fallback_reason
-    assert "nhấn 'Huỷ'" not in outcome.enhanced_prompt
     assert "Huỷ" not in outcome.enhanced_prompt
-
-
-def test_an_unquoted_mention_of_a_label_is_not_a_leak():
-    """Một từ thường gặp trong câu văn không phải bằng chứng rằng luật đã thành bước."""
-    fine = (
-        f"{SECTION_PLAN}\n1. mở app\n2. đăng nhập\n3. chuyển nhà dled\n"
-        f"{SECTION_KNOWLEDGE}\n"
-        "- auth.switch_account: xác nhận để vào tài khoản; kiểm tra trên UI rằng "
-        "màn hình chính của app hiện ra\n"
-        f"{SECTION_CONTEXT}\n- home.switch_house_modal — Xử lý modal 'Chuyển nhà'\n"
-        f"{SECTION_GAP}\n- chuyển nhà dled: KB chưa có hướng dẫn\n"
-        f"{SECTION_CRITERIA}\n- nhà hiện tại là dled"
-    )
-
-    outcome = run(CASE1_PROMPT, CASE1_PLAN, [LOGOUT, SWITCH_ACCOUNT, MODAL], synthesis=fine)
-
-    assert outcome.status == STATUS_LLM
-    assert all(check.ok for check in outcome.checks)
-    assert "xác nhận để vào tài khoản" in outcome.enhanced_prompt
-
-
-def test_a_missing_section_is_repaired_from_the_classified_knowledge():
-    """Mục là cấu trúc: thiếu mục thì chèn lại, không từ chối cả bản LLM."""
-    partial = (
-        f"{SECTION_PLAN}\n1. mở app\n2. đăng nhập\n3. chuyển nhà dled\n"
-        f"{SECTION_KNOWLEDGE}\n- auth.switch_account: xem màn hình chính của app hiện ra\n"
-        f"{SECTION_CRITERIA}\n- nhà hiện tại là dled"
-    )
-
-    outcome = run(CASE1_PROMPT, CASE1_PLAN, [LOGOUT, SWITCH_ACCOUNT, MODAL], synthesis=partial)
-
-    assert outcome.status == STATUS_LLM
-    assert SECTION_GAP in outcome.enhanced_prompt
-    assert SECTION_CONTEXT in outcome.enhanced_prompt
-    assert "chuyển nhà dled" in outcome.enhanced_prompt
-    assert all(check.ok for check in outcome.checks)
-
-
-def test_repair_never_removes_what_the_llm_wrote():
-    partial = (
-        f"{SECTION_PLAN}\n1. mở app\n2. đăng nhập\n3. chuyển nhà dled\n{SECTION_CRITERIA}\n- xong"
-    )
-
-    outcome = run(CASE1_PROMPT, CASE1_PLAN, [LOGOUT, SWITCH_ACCOUNT, MODAL], synthesis=partial)
-
-    assert "1. mở app" in outcome.enhanced_prompt
-    assert outcome.status in {STATUS_LLM, STATUS_FALLBACK}
+    assert "đóng modal" not in outcome.enhanced_prompt
+    assert outcome.enhanced_prompt.startswith(CASE1_PROMPT)
 
 
 def test_case6_the_useful_part_of_the_rule_is_kept():
@@ -448,18 +402,18 @@ def test_case6_the_useful_part_of_the_rule_is_kept():
         CASE1_PROMPT, CASE1_PLAN, [LOGOUT, SWITCH_ACCOUNT, MODAL], synthesis=CONTRADICTORY
     )
 
-    # Bản dự phòng vẫn giữ dòng bối cảnh: modal là gợi ý bình thường, không phải lỗi.
-    assert SECTION_CONTEXT in outcome.enhanced_prompt
+    # Luật của app vẫn còn, ở mục LƯU Ý: modal là gợi ý bình thường, không phải lỗi.
+    assert SECTION_NOTES in outcome.enhanced_prompt
     assert "KHÔNG phải lỗi" in outcome.enhanced_prompt
     assert "dled" in outcome.enhanced_prompt
 
 
-def test_case6_the_deterministic_prompt_also_drops_the_contradiction():
+def test_case6_the_instruction_part_has_no_modal_action():
     outcome = run(
         CASE1_PROMPT, CASE1_PLAN, [LOGOUT, SWITCH_ACCOUNT, MODAL], synthesis=CONTRADICTORY
     )
 
-    instruction = outcome.enhanced_prompt.split(SECTION_CONTEXT, 1)[0]
+    instruction = outcome.enhanced_prompt.split(SECTION_NOTES, 1)[0]
     assert "Huỷ" not in instruction
     assert "đóng modal" not in instruction
 

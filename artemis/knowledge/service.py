@@ -359,6 +359,24 @@ class KnowledgeService:
         result = self.retrieve(query, app_id, version_id=version_id, run_id=run_id)
         return result, build_context(result, self.context_max_chars)
 
+    def list_workflows(self, app_id: str) -> list[Workflow]:
+        """Mọi workflow của một app — dùng để đưa *toàn bộ* ứng viên điều hướng vào bước chọn.
+
+        Truy hồi theo câu của tester không đáng tin cho việc này: đo trên KB thật,
+        ``xóa phòng`` không trả về workflow ``navigation.*`` nào, nên nếu chỉ đưa những gì
+        truy hồi được thì model không có gì để chọn.  Danh sách này nhỏ (theo namespace của
+        bộ dữ liệu) nên đưa hết rồi để model đọc mô tả mà chọn.
+
+        Không bao giờ raise: KB hỏng thì trả rỗng.
+        """
+        if self._store is None:
+            return []
+        try:
+            return list(self._store.list_workflows(app_id=app_id))
+        except Exception as exc:  # noqa: BLE001 - danh sách ứng viên là phụ trợ
+            logger.warning("Không liệt kê được workflow của %s: %s", app_id, exc)
+            return []
+
     def _log(self, result: RetrievalResult, run_id: str | None) -> None:
         if self._store is None:
             return

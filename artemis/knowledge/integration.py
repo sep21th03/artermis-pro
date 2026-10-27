@@ -38,6 +38,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from artemis.knowledge.service import KnowledgeService, get_service
+from artemis.perf import PerfStage, perf_span_sync, record_event
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,36 @@ def resolve_app_id(app_package: str | None, service: KnowledgeService) -> str | 
         return None
 
 
+#: Kênh RAG (trong ``RetrievalResult.timings_ms``) → công đoạn trong bảng Performance.
+_RAG_CHANNELS = (
+    ("embed_ms", PerfStage.RAG_EMBEDDING, "rag_embedding"),
+    ("vector_ms", PerfStage.RAG_SEARCH, "rag_vector_search"),
+    ("exact_ms", PerfStage.RAG_SEARCH, "rag_exact_search"),
+    ("keyword_ms", PerfStage.RAG_SEARCH, "rag_keyword_search"),
+)
+
+
+def _emit_rag_channel_events(span, result) -> None:
+    """Phát từng kênh của một lần truy xuất thành sự kiện con.
+
+    Số đo lấy từ ``RetrievalResult.timings_ms`` — service đã đo sẵn từng kênh, nên lớp
+    hiệu năng chuyển nó sang định dạng chung thay vì đo lại; đo lại chính là làm sai lệch
+    con số đang muốn quan sát.
+    """
+    timings = getattr(result, "timings_ms", None) or {}
+    if not isinstance(timings, dict):
+        return
+    parent = span.event.span_id
+    for key, stage, name in _RAG_CHANNELS:
+        value = timings.get(key)
+        if isinstance(value, (int, float)):
+            record_event(stage, name, duration_ms=float(value), parent_span_id=parent)
+    span.note(
+        channels={key: timings[key] for key, _, _ in _RAG_CHANNELS if key in timings},
+        workflows=len(getattr(result, "hits", []) or []),
+    )
+
+
 def retrieve_for_run(
     goal: str,
     app_package: str | None = None,
@@ -173,7 +204,10 @@ def retrieve_for_run(
         )
 
     try:
-        result, text = service.context_for(goal, app_id, run_id=run_id)
+        with perf_span_sync(PerfStage.RAG_RETRIEVE, "rag_retrieve", detail={"app_id": app_id}) as span:
+            result, text = service.context_for(goal, app_id, run_id=run_id)
+            if span is not None:
+                _emit_rag_channel_events(span, result)
     except Exception as exc:  # noqa: BLE001 - retrieval is advisory
         logger.warning("Truy xuất knowledge base lỗi: %s", exc)
         return KnowledgeContext(
@@ -240,8 +274,18 @@ def _retrieve_remote(
         timeout = 20.0
 
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        with perf_span_sync(
+            PerfStage.RAG_RETRIEVE,
+            "rag_retrieve_remote",
+            detail={"endpoint": base, "app_package": app_package},
+        ) as span:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            if span is not None:
+                span.note(
+                    http_status=getattr(response, "status", None),
+                    workflows=len(data.get("workflow_ids") or []),
+                )
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:200]
         logger.warning("Console từ chối truy xuất kiến thức (%s): %s", exc.code, detail)

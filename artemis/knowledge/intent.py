@@ -271,6 +271,33 @@ def _clean_field(value: object) -> str:
     return text[:MAX_FIELD_CHARS].strip()
 
 
+def _drop_contained_tasks(tasks: Sequence[TaskSpec]) -> list[TaskSpec]:
+    """Bỏ task mà nội dung đã nằm trong một task khác (task ngắn hơn bị task đầy đủ bao trùm).
+
+    Đo trên máy thật: câu ``vào màn hẹn giờ … 3 lần xem có bao nhiêu danh sách hẹn giờ`` bị
+    tách thành hai việc — "vào màn hẹn giờ Ổ cắm 12" và "vào màn hẹn giờ 3 lần xem có bao nhiêu
+    …".  Hai việc đó là **một** việc, nhưng kế hoạch có hai mốc nên agent phải làm xong cả hai:
+    nó vào màn hẹn giờ, thoát ra, rồi vào lại.  Giữ việc đầy đủ hơn (nhiều token hơn), bỏ việc
+    bị bao trùm.
+
+    Không dùng ngưỡng mờ: chỉ bỏ khi tập token của việc này là **tập con** của việc kia, nên
+    hai việc khác nhau (dù trùng nhiều từ) vẫn được giữ nguyên.
+    """
+    kept: list[TaskSpec] = []
+    tokens = [set(content_tokens(f"{task.action} {task.target}")) for task in tasks]
+    for index, task in enumerate(tasks):
+        mine = tokens[index]
+        contained = any(
+            other_index != index and mine and mine < other_tokens
+            for other_index, other_tokens in enumerate(tokens)
+        )
+        if contained:
+            logger.info("Bỏ việc bị việc khác bao trùm: %r", task.action)
+            continue
+        kept.append(task)
+    return kept or list(tasks)
+
+
 def _plan_from_payload(payload: dict, prompt: str, *, max_tasks: int) -> IntentPlan | None:
     """Validate JSON của LLM; trả None khi kế hoạch không dùng được.
 
@@ -314,7 +341,7 @@ def _plan_from_payload(payload: dict, prompt: str, *, max_tasks: int) -> IntentP
 
     final_goal = payload.get("final_goal")
     return IntentPlan(
-        tasks=tasks,
+        tasks=_drop_contained_tasks(tasks),
         final_goal=dict(final_goal) if isinstance(final_goal, dict) else {},
         source="llm",
     )
@@ -380,12 +407,18 @@ def analyze_intent(
 
 
 # ── Phân loại workflow theo từng task ────────────────────────────────────
+# Ghi chú: việc chọn *cách làm* dựa trên luật nằm trong mô tả KB (``DÙNG KHI …`` /
+# ``Không dùng … khi …``) do model đọc — xem ``artemis.knowledge.prompt_builder``.  Tầng
+# dưới đây là đường phân loại theo từ, dùng khi không có LLM hoặc LLM trả rác.
+
+
 def classify_task(
     task: TaskSpec,
     hits: Sequence[WorkflowHit],
     *,
     min_intent_coverage: float,
     min_name_coverage: float,
+    prompt: str = "",
 ) -> list[RoleAssignment]:
     """Gán vai trò cho từng workflow đã truy xuất cho ``task``.
 
@@ -394,12 +427,26 @@ def classify_task(
     * Workflow được KB đánh dấu là **luật** (tag ``rule``/``modal``…) → SUPPORTING.
       Một luật nói *phải làm gì khi gặp trạng thái X*; nó không bao giờ là chức năng.
     * Tên workflow phủ được hành động của task **và** hit đó có bằng chứng từ vựng
-      (``trusted``) → PRIMARY.  Tên là phát biểu chính thức về mục đích của workflow.
+      (``trusted``) → ứng viên PRIMARY.  Tên là phát biểu chính thức về mục đích.
     * Chỉ *mô tả/alias* phủ hành động → SUPPORTING: trùng từ, nhưng mục đích không
       phải việc này (ví dụ workflow đăng xuất có alias "đăng nhập tài khoản khác").
     * Không phủ gì → IRRELEVANT.
+
+    **Hai chốt chặn trên đường thành PRIMARY** (đo trên KB thật, câu
+    ``đăng xuất và đăng nhập tài khoản 0972842548``): trước đây cả ``auth.login_password``
+    và ``auth.register`` đều thành PRIMARY cùng ``auth.switch_account``, nên prompt đưa ra
+    ba cách làm mâu thuẫn nhau cho một việc — agent bị chỉ sang đường cần mật khẩu (không
+    có trong prompt) và đường tạo tài khoản mới (không ai yêu cầu).
+
+    1. **Thiếu đầu vào mà điều kiện trước đòi.** KB tự khai điều kiện trước; nếu điều kiện
+       đó cần một bí mật (mật khẩu/OTP/PIN) mà câu của tester không có, workflow này
+       *không thể* là cách làm việc đó — dù tên nó khớp từ.
+    2. **Một việc chỉ có một cách làm chính.** Nhiều ứng viên cùng khớp tên thì chỉ giữ
+       ứng viên phủ tên cao nhất; phần còn lại xuống SUPPORTING kèm lý do, để prompt không
+       dạy agent ba quy trình cho một hành động.
     """
     action_tokens = content_tokens(task.action)
+    scored: list[tuple[float, float, WorkflowHit, str]] = []
     assignments: list[RoleAssignment] = []
     for hit in hits:
         workflow = hit.workflow
@@ -423,14 +470,43 @@ def classify_task(
                     ROLE_IRRELEVANT,
                     "workflow luật nhưng không liên quan tới việc này",
                 )
-        elif name_cov >= min_name_coverage and hit.trusted:
-            role, reason = ROLE_PRIMARY, "tên workflow đúng là hành động này"
-        elif intent_cov >= min_intent_coverage:
-            role, reason = ROLE_SUPPORTING, "trùng từ với hành động nhưng mục đích khác"
         else:
-            role, reason = ROLE_IRRELEVANT, "không phục vụ hành động này"
+            if name_cov >= min_name_coverage and hit.trusted:
+                scored.append((name_cov, intent_cov, hit, ""))
+                continue
+            elif intent_cov >= min_intent_coverage:
+                role, reason = ROLE_SUPPORTING, "trùng từ với hành động nhưng mục đích khác"
+            else:
+                role, reason = ROLE_IRRELEVANT, "không phục vụ hành động này"
         assignments.append(
             RoleAssignment(workflow_id=workflow.id, role=role, reason=reason, evidence=evidence)
+        )
+
+    # Chốt 2: chỉ ứng viên phủ tên cao nhất được làm cách chính.
+    scored.sort(key=lambda item: (item[0], item[1], item[2].trusted), reverse=True)
+    for rank, (name_cov, intent_cov, hit, _reason) in enumerate(scored):
+        if rank == 0:
+            role, reason = ROLE_PRIMARY, "tên workflow đúng là hành động này"
+        else:
+            role, reason = (
+                ROLE_SUPPORTING,
+                f"cùng khớp nhưng không phải cách chính (độ phủ tên {name_cov:.2f} < "
+                f"{scored[0][0]:.2f} của {scored[0][2].workflow.id})",
+            )
+        workflow = hit.workflow
+        assignments.append(
+            RoleAssignment(
+                workflow_id=workflow.id,
+                role=role,
+                reason=reason,
+                evidence={
+                    "name_coverage": round(name_cov, 3),
+                    "intent_coverage": round(intent_cov, 3),
+                    "trusted": hit.trusted,
+                    "channels": dict(hit.channels),
+                    "is_rule": is_rule(workflow),
+                },
+            )
         )
     return assignments
 
@@ -470,10 +546,13 @@ def build_task_knowledge(
     *,
     min_intent_coverage: float,
     min_name_coverage: float,
+    prompt: str = "",
 ) -> list[TaskKnowledge]:
     """Phân loại hit của từng task; hit không có bằng chứng nào bị loại khỏi kết quả.
 
     ``retrieved`` là cặp ``(task, hits)`` theo đúng thứ tự task trong kế hoạch.
+    ``prompt`` là câu gốc của tester — cần để biết workflow nào đòi đầu vào mà prompt
+    không có (xem :func:`missing_required_input`).
     """
     entries: list[TaskKnowledge] = []
     for index, (task, hits) in enumerate(retrieved):
@@ -482,6 +561,7 @@ def build_task_knowledge(
             hits,
             min_intent_coverage=min_intent_coverage,
             min_name_coverage=min_name_coverage,
+            prompt=prompt,
         )
         by_id = {hit.workflow.id: hit for hit in hits}
         entry = TaskKnowledge(task=task, index=index, roles=assignments)
@@ -604,6 +684,29 @@ CONTEXT_DISCLAIMER = (
     "KHÔNG phải các bước phải thực hiện."
 )
 
+#: Nhãn dòng tiêu chí bên trong mục kiến thức của workflow PRIMARY.
+#: Tiêu chí đó còn được in nguyên vẹn ở mục TIÊU CHÍ XÁC MINH, nên bản rút gọn của mục
+#: kiến thức bỏ được nó mà không mất thông tin.
+KNOWLEDGE_CRITERIA_LABEL = "Tiêu chí hoàn thành:"
+
+#: Ngân sách tối thiểu còn lại để một dòng chi tiết kiến thức còn đáng in.
+COMPACT_KNOWLEDGE_MIN_LINE = 40
+
+
+def first_sentence(value: object) -> str:
+    """Câu đầu của một đoạn — phần *cách làm* của mô tả workflow.
+
+    Mô tả trong KB thường có hai phần: câu đầu nói cách làm ("mở danh sách tài khoản đã
+    lưu rồi chọn một tài khoản"), phần sau là ghi chú đo đạc trên máy thật (toạ độ, tỷ lệ
+    màn hình).  Kiểm tra chất lượng chỉ cần giữ câu đầu; đòi cả đoạn sẽ biến mọi ghi chú
+    thành lý do từ chối bản LLM, và tester nhận bản dự phòng vì một chi tiết không liên
+    quan tới việc họ cần làm.
+    """
+    text = one_line(value)
+    if not text:
+        return ""
+    return re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
+
 
 def task_line(entry: TaskKnowledge) -> str:
     """Một dòng cho một task: việc gì, khi nào cần làm, và KB có gì để làm nó."""
@@ -622,12 +725,28 @@ def render_plan(entries: Sequence[TaskKnowledge]) -> list[str]:
     return [f"{index}. {task_line(entry)}" for index, entry in enumerate(entries, 1)]
 
 
-def render_primary_knowledge(hits: Sequence[WorkflowHit]) -> list[str]:
-    """Kiến thức của workflow PRIMARY: cách làm + điều kiện phải kiểm tra + tiêu chí.
+#: Nhãn dòng bước trong mục kiến thức của workflow PRIMARY.
+KNOWLEDGE_STEPS_LABEL = "Các bước (tìm phần tử trên UI hiện tại, KHÔNG dùng toạ độ):"
 
-    **Bước của workflow không được in ra** (agent tự tìm phần tử trên UI hiện tại),
-    và điều kiện trước được trình bày như *điều phải kiểm tra*, không phải sự thật
-    mặc định — nếu không, agent sẽ coi "tài khoản đã lưu" hay "đã đăng nhập" là đúng.
+
+def render_primary_knowledge(hits: Sequence[WorkflowHit]) -> list[str]:
+    """Kiến thức của workflow PRIMARY: cách làm + điều kiện + **các bước** + tiêu chí.
+
+    **Vì sao in cả bước.**  Bản đầu giấu bước với lý do "agent tự tìm phần tử trên UI hiện
+    tại".  Đo trên máy thật cho thấy giấu bước là sai: KB ghi cách mở danh sách tài khoản đã
+    lưu là "mũi tên caret-down màu xanh ở CUỐI ô nhập số điện thoại", nhưng prompt chỉ nói
+    "mở danh sách tài khoản đã lưu rồi chọn một tài khoản" — agent đứng trước ô nhập số điện
+    thoại thì việc tự nhiên nhất là *gõ số vào ô*, và đúng như vậy đã xảy ra
+    (``focus_and_input_text`` trong trace ``bba4c866``).
+
+    Bước còn mang cảnh báo chống mất dữ liệu — "TUYỆT ĐỐI KHÔNG chạm icon thùng rác đỏ bên
+    phải dòng, vì nút đó XOÁ tài khoản khỏi danh sách" — mà cảnh báo nằm *trong bước*, nên
+    giấu bước là bỏ luôn cảnh báo.
+
+    Bước ở đây là *mô tả để tìm trên UI hiện tại*, không phải toạ độ:
+    :func:`sanitize_ui_instructions` chặn toạ độ/bounds/pixel.  Điều kiện trước vẫn được
+    trình bày như *điều phải kiểm tra*, không phải sự thật mặc định — nếu không, agent sẽ coi
+    "tài khoản đã lưu" hay "đã đăng nhập" là đúng.
     """
     lines: list[str] = []
     for hit in hits:
@@ -647,14 +766,106 @@ def render_primary_knowledge(hits: Sequence[WorkflowHit]) -> list[str]:
             lines.append(
                 "  Cảnh báo: " + "; ".join(sanitize_ui_instructions(text) for text in warnings)
             )
+        if workflow.steps:
+            lines.append(f"  {KNOWLEDGE_STEPS_LABEL}")
+            for index, step in enumerate(workflow.steps, 1):
+                target = sanitize_ui_instructions(one_line(step.target))
+                state = sanitize_ui_instructions(one_line(step.expected_state))
+                text = f"    {index}. {one_line(step.action)}"
+                if target:
+                    text += f": {target}"
+                if state:
+                    text += f" → {state}"
+                if step.optional:
+                    text += " (tuỳ chọn)"
+                lines.append(text)
         if workflow.success_criteria:
             lines.append(
-                "  Tiêu chí hoàn thành: "
+                "  "
+                + KNOWLEDGE_CRITERIA_LABEL
+                + " "
                 + "; ".join(
                     sanitize_ui_instructions(one_line(text)) for text in workflow.success_criteria
                 )
             )
     return lines
+
+
+#: Namespace KB dành cho *hướng dẫn đi vào một màn hình* — quy ước của bộ dữ liệu
+#: (``navigation.open_menu`` = "làm sao tới màn Menu").  Dùng để (a) gom ứng viên điều hướng
+#: cho bước chọn, và (b) render bước của chúng vào prompt (chúng tồn tại *chính vì* bước).
+NAVIGATION_PREFIX = "navigation."
+
+
+def is_navigation_workflow(workflow: Workflow) -> bool:
+    """True khi workflow thuộc namespace hướng dẫn điều hướng (``navigation.*``)."""
+    return workflow.id.startswith(NAVIGATION_PREFIX)
+
+
+def render_navigation_knowledge(hits: Sequence[WorkflowHit]) -> list[str]:
+    """Cách tới màn hình mà workflow chính cần — **có in bước**.
+
+    Workflow chức năng bị giấu bước để agent tự tìm phần tử trên UI hiện tại (xem
+    :func:`render_primary_knowledge`); workflow ``navigation.*`` thì ngược lại: bước của
+    nó *là* câu trả lời cho "làm sao tới màn X", nên giấu bước là bỏ hết thông tin — đúng
+    thứ đã khiến agent tự bịa ra "profile icon ở góc trên bên phải".  Dòng nào cũng mang
+    nhãn "(điều hướng)" để không bị đọc thành một việc phải làm.
+    """
+    lines: list[str] = []
+    for hit in hits:
+        workflow = hit.workflow
+        lines.append(f"- (điều hướng) {workflow.id} — {one_line(workflow.name)}")
+        for step in workflow.steps:
+            target = sanitize_ui_instructions(one_line(step.target))
+            state = sanitize_ui_instructions(one_line(step.expected_state))
+            if not target and not state:
+                continue
+            line = f"  {one_line(step.action)}: {target}" if target else f"  {one_line(step.action)}"
+            if state:
+                line += f" → {state}"
+            lines.append(line)
+    return lines
+
+
+def compact_knowledge_lines(lines: Sequence[str], budget: int) -> list[str]:
+    """Bản rút gọn của mục kiến thức khi ngân sách không đủ cho bản đầy đủ.
+
+    **Vì sao phải có.**  ``build_knowledge_brief`` cắt *theo mục*: mục nào không vừa phần
+    ngân sách còn lại thì bị bỏ **toàn bộ**.  Đo trên KB thật (2 workflow, prompt
+    ``đăng xuất và đăng nhập tài khoản …``, ``ARTEMIS_PREPARE_MAX_KNOWLEDGE_CHARS=1200``):
+    brief còn **384 ký tự** và mục kiến thức biến mất — LLM chỉ còn kế hoạch và tiêu chí
+    để viết, nên nó viết chung chung ("thực hiện theo quy trình tương ứng"), và chi tiết
+    *chọn tài khoản đã lưu trong danh sách* không bao giờ tới được agent.  Mục kiến thức là
+    chỗ duy nhất nói *cách làm* (bước của workflow cố tình không vào prompt), nên nó phải
+    còn, dù phải ngắn lại.
+
+    **Thứ tự hy sinh:** dòng tiêu chí (đã có nguyên vẹn ở mục TIÊU CHÍ XÁC MINH) → cắt bớt
+    từng dòng chi tiết → bỏ dòng chi tiết.  Dòng tiêu đề workflow (id + tên) được giữ
+    trước tiên: biết *workflow nào* quan trọng hơn biết mô tả dài.
+    """
+    groups: list[tuple[str, list[str]]] = []
+    for line in lines:
+        if line.startswith("  "):
+            if groups and KNOWLEDGE_CRITERIA_LABEL not in line:
+                groups[-1][1].append(line)
+        else:
+            groups.append((line, []))
+
+    kept: list[str] = []
+    used = 0
+    for header, details in groups:
+        if used + len(header) + 1 > budget:
+            break
+        kept.append(header)
+        used += len(header) + 1
+        for detail in details:
+            room = budget - used - 1
+            if room < COMPACT_KNOWLEDGE_MIN_LINE:
+                break
+            line = detail if len(detail) <= room else detail[: room - 1].rstrip() + "…"
+            kept.append(line)
+            used += len(line) + 1
+    return kept
 
 
 def render_supporting_context(hits: Sequence[WorkflowHit]) -> list[str]:
@@ -735,8 +946,15 @@ def build_knowledge_brief(
     gap_lines = render_gaps(entries)
     criteria_lines = render_criteria(entries, final_goal)
     knowledge_lines = render_primary_knowledge(primary) if primary else []
+    # Hướng dẫn điều hướng vào mục *kiến thức*, không vào mục bối cảnh: bối cảnh mang câu
+    # "KHÔNG phải các bước phải thực hiện", mà điều hướng thì ngược lại — nó phải được làm
+    # theo.  Đây cũng là chỗ duy nhất bước của một workflow được phép vào prompt.
+    navigation = [hit for hit in supporting if is_navigation_workflow(hit.workflow)]
+    if navigation:
+        knowledge_lines = [*knowledge_lines, *render_navigation_knowledge(navigation)]
+    context_hits = [hit for hit in supporting if not is_navigation_workflow(hit.workflow)]
     context_lines = (
-        [CONTEXT_DISCLAIMER, *render_supporting_context(supporting)] if supporting else []
+        [CONTEXT_DISCLAIMER, *render_supporting_context(context_hits)] if context_hits else []
     )
 
     # Ưu tiên: kế hoạch → khoảng trống → tiêu chí → kiến thức → bối cảnh.
@@ -759,6 +977,15 @@ def build_knowledge_brief(
         if length and length + size > max_chars:
             # Cắt theo mục, không cắt giữa dòng: một tiêu chí cụt sẽ khiến kiểm tra
             # chất lượng trượt và tester nhận bản dự phòng.
+            #
+            # Ngoại lệ duy nhất là mục kiến thức: nó là chỗ duy nhất nói *cách làm*, nên
+            # khi không vừa thì rút gọn để còn, chứ không bỏ.  Xem
+            # :func:`compact_knowledge_lines`.
+            if header == SECTION_KNOWLEDGE:
+                compact = compact_knowledge_lines(body, max_chars - length - len(header) - 1)
+                if compact:
+                    lines.append(header)
+                    lines.extend(compact)
             break
         lines.extend(chunk)
         length += size

@@ -53,6 +53,7 @@ import unicodedata
 
 from artemis.knowledge.intent import (
     CONTEXT_DISCLAIMER,
+    ROLE_IRRELEVANT,
     ROLE_PRIMARY,
     ROLE_SUPPORTING,
     SECTION_CONTEXT,
@@ -62,20 +63,31 @@ from artemis.knowledge.intent import (
     SECTION_PLAN,
     SECTIONS,
     IntentPlan,
+    RoleAssignment,
     TaskKnowledge,
+    TaskSpec,
     analyze_intent,
     best_role,
     build_deterministic_prompt,
     build_knowledge_brief,
     build_task_knowledge,
     deterministic_plan,
+    first_sentence,
     has_hard_ui,
+    is_navigation_workflow,
     one_line,
     plan_queries,
     sanitize_ui_instructions,
     workflow_warnings,
 )
+from artemis.knowledge.composer import (
+    CODE_NOT_FOUND,
+    CODE_NOT_VERIFIED,
+    compose_prompt,
+    is_search_step,
+)
 from artemis.knowledge.models import RetrievalResult, Workflow, WorkflowHit
+from artemis.knowledge.prompt_builder import select_workflows
 from artemis.knowledge.service import KnowledgeService
 from artemis.knowledge.text import (
     content_tokens,
@@ -181,6 +193,49 @@ def _coverage_check(
     )
 
 
+def _steps_check(
+    primary_hits: Sequence[WorkflowHit],
+    enhanced: str,
+    floor: float,
+) -> Check:
+    """Mỗi bước phải để lại dấu vết **riêng của nó** trong prompt.
+
+    **Vì sao không dùng độ phủ cả bước.**  Đo trên KB thật: bước "Mũi tên trỏ xuống
+    (caret-down) màu xanh ở CUỐI ô nhập số điện thoại" đạt **0.667** độ phủ trong một bản
+    LLM đã bỏ hẳn chi tiết đó — các token chung ("ô", "nhập", "số", "điện", "thoại") xuất
+    hiện ở chỗ khác (mục tiêu chí xác minh) nên che mất phần cốt lõi.  Chỉ những token mà
+    bước *mang thêm* so với mô tả/điều kiện/tiêu chí của chính workflow mới trả lời được
+    "bước này còn hay mất".
+
+    Bị từ chối thì tester nhận bản dựng bằng luật — bản đó giữ nguyên văn mọi bước, nên
+    đây là hướng sai an toàn.
+    """
+    haystack = normalize(enhanced)
+    dropped: list[str] = []
+    for hit in primary_hits:
+        workflow = hit.workflow
+        base = content_tokens(
+            " ".join(
+                [
+                    workflow.description,
+                    *workflow.preconditions,
+                    *workflow.success_criteria,
+                ]
+            )
+        )
+        for index, step in enumerate(workflow.steps, 1):
+            extra = [token for token in content_tokens(step.target) if token not in base]
+            if not extra:
+                continue
+            if coverage(extra, haystack) < floor:
+                dropped.append(f"{workflow.id} bước {index}: {one_line(step.target)[:70]}")
+    return Check(
+        "steps_kept",
+        not dropped,
+        "" if not dropped else "Bỏ sót bước của workflow thực hiện: " + " | ".join(dropped[:3]),
+    )
+
+
 def _mentions_id(text: str, ids: set[str]) -> list[str]:
     """Id trông như workflow trong ``text`` mà không nằm trong ``ids`` (bịa)."""
     return sorted({token for token in _ID_LIKE.findall(text or "") if token not in ids})
@@ -223,9 +278,15 @@ SYSTEM_PROMPT = (
     "app, giới hạn số bước...).\n"
     "7. Không mặc định điều kiện trước là đúng (tài khoản đã lưu, đã đăng nhập, đã ở đúng "
     "nhà...): luôn viết ở dạng phải kiểm tra trên UI.\n"
-    "8. Mọi điều kiện phải kiểm tra, cảnh báo và tiêu chí của workflow THỰC HIỆN phải còn "
-    "đủ ý trong bản viết lại. Được phép diễn đạt ngắn hơn, KHÔNG được bỏ mục nào — kể cả "
-    "chi tiết trong ngoặc.\n"
+    "8. Mọi điều kiện phải kiểm tra, cảnh báo, tiêu chí và **cách làm** (câu đầu phần "
+    "Mô tả của workflow THỰC HIỆN) phải còn đủ ý trong bản viết lại — kể cả chi tiết "
+    "trong ngoặc, ví dụ phải *chọn tài khoản trong danh sách đã lưu* chứ không chỉ "
+    '"đăng nhập tài khoản X". Được phép diễn đạt ngắn hơn, KHÔNG được bỏ mục nào.\n'
+    "8b. Khối **Các bước** phải giữ NGUYÊN Ý TỪNG BƯỚC, theo đúng thứ tự, kèm cảnh báo "
+    "nằm trong bước (ví dụ 'mũi tên caret-down ở CUỐI ô nhập số điện thoại', 'KHÔNG chạm "
+    "icon thùng rác vì nút đó XOÁ tài khoản'). Đây là phần nói *thao tác cụ thể*; tóm tắt "
+    "một bước thành 'chọn tài khoản trong danh sách' là mất cách mở danh sách, và agent sẽ "
+    "tự đoán sai. Được rút gọn câu chữ, nhưng mỗi bước phải còn nhận ra được.\n"
     "9. Không thêm bước nhập liệu (số điện thoại, mật khẩu, OTP, mã xác minh) nếu kiến "
     "thức không nói tới. Nhiều workflow dùng tài khoản đã lưu nên KHÔNG cần nhập gì; viết "
     "thừa một bước như vậy là sai.\n"
@@ -426,6 +487,131 @@ def _ensure_sections(knowledge: str, brief: str, entries: Sequence[TaskKnowledge
     return "\n\n".join(part for part in parts if part)
 
 
+def validate_composed(
+    original_prompt: str,
+    composed: str,
+    entries: Sequence[TaskKnowledge],
+    *,
+    max_chars: int,
+) -> list[Check]:
+    """Kiểm tra prompt do :mod:`artemis.knowledge.composer` ghép (đường tất định).
+
+    Khác ``validate_enhanced`` (dành cho bản do LLM viết lại), ở đây không cần kiểm "mục nào
+    bị LLM bỏ" — composer dựng theo cấu trúc.  Cái cần kiểm là những gì *không* được phép
+    xảy ra dù là code: mất định danh của tester, lộ toạ độ, phình quá hạn, nhắc workflow
+    không có trong KB, và **bịa nhãn UI** (nhãn được trích dẫn mà không có trong KB nào).
+    """
+    checks: list[Check] = []
+    original = (original_prompt or "").strip()
+    enhanced = (composed or "").strip()
+    if not enhanced:
+        return [Check("original_preserved", False, "Prompt ghép rỗng")]
+
+    preserved = normalize(original) in normalize(enhanced) if original else True
+    checks.append(
+        Check(
+            "original_preserved",
+            preserved,
+            "" if preserved else "Prompt gốc không còn nguyên vẹn trong prompt ghép",
+        )
+    )
+
+    missing = [token for token in identity_tokens(original) if nfc(token) not in nfc(enhanced)]
+    checks.append(
+        Check(
+            "identifiers_preserved",
+            not missing,
+            "" if not missing else "Định danh bị mất/đổi: " + ", ".join(missing[:5]),
+        )
+    )
+
+    hard_ui = has_hard_ui(enhanced)
+    checks.append(Check("no_hard_ui", not hard_ui, "" if not hard_ui else "Có toạ độ/pixel"))
+
+    known_ids = {
+        hit.workflow.id for entry in entries for hit in [*entry.primary, *entry.supporting]
+    }
+    invented = _mentions_id(enhanced, known_ids)
+    checks.append(
+        Check(
+            "workflow_ids_grounded",
+            not invented,
+            "" if not invented else "Nhắc workflow không có trong KB: " + ", ".join(invented[:3]),
+        )
+    )
+
+    # Nhãn UI được trích dẫn phải có trong KB **hoặc** trong câu của tester.  Chốt chặn cho lỗi
+    # "tự bịa thao tác" (Planner từng sinh 'Tap the profile/account icon in the top right' từ
+    # một khoảng trống KB) — nhưng dữ liệu của tester ("Ổ cắm 12") là hợp lệ, không phải bịa.
+    vocabulary = normalize(original) + " " + normalize(
+        " ".join(
+            " ".join(
+                [
+                    hit.workflow.id,
+                    hit.workflow.name,
+                    hit.workflow.description,
+                    *hit.workflow.aliases,
+                    *hit.workflow.preconditions,
+                    *hit.workflow.success_criteria,
+                    *workflow_warnings(hit.workflow),
+                    *[f"{step.target} {step.expected_state}" for step in hit.workflow.steps],
+                ]
+            )
+            for entry in entries
+            for hit in [*entry.primary, *entry.supporting]
+        )
+    )
+    ungrounded = [
+        label
+        for label in _QUOTED_LABEL.findall(enhanced)
+        if normalize(label) and normalize(label) not in vocabulary
+    ]
+    checks.append(
+        Check(
+            "labels_grounded",
+            not ungrounded,
+            "" if not ungrounded else "Nhãn UI không có trong KB: " + ", ".join(ungrounded[:3]),
+        )
+    )
+
+    checks.append(_steps_check([hit for entry in entries for hit in entry.primary], enhanced, 0.5))
+
+    # Bước tìm/chọn trong danh sách thì prompt **phải** nói rõ hai kết luận khác nhau: hết
+    # danh sách mà không thấy (NOT_FOUND) so với chưa kiểm tra hết (NOT_VERIFIED).  Thiếu
+    # điều kiện dừng là agent chọn mục thay thế hoặc quét vô hạn.
+    search_steps = [
+        step
+        for entry in entries
+        for hit in [*entry.primary, *entry.supporting]
+        for step in hit.workflow.steps
+        if is_search_step(step)
+    ]
+    if search_steps:
+        missing_codes = [
+            code for code in (CODE_NOT_FOUND, CODE_NOT_VERIFIED) if code not in enhanced
+        ]
+        checks.append(
+            Check(
+                "stop_conditions_present",
+                not missing_codes,
+                ""
+                if not missing_codes
+                else "Có bước tìm/chọn trong danh sách nhưng thiếu điều kiện dừng: "
+                + ", ".join(missing_codes),
+            )
+        )
+
+    size_ok = len(enhanced) <= max_chars
+    checks.append(
+        Check(
+            "size_ok",
+            size_ok,
+            "" if size_ok else f"Prompt ghép {len(enhanced)} ký tự > {max_chars}",
+        )
+    )
+    return checks
+
+
 def validate_enhanced(
     original_prompt: str,
     enhanced_prompt: str,
@@ -449,10 +635,12 @@ def validate_enhanced(
     6. ``sections_ok`` — đủ các mục mà kế hoạch đòi (kế hoạch / kiến thức / bối cảnh /
        khoảng trống / tiêu chí).
     7. ``tasks_kept`` — mọi việc trong kế hoạch còn xuất hiện: không mất mục tiêu.
-    8. ``primary_knowledge_kept`` — điều kiện, tiêu chí và cảnh báo của workflow
+    8. ``primary_knowledge_kept`` — điều kiện, tiêu chí, cảnh báo và cách làm của workflow
        THỰC HIỆN không bị bỏ quên.
-    9. ``supporting_not_a_step`` — workflow phụ không được biến thành việc phải làm.
-    10. ``size_ok`` — không phình to hơn hạn mức.
+    9. ``steps_kept`` — token *riêng của từng bước* còn trong prompt (xem
+       :func:`_steps_check`: độ phủ cả bước không bắt được bước bị nuốt).
+    10. ``supporting_not_a_step`` — workflow phụ không được biến thành việc phải làm.
+    11. ``size_ok`` — không phình to hơn hạn mức.
     """
     checks: list[Check] = []
     original = (original_prompt or "").strip()
@@ -544,15 +732,25 @@ def validate_enhanced(
                 for hit in primary_hits
                 for text in [
                     *hit.workflow.preconditions,
+                    # "Cách làm" — câu đầu của mô tả.  Nó từng bị bỏ im lặng: bản LLM viết
+                    # "auth.switch_account: thực hiện đăng nhập tài khoản 0972842548", mất
+                    # hẳn chi tiết *chọn tài khoản đã lưu trong danh sách*, mà không kiểm
+                    # tra nào bắt được vì mô tả không nằm trong danh sách kiểm.  Đo trên KB
+                    # thật: độ phủ của mô tả trong bản LLM là 0.49 (< ngưỡng 0.5).
+                    first_sentence(hit.workflow.description),
                     *hit.workflow.success_criteria,
                     *workflow_warnings(hit.workflow),
                 ]
+                if text
             ],
             enhanced,
             coverage_floor,
-            "điều kiện/tiêu chí/cảnh báo của workflow thực hiện",
+            "điều kiện/tiêu chí/cảnh báo/cách làm của workflow thực hiện",
         )
     )
+    # Bước kiểm riêng, không gộp vào phép độ phủ trên: token chung của một bước che được
+    # phần cốt lõi của nó (xem :func:`_steps_check`).
+    checks.append(_steps_check(primary_hits, enhanced, coverage_floor))
 
     contradicted: list[str] = []
     instruction_body = normalize(_instruction_sections(enhanced))
@@ -601,7 +799,7 @@ class PrepareOptions:
     mà không phải sửa code; test truyền thẳng giá trị nhỏ để chạy nhanh.
     """
 
-    max_knowledge_chars: int = 1200
+    max_knowledge_chars: int = 4000
     max_enhanced_chars: int = 6000
     max_output_tokens: int = 700
     timeout: float = 20.0
@@ -616,6 +814,11 @@ class PrepareOptions:
     max_tasks: int = 4
     intent_max_tokens: int = 400
     intent_timeout: float = 20.0
+    #: Sắp xếp KB: model đọc toàn văn mô tả/điều kiện/bước của các ứng viên rồi chọn cách làm
+    #: cho từng việc.  Đây là bước *quyết định*, không phải viết lại văn — cần đủ token cho
+    #: JSON nhiều việc, và thời gian đọc nhiều ứng viên.
+    selection_max_tokens: int = 900
+    selection_timeout: float = 30.0
     #: Độ phủ token tối thiểu để một workflow được coi là *bàn đúng việc* (PRIMARY):
     #: đo trên TÊN workflow, vì tên là phát biểu chính thức về mục đích của nó.
     name_coverage_floor: float = 0.6
@@ -641,7 +844,7 @@ class PrepareOptions:
             return getattr(settings, name, fallback)
 
         return cls(
-            max_knowledge_chars=int(value("ARTEMIS_PREPARE_MAX_KNOWLEDGE_CHARS", 1200)),
+            max_knowledge_chars=int(value("ARTEMIS_PREPARE_MAX_KNOWLEDGE_CHARS", 2400)),
             max_enhanced_chars=int(value("ARTEMIS_PREPARE_MAX_PROMPT_CHARS", 6000)),
             max_output_tokens=int(value("ARTEMIS_PREPARE_MAX_OUTPUT_TOKENS", 700)),
             timeout=float(value("ARTEMIS_PREPARE_TIMEOUT", 20.0)),
@@ -1082,10 +1285,29 @@ def prepare_prompt(
         retrieved,
         min_intent_coverage=options.intent_coverage_floor if decomposed else 0.0,
         min_name_coverage=options.name_coverage_floor if decomposed else 0.0,
+        prompt=original,
+    )
+    # 3b. Sắp xếp KB: để model **đọc mô tả KB** (gồm luật "DÙNG KHI / Không dùng khi" và các
+    # bước) rồi chọn cách làm cho từng việc, thay vì để trùng từ với tên workflow quyết định.
+    # Đo trên KB thật: `auth.login_password` và `auth.switch_account` hoà nhau ở độ phủ tên
+    # 1.00 cho câu "đăng xuất và đăng nhập tài khoản 0972842548", nên thứ tự truy hồi từng
+    # chọn sai và prompt hướng dẫn agent *gõ số điện thoại vào ô nhập*.
+    selection_note = _apply_kb_selection(
+        entries,
+        original,
+        plan,
+        retrieved,
+        service,
+        resolved_app,
+        synthesizer,
+        options,
+        metrics,
     )
     matched, excluded, hits_by_id = _matched_workflows(entries)
     gaps = _knowledge_gaps(entries)
     warnings = _collect_warnings(entries)
+    if selection_note:
+        warnings.append(selection_note)
     metrics["primary"] = sum(1 for row in matched if row["role"] == ROLE_PRIMARY)
     metrics["supporting"] = sum(1 for row in matched if row["role"] == ROLE_SUPPORTING)
     metrics["excluded"] = len(excluded)
@@ -1140,44 +1362,32 @@ def prepare_prompt(
             )
         )
 
-    # 5. Tổng hợp + kiểm tra chất lượng.  Không đạt ⇒ bước 6.
-    if synthesizer is None:
-        return fallback("Chưa cấu hình LLM để tổng hợp prompt")
-
+    # 5. Ghép prompt **bằng luật** (không lượt LLM nào cho việc viết lại), rồi kiểm chất lượng.
+    # Bản trước đưa brief cho LLM viết lại và lượt đó nuốt mất đúng phần cốt lõi: bước
+    # "caret-down ở CUỐI ô nhập số điện thoại" bị rút thành "chọn tài khoản trong danh sách",
+    # nên agent gõ số vào ô nhập.  Viết lại văn bản là chỗ mất thông tin — sắp xếp, lọc trùng
+    # và định dạng thì code làm chính xác hơn.
     mark = time.perf_counter()
-    try:
-        knowledge, usage = enhance_with_llm(
-            original,
-            brief,
-            profile,
-            synthesizer,
-            max_chars=options.max_knowledge_chars,
-            max_tokens=options.max_output_tokens,
-            timeout=options.timeout,
-        )
-        metrics["llm_calls"] += 1
-        if usage:
-            metrics["usage"] = usage
-    except Exception as exc:  # noqa: BLE001 - LLM hỏng không được làm gãy tester
-        logger.warning("LLM tổng hợp prompt thất bại: %s", exc)
-        return fallback(f"LLM tổng hợp lỗi: {exc}")
-    metrics["synthesis_ms"] = round((time.perf_counter() - mark) * 1000, 2)
-
-    # 6. Chèn lại mục bị bỏ sót trước khi kiểm tra: mục là cấu trúc, không phải văn phong.
-    knowledge = _ensure_sections(knowledge, brief, entries)
-    enhanced = assemble_prompt(original, knowledge)
-    checks = validate_enhanced(
-        original,
-        enhanced,
-        entries,
-        digest=brief,
-        max_enhanced_chars=options.max_enhanced_chars,
-        coverage_floor=options.coverage_floor,
-        conflict_floor=options.conflict_floor,
+    enhanced = compose_prompt(
+        original, entries, plan.final_goal, max_chars=options.max_enhanced_chars
+    )
+    metrics["compose_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+    # Truy vết: prompt đã ghép + workflow nào được chọn, bị loại, còn thiếu.  Không có khoá,
+    # token hay thông tin xác thực nào ở đây — chỉ nội dung KB và định danh workflow.
+    logger.info(
+        "Prepare: prompt %s ký tự · chọn=%s · loại=%s · thiếu=%s",
+        len(enhanced),
+        [row["workflow_id"] for row in matched if row["role"] == ROLE_PRIMARY],
+        [row["workflow_id"] for row in excluded],
+        [entry.task.action for entry in entries if entry.gap],
+    )
+    logger.debug("Prompt ghép cho %r:\n%s", original[:60], enhanced)
+    checks = validate_composed(
+        original, enhanced, entries, max_chars=options.max_enhanced_chars
     )
     failures = failed_checks(checks)
     if failures:
-        reason = "Không đạt kiểm tra chất lượng: " + "; ".join(
+        reason = "Bản ghép không đạt kiểm tra: " + "; ".join(
             f"{check.name} ({check.detail})" for check in failures
         )
         logger.warning("Prepare: %s", reason)
@@ -1186,20 +1396,151 @@ def prepare_prompt(
     outcome = PrepareOutcome(
         original_prompt=original,
         enhanced_prompt=enhanced,
-        status=STATUS_LLM,
+        # ``llm`` nghĩa là *đã dùng LLM để hiểu yêu cầu hoặc chọn cách làm*, không phải
+        # "prompt do LLM viết": phần ghép prompt luôn do code làm.
+        status=STATUS_LLM if (plan.source == "llm" or not selection_note) else STATUS_FALLBACK,
         tasks=[task.as_dict() for task in plan.tasks],
         plan=plan.as_dict(),
         matched_workflows=matched,
         excluded_workflows=excluded,
         knowledge_gaps=gaps,
         warnings=warnings,
-        knowledge=knowledge,
-        source={**source, "synthesis": SOURCE_LLM, "model": model},
+        knowledge=brief,
+        source={**source, "synthesis": SOURCE_DETERMINISTIC, "model": model},
         checks=checks,
     )
     if store is not None:
         store.put(cache_key, outcome)
     return finish(outcome)
+
+
+def _set_role(
+    entry: TaskKnowledge,
+    by_id: dict[str, WorkflowHit],
+    workflow_id: str,
+    role: str,
+    reason: str,
+) -> None:
+    """Đặt vai trò của một workflow trong một việc: gỡ khỏi mọi nhóm rồi thêm vào nhóm mới."""
+    hit = by_id.get(workflow_id)
+    if hit is None:
+        return
+    for bucket in (entry.primary, entry.supporting, entry.irrelevant):
+        for item in [item for item in bucket if item.workflow.id == workflow_id]:
+            bucket.remove(item)
+    {
+        ROLE_PRIMARY: entry.primary,
+        ROLE_SUPPORTING: entry.supporting,
+        ROLE_IRRELEVANT: entry.irrelevant,
+    }[role].append(hit)
+    entry.roles = [role_row for role_row in entry.roles if role_row.workflow_id != workflow_id]
+    entry.roles.append(
+        RoleAssignment(workflow_id=workflow_id, role=role, reason=reason, evidence={"by": "kb"})
+    )
+
+
+def _apply_kb_selection(
+    entries: list[TaskKnowledge],
+    original: str,
+    plan: IntentPlan,
+    retrieved: Sequence[tuple[TaskSpec, Sequence[WorkflowHit]]],
+    service: KnowledgeService,
+    app_id: str,
+    synthesizer: Any | None,
+    options: PrepareOptions,
+    metrics: dict[str, Any],
+) -> str:
+    """Sắp xếp KB thành cách làm cho từng việc, do model **đọc mô tả KB** quyết định.
+
+    Trả về lý do (chuỗi rỗng nếu áp dụng được) để tester biết vì sao prompt vẫn dùng đường
+    phân loại theo từ.
+
+    **Vì sao không tự quyết trong code.**  Quy tắc chọn nằm trong KB, viết bằng tiếng Việt:
+    ``auth.switch_account`` ghi "DÙNG KHI prompt chỉ nêu tên/số tài khoản mà KHÔNG có mật
+    khẩu", ``auth.login_password`` ghi "Không dùng workflow này khi prompt chỉ nêu một tài
+    khoản đã lưu mà không có mật khẩu".  Bản trước mã hoá luật đó thành danh sách từ khoá
+    trong Python (``REQUIRED_INPUT_MARKERS``) — mỗi workflow mới, mỗi cách nói mới lại phải
+    sửa code, và nó vẫn hở: hai workflow **hoà nhau ở độ phủ tên 1.00** thì thứ tự truy hồi
+    quyết định ai thắng.
+
+    Ứng viên điều hướng được lấy **toàn bộ** theo namespace (``service.list_workflows``) chứ
+    không chỉ những gì truy hồi được, vì truy hồi theo câu tester bỏ sót chúng (``xóa phòng``
+    không trả về ``navigation.*`` nào).  Việc *chọn* cái nào vẫn do model đọc mô tả.
+    """
+    candidates = [(task, [hit.workflow for hit in hits]) for task, hits in retrieved]
+    try:
+        listed = service.list_workflows(app_id)
+    except Exception as exc:  # noqa: BLE001 - KB không liệt kê được thì bỏ qua bước điều hướng
+        logger.warning("Không liệt kê được workflow của %s: %s", app_id, exc)
+        listed = []
+    navigation = [
+        workflow
+        for workflow in listed
+        if is_navigation_workflow(workflow)
+        and workflow.id not in {item.id for _, workflows in candidates for item in workflows}
+    ]
+    selection_started = time.perf_counter()
+    selection = select_workflows(
+        original,
+        plan,
+        candidates,
+        navigation,
+        synthesizer,
+        max_tokens=options.selection_max_tokens,
+        timeout=options.selection_timeout,
+    )
+    # Đếm *lượt gọi thật*, kể cả khi JSON hỏng: đây là số dùng để tính chi phí, không phải
+    # số lượt thành công.
+    metrics["llm_calls"] = metrics.get("llm_calls", 0) + 1
+    metrics["selection_ms"] = round((time.perf_counter() - selection_started) * 1000, 2)
+    if selection is None:
+        return (
+            "Chưa chọn được cách làm từ mô tả KB (LLM không dùng được) — prompt dùng "
+            "phân loại theo từ, nên kiểm lại workflow nào là cách làm chính."
+        )
+
+    by_id: dict[str, WorkflowHit] = {}
+    for entry in entries:
+        for hit in [*entry.primary, *entry.supporting, *entry.irrelevant]:
+            by_id.setdefault(hit.workflow.id, hit)
+    for workflow in navigation:
+        # Điều hướng do model chọn theo mô tả, không qua kênh truy hồi: bằng chứng là lý do
+        # model nêu, và nó được ghi vào ``reason`` để tester đối chiếu.
+        by_id.setdefault(
+            workflow.id,
+            WorkflowHit(workflow=workflow, score=0.0, channels={"navigation": 1}, trusted=True),
+        )
+
+    for entry in entries:
+        chosen = selection.for_index(entry.index + 1)
+        if chosen is None:
+            continue
+        if chosen.primary:
+            _set_role(entry, by_id, chosen.primary, ROLE_PRIMARY, chosen.reason or "chọn theo KB")
+        else:
+            # Model nói không ứng viên nào thật sự làm được việc này: giữ lại là "KB thiếu",
+            # không để một workflow chỉ trùng tên tiếp tục làm cách làm chính.
+            for hit in list(entry.primary):
+                _set_role(
+                    entry,
+                    by_id,
+                    hit.workflow.id,
+                    ROLE_SUPPORTING,
+                    chosen.reason or "KB: không ứng viên nào thực hiện được việc này",
+                )
+        for workflow_id in chosen.supporting:
+            _set_role(entry, by_id, workflow_id, ROLE_SUPPORTING, "bối cảnh theo mô tả KB")
+        for workflow_id in chosen.rejected:
+            _set_role(entry, by_id, workflow_id, ROLE_IRRELEVANT, chosen.reason or "KB: không hợp")
+        for workflow_id in selection.navigation.get(chosen.primary or "", []):
+            _set_role(
+                entry,
+                by_id,
+                workflow_id,
+                ROLE_SUPPORTING,
+                f"hướng dẫn đi tới màn hình mà {chosen.primary} cần (chọn theo mô tả KB)",
+            )
+    return ""
 
 
 def _matched_workflows(

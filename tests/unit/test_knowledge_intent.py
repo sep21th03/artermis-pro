@@ -48,10 +48,13 @@ from artemis.knowledge.intent import (
     build_knowledge_brief,
     build_task_knowledge,
     classify_task,
+    _drop_contained_tasks,
     deterministic_plan,
     extract_json,
+    is_navigation_workflow,
     is_rule,
     plan_queries,
+    render_navigation_knowledge,
 )
 from artemis.knowledge.models import Workflow, WorkflowHit
 
@@ -259,6 +262,21 @@ SWITCH_ACCOUNT = workflow(
     preconditions=["Tài khoản đã từng đăng nhập trên máy này"],
     success_criteria=["Màn hình chính của app hiện ra"],
 )
+#: Bản có bước thật như trong KB — bước mang cả *cách mở* danh sách và cảnh báo mất dữ liệu.
+SWITCH_ACCOUNT_WITH_STEPS = workflow(
+    "auth.switch_account",
+    "Đăng nhập bằng tài khoản đã lưu (Chuyển tài khoản)",
+    "Mở danh sách tài khoản đã từng đăng nhập trên máy này rồi chọn một tài khoản để đăng nhập.",
+    aliases=["đăng nhập tài khoản", "chuyển tài khoản"],
+    preconditions=["Tài khoản đã từng đăng nhập trên máy này"],
+    success_criteria=["Màn hình chính của app hiện ra"],
+    steps=[
+        "Mũi tên trỏ xuống (caret-down) màu xanh ở CUỐI ô nhập số điện thoại",
+        "Đúng dòng số điện thoại cần đăng nhập — TUYỆT ĐỐI KHÔNG chạm icon thùng rác đỏ bên "
+        "phải dòng, vì nút đó XOÁ tài khoản khỏi danh sách",
+        "Nút 'Đăng nhập'",
+    ],
+)
 
 
 def roles_for(task: TaskSpec, hits) -> dict[str, str]:
@@ -357,7 +375,12 @@ def entries_for(plan: IntentPlan, retrieved) -> list:
     return build_task_knowledge(plan, retrieved, min_intent_coverage=0.6, min_name_coverage=0.6)
 
 
-def test_the_brief_never_contains_steps_or_supporting_criteria():
+def test_a_supporting_workflows_steps_and_criteria_stay_out_of_the_brief():
+    """Chốt chặn cho workflow PHỤ: bước và tiêu chí của nó không vào prompt.
+
+    Bước của workflow *chính* thì ngược lại — chúng vào prompt (xem
+    :func:`test_primary_knowledge_carries_its_steps`), vì KB ghi cách làm ở đó.
+    """
     plan = IntentPlan(tasks=[TaskSpec(action="chuyển nhà", target="dled")])
     entries = entries_for(plan, [(plan.tasks[0], [hit(SWITCH_HOUSE_RULE)])])
 
@@ -382,6 +405,24 @@ def test_primary_knowledge_carries_conditions_as_things_to_check():
     assert "Tài khoản đã từng đăng nhập trên máy này" in brief
 
 
+def test_primary_knowledge_carries_its_steps():
+    """Lỗi đã gặp: prompt chỉ nói "mở danh sách tài khoản đã lưu" mà không nói *cách mở*.
+
+    KB ghi cách mở trong bước ("mũi tên caret-down ở cuối ô số điện thoại") và cảnh báo
+    chống mất dữ liệu cũng nằm trong bước — giấu bước là agent gõ số vào ô nhập như một
+    người dùng bình thường, và có thể chạm nhầm nút xoá tài khoản.
+    """
+    plan = IntentPlan(tasks=[TaskSpec(action="đăng nhập")])
+    entries = entries_for(plan, [(plan.tasks[0], [hit(SWITCH_ACCOUNT_WITH_STEPS)])])
+
+    brief = build_knowledge_brief(entries, plan.final_goal, max_chars=4000)
+
+    assert SECTION_KNOWLEDGE in brief
+    assert "Các bước" in brief
+    assert "caret-down" in brief
+    assert "XOÁ tài khoản" in brief
+
+
 def test_plan_and_criteria_survive_a_tight_budget():
     """Hạn mức chật thì cắt kiến thức chi tiết, không cắt cấu trúc."""
     plan = IntentPlan(
@@ -400,6 +441,24 @@ def test_plan_and_criteria_survive_a_tight_budget():
     assert SECTION_PLAN in brief
     assert SECTION_GAP in brief
     assert SECTION_CRITERIA in brief
+
+
+def test_the_knowledge_section_survives_a_tight_budget():
+    """Hạn mức chật thì mục kiến thức rút gọn để *còn*, tuyệt đối không biến mất.
+
+    Đo trên KB thật: với ngân sách mặc định cũ (1200), kế hoạch + tiêu chí chiếm hết chỗ
+    nên brief chỉ còn 384 ký tự và **mất hẳn** mục KIẾN THỨC — LLM không còn gì để viết
+    ngoài kế hoạch, nên nó viết chung chung và chi tiết *chọn tài khoản đã lưu* không bao
+    giờ tới được agent.
+    """
+    plan = IntentPlan(tasks=[TaskSpec(action="đăng nhập")])
+    entries = entries_for(plan, [(plan.tasks[0], [hit(SWITCH_ACCOUNT)])])
+
+    brief = build_knowledge_brief(entries, plan.final_goal, max_chars=700)
+
+    assert SECTION_KNOWLEDGE in brief
+    # Dòng tiêu đề workflow được giữ trước tiên: biết *workflow nào* quan trọng hơn mô tả dài.
+    assert "- auth.switch_account" in brief
 
 
 def test_a_tiny_budget_still_keeps_the_plan():
@@ -436,3 +495,117 @@ def test_the_deterministic_prompt_keeps_the_goal_and_declares_the_gap():
     assert SECTION_GAP in prompt
     assert "tự khám phá UI" in prompt
     assert "nút 'Huỷ'" not in prompt
+
+
+# ── Điều hướng: nối workflow chính với hướng dẫn tới màn hình ──────────────
+def navigation_workflow(
+    workflow_id: str = "navigation.open_menu",
+    name: str = "Mở màn hình Menu",
+    *,
+    description: str = "Đi tới Menu, nơi chứa thông tin tài khoản và đăng xuất.",
+    target: str = "Tab cuối cùng trên thanh điều hướng dưới cùng",
+    expected_state: str = "Màn hình Menu và thông tin tài khoản xuất hiện",
+) -> Workflow:
+    """Workflow ``navigation.*`` — mục đích *chính là* các bước đi vào một màn hình."""
+    return Workflow(
+        id=workflow_id,
+        app_id="hunonic",
+        name=name,
+        description=description,
+        preconditions=["Người dùng đã đăng nhập"],
+        steps=[{"action": "tap", "target": target, "expected_state": expected_state}],
+        status="draft",
+        revision_no=1,
+        updated_at="2026-10-27T10:00:00",
+    )
+
+
+def test_navigation_knowledge_is_rendered_with_its_steps():
+    """Điều hướng là chỗ duy nhất bước của workflow được vào prompt."""
+    lines = render_navigation_knowledge([hit(navigation_workflow())])
+
+    assert lines[0].startswith("- (điều hướng) navigation.open_menu")
+    assert any("Tab cuối cùng trên thanh điều hướng dưới cùng" in line for line in lines)
+    assert any("Màn hình Menu và thông tin tài khoản xuất hiện" in line for line in lines)
+
+
+def test_the_brief_puts_navigation_knowledge_in_the_knowledge_section():
+    """Lỗi đã gặp: workflow chính nói "'Đăng xuất' ở màn hình Menu" mà không nói cách mở
+    màn Menu — agent bịa ra "profile icon ở góc trên bên phải" và tap vào chỗ trống."""
+    plan = IntentPlan(tasks=[TaskSpec(action="đăng xuất")])
+    entries = entries_for(
+        plan,
+        [
+            (
+                plan.tasks[0],
+                [hit(LOGOUT), hit(navigation_workflow(), rank=2)],
+            )
+        ],
+    )
+
+    brief = build_knowledge_brief(entries, plan.final_goal, max_chars=4000)
+
+    assert SECTION_KNOWLEDGE in brief
+    assert "navigation.open_menu" in brief
+    assert "Tab cuối cùng trên thanh điều hướng dưới cùng" in brief
+
+
+def test_a_plain_supporting_workflow_still_keeps_its_steps_out_of_the_brief():
+    """Chốt chặn cũ phải còn: workflow phụ *chức năng* không được lộ bước hay tiêu chí."""
+    plan = IntentPlan(tasks=[TaskSpec(action="chuyển nhà", target="dled")])
+    entries = entries_for(plan, [(plan.tasks[0], [hit(SWITCH_HOUSE_RULE)])])
+
+    brief = build_knowledge_brief(entries, plan.final_goal, max_chars=4000)
+
+    assert SECTION_CONTEXT in brief
+    assert "nút 'Huỷ'" not in brief
+    assert "Không còn modal" not in brief
+
+
+def test_only_the_navigation_namespace_counts_as_navigation():
+    assert is_navigation_workflow(navigation_workflow())
+    assert not is_navigation_workflow(LOGOUT)
+    assert not is_navigation_workflow(workflow("my_navigation.open", "Gần giống nhưng khác"))
+
+
+# ── Việc bị việc khác bao trùm thì bỏ (tránh agent làm hai lần) ────────────
+def test_a_task_contained_in_another_is_dropped():
+    """Lỗi đã gặp: câu "vào màn hẹn giờ … 3 lần xem có bao nhiêu …" bị tách thành hai việc, và
+    kế hoạch có hai mốc nên agent vào màn hẹn giờ, thoát ra, rồi vào lại."""
+    plan = IntentPlan(
+        tasks=[
+            TaskSpec(action="vào màn hẹn giờ", target="Ổ cắm 12"),
+            TaskSpec(
+                action="vào màn hẹn giờ 3 lần xem có bao nhiêu danh sách hẹn giờ",
+                target="Ổ cắm 12",
+            ),
+        ],
+        source="llm",
+    )
+
+    kept = _drop_contained_tasks(plan.tasks)
+
+    assert len(kept) == 1
+    assert "bao nhiêu danh sách hẹn giờ" in kept[0].action
+
+
+def test_a_task_that_only_partly_overlaps_is_kept():
+    """Thận trọng: chỉ bỏ khi việc này thật sự *nằm trong* việc kia.  Trùng một phần thì giữ
+    cả hai — bỏ nhầm là mất một việc tester yêu cầu."""
+    tasks = [
+        TaskSpec(action="vào màn hẹn giờ", target="Ổ cắm 12"),
+        TaskSpec(action="vào màn hẹn giờ 3 lần xem có bao nhiêu danh sách hẹn giờ"),
+    ]
+
+    assert len(_drop_contained_tasks(tasks)) == 2
+
+
+def test_two_different_tasks_are_both_kept():
+    """Khác nhau thì không được bỏ, dù trùng nhiều từ."""
+    tasks = [
+        TaskSpec(action="bật công tắc", target="Ổ cắm 12"),
+        TaskSpec(action="tắt công tắc", target="Ổ cắm 12"),
+    ]
+
+    assert len(_drop_contained_tasks(tasks)) == 2
+
