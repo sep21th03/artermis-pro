@@ -774,6 +774,15 @@ class FlashProfileConfig(BaseModel):
         default="flash",
         description="Perception mode for Flash runner ('flash' for 1-shot detection).",
     )
+    max_context_images: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Trần số ảnh chụp màn hình giữ trong context của Flash (0 = tắt cờ này, giữ"
+            " hành vi cũ: chỉ cắt theo scrub edge của ledger). Đo trên máy thật: giữ tới"
+            " 6 ảnh làm TTFT tăng 7,0s -> 98,7s trong cùng một session."
+        ),
+    )
     step_summarizer: StepSummarizerConfig = Field(
         default_factory=StepSummarizerConfig,
         description="Asynchronous visual context compressor settings.",

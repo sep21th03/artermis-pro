@@ -20,7 +20,7 @@ thought stream recording, and role-based dynamic dispatching.
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar, Token
 import functools
 import logging
@@ -54,6 +54,14 @@ from artemis.llm.reliability import (
     retry_policy_for,
 )
 from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
+from artemis.perf import (
+    PerfStage,
+    STATUS_RETRY,
+    get_recorder,
+    perf_span,
+    record_event,
+)
+from artemis.perf import context as perf_context
 from artemis.services.token_meter import record_llm_usage
 from artemis.llm.structured import (
     ParseFailure,
@@ -112,6 +120,102 @@ _NON_STREAMING_ENDPOINTS: set[str] = set()
 # Total retry limit when failures switch categories within one recovery cycle.
 _MAX_TOTAL_RETRY_ATTEMPTS = 8
 
+#: TTFT của lượt gọi thành công gần nhất (ms).  Đặt trong ``_complete_attempt`` khi
+#: chunk đầu tiên tới, đọc ở ``complete()`` để ghi vào sự kiện hiệu năng.
+_PERF_TTFT_MS: ContextVar[float | None] = ContextVar("perf_ttft_ms", default=None)
+
+
+def _perf_stage_for_role(role: str | None) -> str:
+    """Vai trò agent → công đoạn trong bảng Performance.
+
+    Pro chạy node ``validator`` (đồng thời là Checker của kiến trúc), Flash chạy một
+    vòng lặp duy nhất nên được xếp vào ``Operator LLM`` — nhưng sự kiện vẫn mang
+    ``agent_role`` gốc, nên log phân biệt được Flash với Operator của Pro.
+    """
+    mapping = {
+        "planner": PerfStage.PLANNER_LLM,
+        "operator": PerfStage.OPERATOR_LLM,
+        "validator": PerfStage.CHECKER_LLM,
+        "checker": PerfStage.CHECKER_LLM,
+        "summarizer": PerfStage.SUMMARIZER_LLM,
+        "flash": PerfStage.OPERATOR_LLM,
+        # FlashRunner là span gốc của vòng lặp Flash: model ở đây chính là agent quyết
+        # định hành động, nên xếp vào Operator LLM (sự kiện vẫn giữ agent_role gốc).
+        "flashrunner": PerfStage.OPERATOR_LLM,
+    }
+    return str(mapping.get((role or "").strip().lower(), PerfStage.LLM_OTHER))
+
+
+def _extract_token_usage(response: Any) -> tuple[int | None, int | None, int | None]:
+    """Lấy ``(input, output, total)`` token từ response của provider; thiếu thì ``None``.
+
+    Không suy đoán: provider không trả usage thì để ``None`` (hiển thị N/A) thay vì ước
+    lượng — một con số ước lượng sẽ bị đọc như số đo thật.
+    """
+    usage = getattr(response, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        response_metadata = getattr(response, "response_metadata", None)
+        if isinstance(response_metadata, dict):
+            usage = response_metadata.get("token_usage") or response_metadata.get("usage_metadata")
+    if not isinstance(usage, dict):
+        return None, None, None
+
+    def pick(*keys: str) -> int | None:
+        for key in keys:
+            value = usage.get(key)
+            if isinstance(value, int):
+                return value
+        return None
+
+    prompt = pick("input_tokens", "prompt_tokens")
+    completion = pick("output_tokens", "completion_tokens")
+    total = pick("total_tokens")
+    if total is None and prompt is not None and completion is not None:
+        total = prompt + completion
+    return prompt, completion, total
+
+
+def _context_breakdown(messages: Any) -> dict[str, Any]:
+    """Đếm ký tự theo *nguồn* và số ảnh của một lượt gọi — trả lời "token đi đâu".
+
+    Đo trên trace thật (session ``76fddabf``): **74,8% ký tự text nằm ở system prompt**
+    (chỉ dẫn tĩnh + kế hoạch), 24,8% ở quan sát hiện tại, còn lịch sử hội thoại chỉ
+    **0,4%** — tức "history phình to" không phải nguyên nhân của prompt 17k token.  Không
+    có phép đo này thì rất dễ tối ưu sai chỗ.
+
+    Ký tự ở đây là số đo thật; token là ước lượng (chars/4) và được ghi rõ là ước lượng,
+    tách khỏi token do provider báo cáo.
+    """
+    buckets: dict[str, int] = {}
+    images = 0
+    total_chars = 0
+    try:
+        for message in messages or []:
+            role = str(getattr(message, "type", None) or getattr(message, "role", "") or "?")
+            content = getattr(message, "content", message)
+            chars = 0
+            if isinstance(content, str):
+                chars = len(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, str):
+                        chars += len(block)
+                    elif isinstance(block, dict):
+                        if block.get("type") in ("image_url", "image") or "image_url" in block:
+                            images += 1
+                        elif isinstance(block.get("text"), str):
+                            chars += len(block["text"])
+            buckets[role] = buckets.get(role, 0) + chars
+            total_chars += chars
+    except Exception:  # noqa: BLE001 - đo không được thì thôi
+        return {}
+    return {
+        "chars_by_role": buckets,
+        "chars_total": total_chars,
+        "images": images,
+        "estimate": "token ≈ chars/4 (ước lượng, không phải số provider báo)",
+    }
+
 
 def _get_current_data_engine():
     if _CURRENT_DATA_ENGINE is not None:
@@ -134,6 +238,21 @@ def _record_llm_retry(
     timestamp = time.time()
     request_id = request.get("request_id") if request else None
     provider = provider or (request.get("provider") if request else None)
+
+    # Performance log trước tiên: nó không phụ thuộc DataEngine (một tiến trình có thể
+    # chạy lớp đo mà không có engine), và đây là số đo trả lời câu hỏi "20 giây đó có
+    # phải do backoff không".
+    record_event(
+        _perf_stage_for_role(perf_context.current_agent_role()),
+        "llm_retry",
+        duration_ms=round(float(delay) * 1000.0, 3),
+        status=STATUS_RETRY,
+        provider=provider,
+        retry_count=attempt,
+        error_type=str(error)[:120],
+        request_id=request_id,
+        detail={"source": source, "max_retries": max_retries},
+    )
 
     engine = _get_current_data_engine()
     if not engine or not getattr(engine, "current_session_id", None):
@@ -763,13 +882,51 @@ class RobustChatModelWrapper:
             engine = _get_current_data_engine()
         record_llm_usage(engine, response, source=self._endpoint_key())
 
+    @asynccontextmanager
+    async def _perf_llm_span(self, transport: str):
+        """Span đo một lượt gọi LLM, bao gồm cả retry/backoff bên trong nó.
+
+        Đặt *ngoài* ``_run_with_recovery`` là chủ ý: thời gian tester thấy phải là toàn bộ
+        thời gian chờ model, kể cả các lần thử lại.  Số lần retry và thời gian backoff
+        được ghi thành span con (``llm_retry``) nên không bị cộng trùng.
+        """
+        role = perf_context.current_agent_role()
+        async with perf_span(
+            _perf_stage_for_role(role),
+            "llm_call",
+            role=role,
+            model=getattr(self.endpoint, "model_name", None),
+            provider=self._provider_value(),
+            endpoint=self._endpoint_key(),
+            detail={"transport": transport},
+        ) as span:
+            yield span
+
+    def _finish_perf_span(self, span, response, messages: Any = None) -> None:
+        """Gắn token + TTFT + breakdown ngữ cảnh đã đo được vào span."""
+        if span is None:
+            return
+        prompt, completion, total = _extract_token_usage(response)
+        span.set(
+            input_tokens=prompt,
+            output_tokens=completion,
+            total_tokens=total,
+            ttft_ms=_PERF_TTFT_MS.get(),
+        )
+        breakdown = _context_breakdown(messages)
+        if breakdown:
+            # Token đi đâu: số ký tự theo nguồn (system/quan sát/lịch sử) + số ảnh.
+            span.note(context_breakdown=breakdown)
+
     async def ainvoke(self, *args, **kwargs):
         args, kwargs, _ = self._traced_call(args, kwargs)
-        response = await _run_with_recovery(
-            functools.partial(self.base_model.ainvoke, *args, **kwargs),
-            provider=self._provider_value(),
-            endpoint_key=self._endpoint_key(),
-        )
+        async with self._perf_llm_span("invoke") as span:
+            response = await _run_with_recovery(
+                functools.partial(self.base_model.ainvoke, *args, **kwargs),
+                provider=self._provider_value(),
+                endpoint_key=self._endpoint_key(),
+            )
+            self._finish_perf_span(span, response, args[0] if args else None)
         self._meter_usage(response)
         return response
 
@@ -785,11 +942,13 @@ class RobustChatModelWrapper:
         """
         args, kwargs, _ = self._traced_call(args, kwargs)
         emit_deltas = bool(self.ctx and self.ctx.data_engine)
-        response = await _run_with_recovery(
-            functools.partial(self._complete_attempt, emit_deltas, *args, **kwargs),
-            provider=self._provider_value(),
-            endpoint_key=self._endpoint_key(),
-        )
+        async with self._perf_llm_span("stream") as span:
+            response = await _run_with_recovery(
+                functools.partial(self._complete_attempt, emit_deltas, *args, **kwargs),
+                provider=self._provider_value(),
+                endpoint_key=self._endpoint_key(),
+            )
+            self._finish_perf_span(span, response, args[0] if args else None)
         self._meter_usage(response)
         return response
 
@@ -820,9 +979,12 @@ class RobustChatModelWrapper:
 
         stream_exec_id = uuid4()
         full_response = None
+        _attempt_start = time.perf_counter()
         try:
             async for chunk in self.base_model.astream(*args, **kwargs):
                 if full_response is None:
+                    # TTFT: thời gian tới token đầu tiên của lần thử này.
+                    _PERF_TTFT_MS.set(round((time.perf_counter() - _attempt_start) * 1000.0, 3))
                     full_response = chunk
                 else:
                     full_response = full_response + chunk
@@ -1084,6 +1246,57 @@ def _get_llm(
 
 
 get_llm: GetLLM = _get_llm
+
+
+def get_routed_llm(
+    ctx: ArtemisContext | None,
+    *,
+    role: str = "summarizer",
+    is_utils: bool = True,
+    model_name: str | None = None,
+    temperature: float = 0.0,
+    timeout: float | None = None,
+) -> RobustChatModelWrapper | None:
+    """Resolve a helper model (compression / summarizer lens) through the CONFIGURED router.
+
+    **Vì sao có hàm này.** Bộ nén từng gọi ``get_google_llm(model_name=...)``, mà hàm đó
+    *ép* ``provider=google`` trong khi tên model đến từ ``config/artemis.jsonc`` — vốn là
+    tên của gateway (``ts/gemini-3.5-flash-lite``). Endpoint Google native không biết tên
+    đó, nên mọi lượt nén trả 404 (đo được: một lần chạy Pro có 60 lượt vision, tất cả
+    404). Tệ hơn, một nhánh ``except`` còn *âm thầm* rơi về Google — đúng kiểu đổi
+    provider mà không ai cấu hình.
+
+    Hợp đồng của hàm:
+
+    * provider / endpoint / khoá xác thực lấy **từ cấu hình**, không hardcode;
+    * ``model_name`` chỉ ghi đè *tên model*, giữ nguyên provider đã cấu hình;
+    * lỗi ⇒ trả ``None`` để bên gọi **giữ nguyên context chưa nén**; hàm này không raise
+      và không bao giờ tự chuyển sang provider khác.
+    """
+    if ctx is None:
+        llm_logger.debug("Không có context nên không resolve được model cho '%s'", role)
+        return None
+    try:
+        endpoint = _resolve_endpoint(ctx, role, is_utils=is_utils)
+        if model_name:
+            # Chỉ đổi tên model — provider/base_url/api_key vẫn theo cấu hình.
+            endpoint = endpoint.model_copy(update={"model_name": str(model_name)})
+        if temperature is not None:
+            endpoint = endpoint.model_copy(update={"temperature": float(temperature)})
+        if timeout is not None:
+            endpoint = endpoint.model_copy(update={"timeout_seconds": float(timeout)})
+        raw_model = ModelFactory.get_model(endpoint)
+        handler = DataEngineCallbackHandler(ctx)
+        bound_model = raw_model.with_config(callbacks=[handler])
+        return RobustChatModelWrapper(bound_model, ctx, endpoint=endpoint)  # type: ignore[return-value]
+    except Exception as exc:  # noqa: BLE001 - thiếu cấu hình không được làm gãy tác vụ
+        llm_logger.warning(
+            "Không resolve được model '%s' qua router (%s): %s — bộ nén sẽ giữ nguyên context.",
+            role,
+            model_name or "theo cấu hình",
+            exc,
+        )
+        return None
 
 
 class _ObservedFallback(FallbackRunner):

@@ -310,6 +310,9 @@ class StepCapsuleLens(StepLens):
             fallback_model_name if fallback_model_name != self._model_name else None
         )
         self._fallback_llm = fallback_llm
+        #: Lý do bộ nén không chạy được (None = chạy được).  Ghi lại để log/perf nói rõ
+        #: "vì sao context không được nén" thay vì im lặng.
+        self._unavailable_reason: str | None = None
         try:
             self._prompt = self._PROMPT_PATH.read_text(encoding="utf-8")
         except Exception:
@@ -323,19 +326,40 @@ class StepCapsuleLens(StepLens):
 
     def _get_llm(self):
         if self._llm is None:
-            from artemis.services.llm import get_google_llm
+            # Đi qua router đã cấu hình (provider/endpoint/khoá trong artemis.jsonc +
+            # settings). KHÔNG dùng ``get_google_llm``: hàm đó ép provider=google trong
+            # khi tên model ở đây là tên gateway, và đó chính là nguồn của 404.
+            from artemis.services.llm import get_routed_llm
 
-            self._llm = get_google_llm(model_name=self._model_name, temperature=0.0)
+            self._llm = get_routed_llm(
+                self._ctx,
+                role="summarizer",
+                model_name=self._model_name,
+                temperature=0.0,
+            )
+            if self._llm is None:
+                self._unavailable_reason = (
+                    "Không resolve được model nén qua router (thiếu cấu hình hoặc provider "
+                    "không khả dụng) — giữ nguyên context chưa nén."
+                )
         return self._llm
 
     def _get_fallback_llm(self):
         if self._fallback_llm is None and self._fallback_model_name:
-            from artemis.services.llm import get_google_llm
+            from artemis.services.llm import get_routed_llm
 
-            self._fallback_llm = get_google_llm(
-                model_name=self._fallback_model_name, temperature=0.0
+            self._fallback_llm = get_routed_llm(
+                self._ctx,
+                role="summarizer",
+                model_name=self._fallback_model_name,
+                temperature=0.0,
             )
         return self._fallback_llm
+
+    @property
+    def unavailable_reason(self) -> str | None:
+        """Lý do bộ nén không chạy được (None = chạy được) — dùng cho log/perf."""
+        return self._unavailable_reason
 
     @property
     def has_fallback(self) -> bool:
@@ -526,36 +550,124 @@ class StepCapsuleLens(StepLens):
 
     async def render(self, key: JobKey, payload: dict[str, Any]) -> str | None:
         messages = self.build_messages(payload)
-        if self.has_fallback:
-            from artemis.services.llm import with_fallback
-
-            response = await with_fallback(
-                lambda: self._invoke(self._get_llm(), messages, self._model_name),
-                lambda: self._invoke(
-                    self._get_fallback_llm(),
-                    messages,
-                    self._fallback_model_name or "fallback",
-                ),
-                none_should_fallback=False,
+        source_chars = len(str(messages[-1].content))
+        llm = self._get_llm()
+        if llm is None:
+            # Không có model nén ⇒ **giữ nguyên context**: trả None để runtime coi đoạn
+            # này chưa có bản nén, thay vì ném lỗi và làm gãy tác vụ chính.
+            self._record_compression_event(
+                key,
+                status="skipped",
+                source_chars=source_chars,
+                capsule_chars=None,
+                duration_ms=None,
+                reason=self._unavailable_reason or "Không có model nén",
             )
-        else:
-            response = await self._invoke(self._get_llm(), messages, self._model_name)
+            return None
+
+        started = time.perf_counter()
+        try:
+            if self.has_fallback:
+                from artemis.services.llm import with_fallback
+
+                response = await with_fallback(
+                    lambda: self._invoke(llm, messages, self._model_name),
+                    lambda: self._invoke(
+                        self._get_fallback_llm(),
+                        messages,
+                        self._fallback_model_name or "fallback",
+                    ),
+                    none_should_fallback=False,
+                )
+            else:
+                response = await self._invoke(llm, messages, self._model_name)
+        except Exception as exc:  # noqa: BLE001 - nén lỗi thì giữ nguyên context
+            self._record_compression_event(
+                key,
+                status="error",
+                source_chars=source_chars,
+                capsule_chars=None,
+                duration_ms=round((time.perf_counter() - started) * 1000.0, 3),
+                reason=f"{type(exc).__name__}: {str(exc)[:160]}",
+            )
+            raise
+
         content = getattr(response, "content", "")
         if isinstance(content, list):
             content = "".join(
                 b.get("text", "") for b in content if isinstance(b, dict) and "text" in b
             )
         parsed = self.parse_capsule(str(content), payload)
+        duration_ms = round((time.perf_counter() - started) * 1000.0, 3)
         if parsed is None:
+            self._record_compression_event(
+                key,
+                status="error",
+                source_chars=source_chars,
+                capsule_chars=None,
+                duration_ms=duration_ms,
+                reason="Capsule không parse được",
+            )
             return None
         capsule = json.dumps(parsed, ensure_ascii=False)
-        # Measure the capsule size against the transcript it replaces.
-        source_chars = len(str(messages[-1].content))
         logger.info(
             f"Chunk capsule {key}: source {source_chars} chars -> capsule"
             f" {len(capsule)} chars ({len(capsule) / max(1, source_chars):.0%})."
         )
+        self._record_compression_event(
+            key,
+            status="success",
+            source_chars=source_chars,
+            capsule_chars=len(capsule),
+            duration_ms=duration_ms,
+            reason=None,
+        )
         return capsule
+
+    def _record_compression_event(
+        self,
+        key: JobKey,
+        *,
+        status: str,
+        source_chars: int,
+        capsule_chars: int | None,
+        duration_ms: float | None,
+        reason: str | None,
+    ) -> None:
+        """Ghi số đo của một lượt nén vào performance log.
+
+        Token ở đây là **ước lượng** từ số ký tự (chars/4) và được ghi rõ là ước lượng;
+        token do provider báo cáo đi qua ``record_llm_usage`` như mọi lượt gọi khác.  Hai
+        loại số này không được trộn vào nhau.
+        """
+        try:
+            from artemis.perf import PerfStage, record_event
+
+            estimate_before = max(0, source_chars // 4)
+            estimate_after = None if capsule_chars is None else max(0, capsule_chars // 4)
+            record_event(
+                PerfStage.COMPRESSION,
+                "chunk_capsule",
+                duration_ms=duration_ms,
+                status=status,
+                model=self._model_name,
+                input_tokens=estimate_before,
+                output_tokens=estimate_after,
+                detail={
+                    "estimate": "chars/4 (ước lượng, không phải số provider báo)",
+                    "source_chars": source_chars,
+                    "capsule_chars": capsule_chars,
+                    "segments": f"{key}",
+                    "reason": reason,
+                    "saved_tokens": (
+                        None
+                        if estimate_after is None
+                        else max(0, estimate_before - estimate_after)
+                    ),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - đo không được thì thôi
+            logger.debug(f"Không ghi được compression perf event: {exc}")
 
 
 class ChunkCapsuleService(StepMemoryService):

@@ -16,14 +16,17 @@
 
 import asyncio
 import base64
+import hashlib
 from io import BytesIO
 import os
 from pathlib import Path
+import time
 from typing import Any, Literal
 
 from adbutils import AdbClient, AdbDevice
 from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
+from artemis.perf import PerfStage, STATUS_ERROR, STATUS_SUCCESS, perf_span, record_event
 from artemis.runtime.adb_endpoint import current_adb_endpoint
 from artemis.toolchain import find_ffmpeg, find_scrcpy
 from artemis.utils.video import build_scrcpy_record_command
@@ -90,6 +93,93 @@ class AndroidAdbDriver(BaseDeviceDriver):
         self._device: AdbDevice | None = None
         self._recording_process: asyncio.subprocess.Process | None = None
         self._recording_output_path: Path | None = None
+        # ── Đo hiệu năng (chỉ quan sát) ─────────────────────────────────
+        #: Hash UI lần quan sát trước, để biết một hành động có làm UI đổi hay không.
+        self._last_ui_fingerprint: str | None = None
+        #: Hành động vừa thực hiện, chờ lần quan sát kế tiếp để đối chiếu UI.
+        self._pending_action: dict[str, Any] | None = None
+
+    # ── Đo hiệu năng: ghi nhận hành động & đối chiếu UI ─────────────────
+    def _note_action(self, action_type: str, span_id: str | None, **detail: Any) -> None:
+        """Ghi nhớ hành động vừa thực hiện để lần quan sát kế tiếp đối chiếu UI.
+
+        Không có bước này thì không thể trả lời hai câu hỏi của lớp đo: *hành động nào
+        không làm UI thay đổi* và *mất bao lâu mới xác minh được UI sau hành động*.
+        """
+        if span_id is None:
+            return
+        self._pending_action = {
+            "action_type": action_type,
+            "span_id": span_id,
+            "at": time.time(),
+            "detail": detail,
+        }
+
+    def _resolve_pending_action(self, fingerprint: str | None, changed: bool | None) -> None:
+        """Phát sự kiện ``action_outcome`` cho hành động vừa rồi (nếu có)."""
+        pending = self._pending_action
+        self._pending_action = None
+        if not pending:
+            return
+        record_event(
+            PerfStage.ADB_ACTION,
+            "action_outcome",
+            duration_ms=round((time.time() - float(pending["at"])) * 1000.0, 3),
+            action_type=str(pending["action_type"]),
+            ui_fingerprint=fingerprint,
+            ui_changed=changed,
+            detail={
+                **dict(pending.get("detail") or {}),
+                "action_span_id": pending["span_id"],
+                "kind": "outcome",
+            },
+        )
+
+    @staticmethod
+    def _ui_fingerprint(ui_elements: list[dict[str, Any]], xml: str | None) -> str | None:
+        """Hash trạng thái UI — chỉ để so sánh, không lưu nội dung màn hình."""
+        parts: list[str] = []
+        for element in ui_elements[:200]:
+            if isinstance(element, dict):
+                text = element.get("text") or element.get("content-desc") or ""
+                resource = element.get("resource-id") or ""
+                parts.append(f"{resource}|{text}")
+        payload = "\n".join(parts) if parts else (xml or "")
+        if not payload:
+            return None
+        return hashlib.sha1(payload.encode("utf-8", "ignore")).hexdigest()[:16]
+
+    def _emit_action(
+        self,
+        action_type: str,
+        started: float,
+        *,
+        status: str = STATUS_SUCCESS,
+        **detail: Any,
+    ) -> None:
+        """Phát sự kiện cho một hành động thiết bị đã xong.
+
+        ``started`` là mốc ``time.perf_counter()`` lấy ngay đầu method; duration đo từ
+        đó nên bao gồm cả thời gian chờ ADB thật, không chỉ thời gian lệnh chạy.
+        """
+        error = detail.pop("error", None)
+        error_type: str | None = None
+        if isinstance(error, BaseException):
+            error_type = type(error).__name__
+            detail.setdefault("error_message", str(error)[:200])
+        elif error is not None:
+            error_type = str(error)[:120]
+        event = record_event(
+            PerfStage.ADB_ACTION,
+            f"adb_{action_type}",
+            duration_ms=round((time.perf_counter() - started) * 1000.0, 3),
+            status=status,
+            action_type=action_type,
+            error_type=error_type,
+            detail=detail,
+        )
+        if status == STATUS_SUCCESS and event is not None:
+            self._note_action(action_type, event.span_id, **detail)
 
     @property
     def device_id(self) -> str:
@@ -122,10 +212,19 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def get_screen_data(self, skip_settling: bool = False) -> ScreenData:
         """Captures screenshot and XML hierarchy concurrently."""
+        # Đo hiệu năng: mốc thời gian cho từng pha của một lần quan sát màn hình.
+        _perf_start = time.perf_counter()
+        _settle_ms: float | None = None
+        _screenshot_ms: float | None = None
+        _hierarchy_ms: float | None = None
+        _hierarchy_from_combined = False
         if not skip_settling:
+            _t = time.perf_counter()
             await asyncio.sleep(0.3)
+            _settle_ms = (time.perf_counter() - _t) * 1000.0
 
         # 1. Capture raw screenshot
+        _t = time.perf_counter()
         screenshot_bytes: bytes = b""
         screenshot_base64: str = ""
         ui_hierarchy_xml: str | None = None
@@ -158,6 +257,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
                         ui_elements = raw_elements
             except Exception as e:
                 logger.debug(f"Direct ui_adb_client.get_screen_data error: {e}")
+        _hierarchy_from_combined = bool(ui_elements)
 
         if not screenshot_base64 or not isinstance(screenshot_base64, str):
             try:
@@ -175,9 +275,13 @@ class AndroidAdbDriver(BaseDeviceDriver):
             # Fallback for headless testing environments
             screenshot_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
             screenshot_bytes = base64.b64decode(screenshot_base64)
+        _screenshot_ms = (time.perf_counter() - _t) * 1000.0
 
         # 2. Capture UI Hierarchy via UIAutomator
+        _t = time.perf_counter()
+        _hierarchy_fetched = False
         if self._ui_adb_client and not ui_elements:
+            _hierarchy_fetched = True
             try:
                 if hasattr(self._ui_adb_client, "get_hierarchy"):
                     res = self._ui_adb_client.get_hierarchy()
@@ -192,6 +296,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
                     ui_elements = await res if asyncio.iscoroutine(res) else res
             except Exception as e:
                 logger.debug(f"UI hierarchy extraction failed: {e}")
+        _hierarchy_ms = (time.perf_counter() - _t) * 1000.0
 
         if isinstance(ui_elements, dict):
             clean_ui_elements = [ui_elements]
@@ -218,6 +323,44 @@ class AndroidAdbDriver(BaseDeviceDriver):
             else base64.b64decode(clean_b64)
         )
 
+        # ── Đo hiệu năng: từng pha của lần quan sát này ─────────────────
+        # Ba pha là ba span *lá*, đo riêng, nên bảng Performance có đúng thời gian
+        # chụp ảnh / lấy hierarchy / đợi màn hình ổn định mà không cộng trùng.
+        fingerprint = self._ui_fingerprint(clean_ui_elements, ui_hierarchy_xml)
+        changed: bool | None = None
+        if fingerprint is not None and self._last_ui_fingerprint is not None:
+            changed = fingerprint != self._last_ui_fingerprint
+        if fingerprint is not None:
+            self._last_ui_fingerprint = fingerprint
+        if _settle_ms is not None:
+            record_event(
+                PerfStage.SCREEN_SETTLING, "screen_settling", duration_ms=round(_settle_ms, 3)
+            )
+        if _screenshot_ms is not None:
+            record_event(
+                PerfStage.SCREENSHOT,
+                "screenshot_capture",
+                duration_ms=round(_screenshot_ms, 3),
+                detail={
+                    # Một số client trả ảnh + hierarchy trong cùng một lời gọi: khi đó
+                    # thời gian lấy hierarchy nằm *trong* pha này, không phải pha riêng.
+                    "hierarchy_included": _hierarchy_from_combined,
+                },
+            )
+        if _hierarchy_ms is not None and _hierarchy_fetched:
+            record_event(
+                PerfStage.UI_HIERARCHY,
+                "ui_hierarchy",
+                duration_ms=round(_hierarchy_ms, 3),
+                ui_fingerprint=fingerprint,
+                ui_changed=changed,
+                detail={
+                    "elements": len(clean_ui_elements),
+                    "has_hierarchy": bool(ui_hierarchy_xml),
+                },
+            )
+        self._resolve_pending_action(fingerprint, changed)
+
         return ScreenData(
             screenshot_bytes=clean_bytes,
             screenshot_base64=clean_b64,
@@ -236,6 +379,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
         times: int = 1,
         delay_ms: int = 100,
     ) -> bool:
+        _t = time.perf_counter()
         try:
             if duration_ms >= 500:
                 cmd = f"input swipe {x} {y} {x} {y} {duration_ms}"
@@ -248,9 +392,11 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
             logger.info(f"[ADB] {cmd}")
             await asyncio.to_thread(self.device.shell, cmd)
+            self._emit_action("tap", _t, x=x, y=y, times=times, duration_ms=duration_ms)
             return True
         except Exception as e:
             logger.error(f"Tap failed at ({x}, {y}): {e}")
+            self._emit_action("tap", _t, status=STATUS_ERROR, x=x, y=y, error=e)
             return False
 
     async def long_press(self, x: int, y: int, duration_ms: int = 1000) -> bool:
@@ -264,13 +410,33 @@ class AndroidAdbDriver(BaseDeviceDriver):
         end_y: int,
         duration_ms: int = 800,
     ) -> bool:
+        _t = time.perf_counter()
         try:
             cmd = f"input swipe {start_x} {start_y} {end_x} {end_y} {duration_ms}"
             logger.info(f"[ADB] {cmd}")
             await asyncio.to_thread(self.device.shell, cmd)
+            self._emit_action(
+                "swipe",
+                _t,
+                start_x=start_x,
+                start_y=start_y,
+                end_x=end_x,
+                end_y=end_y,
+                duration_ms=duration_ms,
+            )
             return True
         except Exception as e:
             logger.error(f"Swipe failed from ({start_x},{start_y}) to ({end_x},{end_y}): {e}")
+            self._emit_action(
+                "swipe",
+                _t,
+                status=STATUS_ERROR,
+                start_x=start_x,
+                start_y=start_y,
+                end_x=end_x,
+                end_y=end_y,
+                error=e,
+            )
             return False
 
     async def swipe_direction(
@@ -307,6 +473,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
         return False
 
     async def input_text(self, text: str, clear_existing: bool = True) -> bool:
+        _t = time.perf_counter()
         try:
             if clear_existing:
                 # Safe & robust clearing: Move to End -> Shift+Home selection -> Delete -> Fallback backspaces
@@ -366,12 +533,20 @@ class AndroidAdbDriver(BaseDeviceDriver):
                 if line:
                     escaped = _escape_for_adb_text(line)
                     await asyncio.to_thread(self.device.shell, f"input text {escaped}")
+            # Không ghi nội dung đã gõ (có thể là mật khẩu) — chỉ ghi độ dài.
+            self._emit_action(
+                "input_text", _t, length=len(text or ""), clear_existing=clear_existing
+            )
             return True
         except Exception as e:
             logger.error(f"Input text failed for '{text}': {e}")
+            self._emit_action(
+                "input_text", _t, status=STATUS_ERROR, length=len(text or ""), error=e
+            )
             return False
 
     async def press_key(self, key: KeyCode | str | int) -> bool:
+        _t = time.perf_counter()
         try:
             keycode_val = key
             if isinstance(key, (KeyCode, str)):
@@ -379,26 +554,40 @@ class AndroidAdbDriver(BaseDeviceDriver):
                 keycode_val = ANDROID_KEYCODE_MAP.get(key_name, key)
 
             await asyncio.to_thread(self.device.shell, f"input keyevent {keycode_val}")
+            self._emit_action("press_key", _t, key=str(keycode_val))
             return True
         except Exception as e:
             logger.error(f"Press key failed for '{key}': {e}")
+            self._emit_action(
+                "press_key", _t, status=STATUS_ERROR, key=str(key), error=e
+            )
             return False
 
     async def launch_app(self, package_name: str) -> bool:
+        _t = time.perf_counter()
         try:
             cmd = f"monkey -p {package_name} -c android.intent.category.LAUNCHER 1"
             await asyncio.to_thread(self.device.shell, cmd)
+            self._emit_action("launch_app", _t, target=package_name)
             return True
         except Exception as e:
             logger.error(f"Launch app failed for '{package_name}': {e}")
+            self._emit_action(
+                "launch_app", _t, status=STATUS_ERROR, target=package_name, error=e
+            )
             return False
 
     async def stop_app(self, package_name: str) -> bool:
+        _t = time.perf_counter()
         try:
             await asyncio.to_thread(self.device.shell, f"am force-stop {package_name}")
+            self._emit_action("stop_app", _t, target=package_name)
             return True
         except Exception as e:
             logger.error(f"Stop app failed for '{package_name}': {e}")
+            self._emit_action(
+                "stop_app", _t, status=STATUS_ERROR, target=package_name, error=e
+            )
             return False
 
     async def get_current_package(self) -> str | None:
@@ -429,12 +618,18 @@ class AndroidAdbDriver(BaseDeviceDriver):
         return None
 
     async def execute_shell(self, command: str, timeout_seconds: float = 15.0) -> str:
+        _t = time.perf_counter()
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 asyncio.to_thread(self.device.shell, command),
                 timeout=timeout_seconds,
             )
+            self._emit_action(
+                "shell", _t, target=command.split()[0] if command else "", timeout=timeout_seconds
+            )
+            return result
         except Exception as e:
+            self._emit_action("shell", _t, status=STATUS_ERROR, error=e)
             return f"Error: {e}"
 
     async def start_video_recording(self, output_dir: Path | None = None) -> None:

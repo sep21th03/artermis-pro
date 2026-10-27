@@ -33,6 +33,13 @@ from artemis.data_engine.context_vars import (
     CURRENT_NODE_NAME,
     CURRENT_TRACE_ID,
 )
+from artemis.perf import PerfStage, perf_span, perf_span_sync
+from artemis.perf import context as perf_context
+
+
+def _perf_stage_for_trace(trace_type: str) -> str:
+    """``trace_type`` của DataEngine → công đoạn trong performance log."""
+    return str(PerfStage.TOOL if trace_type == "tool" else PerfStage.AGENT)
 
 
 def smart_serialize(obj: Any) -> str:
@@ -531,7 +538,11 @@ def trace(
             _record(ctx_obj, args, kwargs, None, "running", 0.0, trace_id, parent_id)
 
             try:
-                result = await func(*args, **kwargs)
+                # Span hiệu năng: node agent (Planner/Operator/Validator/Summarizer) và
+                # mọi tool chạy qua decorator này.  Vai trò được đặt ở đây nên mọi lượt
+                # gọi LLM bên trong tự biết mình thuộc công đoạn nào.
+                async with perf_span(_perf_stage_for_trace(type), trace_name, role=trace_name):
+                    result = await func(*args, **kwargs)
                 duration = time.time() - start_time
                 _record(
                     ctx_obj,
@@ -577,7 +588,10 @@ def trace(
             _record(ctx_obj, args, kwargs, None, "running", 0.0, trace_id, parent_id)
 
             try:
-                result = func(*args, **kwargs)
+                with perf_span_sync(
+                    _perf_stage_for_trace(type), trace_name, role=trace_name
+                ):
+                    result = func(*args, **kwargs)
                 duration = time.time() - start_time
                 _record(
                     ctx_obj,
@@ -638,11 +652,26 @@ class TraceSpan:
         self.result: Any = None
         self.error: Any = None
         self.payload: dict[str, Any] = {}
+        # Span hiệu năng đi kèm (chỉ quan sát; tắt được bằng cấu hình).
+        self._perf_gen: Any = None
+        self._perf_span: Any = None
 
     def __enter__(self):
         self.start_time = time.time()
         self.parent_id = CURRENT_TRACE_ID.get()
         self.token = CURRENT_TRACE_ID.set(self.trace_id)
+
+        # Đo hiệu năng song song với trace của DataEngine: cùng một span, hai đích
+        # (một cho replay, một cho bảng Performance).
+        self._perf_gen = perf_span_sync(
+            _perf_stage_for_trace(self.trace_type),
+            self.name,
+            role=None if self.trace_type == "tool" else self.name,
+        )
+        try:
+            self._perf_span = self._perf_gen.__enter__()
+        except Exception:  # noqa: BLE001 - đo hiệu năng không được cản trace
+            self._perf_gen = None
 
         if self.ctx and self.ctx.data_engine:
             step_id = getattr(self.ctx.data_engine, "current_step_id", None)
@@ -664,6 +693,15 @@ class TraceSpan:
         if exc_type:
             self.status = "failed"
             self.error = exc_val
+
+        if self._perf_gen is not None:
+            try:
+                if exc_type and self._perf_span is not None:
+                    self._perf_span.fail(exc_val if exc_val is not None else str(exc_type))
+                self._perf_gen.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001 - đo hiệu năng không được che lỗi thật
+                pass
+            self._perf_gen = None
 
         if self.ctx and self.ctx.data_engine:
             final_payload = dict(self.payload)

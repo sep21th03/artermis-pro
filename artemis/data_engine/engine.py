@@ -639,6 +639,25 @@ class DataEngine:
             f"Session started: {session_id} (current step counter: {self.current_step_number})"
         )
         self._publish("session_started", session.model_dump())
+        # ── Lớp đo hiệu năng: mở recorder cho đúng session này ──────────
+        # Đặt ở đây (chứ không ở console) vì tiến trình thực thi là Artemis Daemon:
+        # recorder phải nằm trong tiến trình đang lái điện thoại thì mới đo được.
+        try:
+            from artemis.perf import PerfRecorder, PerfStage, record_event, set_recorder
+
+            recorder = PerfRecorder(str(session_id))
+            set_recorder(recorder)
+            record_event(
+                PerfStage.SESSION,
+                "session_start",
+                detail={
+                    "goal_chars": len(goal or ""),
+                    "device": (device_info or {}).get("serial"),
+                    "pid": os.getpid(),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - đo hiệu năng không được cản session
+            logger.debug(f"Perf recorder không mở được cho {session_id}: {exc}")
         return session_id
 
     def end_session(self, status: str = "completed"):
@@ -695,6 +714,29 @@ class DataEngine:
             self._publish("session_ended", session.model_dump())
         except Exception as e:
             logger.error(f"Failed to end session in DataEngine: {e}")
+
+        # ── Lớp đo hiệu năng: đóng session và ghi lại mốc kết thúc ───────
+        # Mốc này là wall-clock chuẩn cho báo cáo: nó bao cả phần chờ sau span cuối
+        # cùng, nên "tổng thời gian session" không bị ngắn hơn thực tế.
+        try:
+            from artemis.perf import PerfStage, get_recorder, record_event
+
+            record_event(
+                PerfStage.SESSION,
+                "session_end",
+                duration_ms=(
+                    round((end_time - self.session_start_time) * 1000.0, 3)
+                    if self.session_start_time
+                    else None
+                ),
+                status=status,
+                detail={"session_status": status},
+            )
+            recorder = get_recorder()
+            if recorder is not None:
+                recorder.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Perf recorder không đóng được cho {session_id}: {exc}")
 
     def record_video_start(
         self,
@@ -1505,6 +1547,14 @@ class DataEngine:
         if self.base_dir:
             self.current_step_dir = self.base_dir / "steps" / str(self.current_step_id)
             self.current_step_dir.mkdir(parents=True, exist_ok=True)
+        # Lớp đo hiệu năng: mọi span trong bước này mang đúng step_id, nên timeline
+        # nhóm được "bước 3 mất 42s" mà không phải suy đoán từ mốc thời gian.
+        try:
+            from artemis.perf import CURRENT_STEP_ID
+
+            CURRENT_STEP_ID.set(str(self.current_step_id))
+        except Exception:  # noqa: BLE001 - đo hiệu năng không được cản bước
+            pass
         return self.current_step_id
 
     def get_agent_friendly_steps(self) -> list[dict[str, Any]]:

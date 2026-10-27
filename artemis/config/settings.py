@@ -185,8 +185,20 @@ class Settings(BaseSettings):
     ARTEMIS_PREPARE_ENABLED: bool = True
     """``0`` = không gọi LLM; API trả bản rút gọn xác định kèm ``status=fallback``."""
 
-    ARTEMIS_PREPARE_MAX_KNOWLEDGE_CHARS: int = 1200
-    """Trần phần kiến thức rút gọn (không tính prompt gốc của tester)."""
+    ARTEMIS_PREPARE_MAX_KNOWLEDGE_CHARS: int = 4000
+    """Trần phần kiến thức rút gọn (không tính prompt gốc của tester).
+
+    Đo trên KB thật (2 workflow, prompt "đăng xuất và đăng nhập tài khoản …"): với 1200,
+    kế hoạch + tiêu chí đã chiếm hết ngân sách nên **mục kiến thức bị bỏ toàn bộ** và LLM
+    chỉ còn kế hoạch để viết — nó viết chung chung, mất chi tiết "chọn tài khoản đã lưu".
+    Nay mục kiến thức luôn được rút gọn để còn (``compact_knowledge_lines``).
+
+    2400 vẫn không đủ sau khi mục kiến thức in thêm **các bước** của workflow chính: đo trên
+    cùng KB đó, khối ``auth.switch_account`` bị cắt giữa dòng và **mất đúng ba bước** (mũi
+    tên caret-down, chọn đúng dòng, nút Đăng nhập) — tức mất phần "cách làm" mà việc in bước
+    sinh ra để giữ.  4000 chứa trọn hai workflow kèm bước; so với context thật của agent
+    (14–18k token mỗi lượt) thì phần tăng thêm này vào khoảng 1% độ trễ prefill.
+    """
 
     ARTEMIS_PREPARE_MAX_PROMPT_CHARS: int = 6000
     """Trần Enhanced Prompt cuối cùng."""
@@ -233,6 +245,19 @@ class Settings(BaseSettings):
     ARTEMIS_PREPARE_CONFLICT_FLOOR: float = 0.8
     """Ngưỡng mà tiêu chí/bước của workflow phụ không được vượt — vượt nghĩa là nó đã
     bị biến thành việc phải làm, và bản LLM bị từ chối."""
+
+    # ── Đo hiệu năng (performance monitoring) ────────────────────────────
+    # Chỉ quan sát: ghi span ra ``traces/<session_id>/perf_events.jsonl`` để console
+    # tổng hợp thành bảng Performance.  Không đổi hành vi Planner/Operator, không gọi
+    # thêm LLM, không lưu prompt/ảnh/khoá bí mật.
+    ARTEMIS_PERF_ENABLED: bool = True
+    """``0`` = tắt hoàn toàn lớp đo (không ghi file, không tạo span)."""
+
+    ARTEMIS_PERF_LEVEL: str = "full"
+    """``full`` = ghi mọi span; ``summary`` = chỉ span cấp công đoạn; ``off`` = tắt."""
+
+    ARTEMIS_PERF_UI_POLL_MS: int = 3000
+    """Chu kỳ console đọc lại file perf khi hiển thị tab Performance (ms)."""
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

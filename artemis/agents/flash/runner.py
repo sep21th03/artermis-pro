@@ -83,8 +83,8 @@ from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger, mark
 from artemis.services.llm import (
     RobustChatModelWrapper,
     acomplete,
-    get_google_llm,
     get_llm,
+    get_routed_llm,
     invoke_llm_with_timeout_message,
 )
 from artemis.tools.history import history_tool_declarations
@@ -149,12 +149,14 @@ class FlashRunner:
             self.memory_runtime_cfg = cfg.memory.runtime
             self.transcript_cfg = cfg.memory.transcript
             self.chunking_cfg = cfg.memory.chunking
+            self.max_context_images = int(getattr(cfg.flash, "max_context_images", 0) or 0)
         except Exception:
             self.max_turns = max_turns if max_turns is not None else 0
             self.step_summarizer_cfg = StepSummarizerConfig()
             self.memory_runtime_cfg = MemoryRuntimeConfig()
             self.transcript_cfg = MemoryTranscriptConfig()
             self.chunking_cfg = None
+            self.max_context_images = 0
 
         self.controller = UnifiedMobileController(ctx)
         # ``agent_name="flash"`` makes ask_explorer follow ``explorer.flash_mode``
@@ -226,6 +228,53 @@ class FlashRunner:
         """Prunes binary screenshot blocks from intermediate observation messages."""
         prune_intermediate_screenshots(messages)
 
+    def _cap_context_images(self, messages: list[BaseMessage]) -> int:
+        """Giữ tối đa ``flash.max_context_images`` ảnh trong context; trả số ảnh đã bỏ.
+
+        Vì sao cần một trần riêng ngoài ledger: ledger cắt ảnh theo
+        ``image_scrub_depth_relaxed`` (mặc định 6) chừng nào occupancy còn dưới
+        ``start_ratio``. Với prompt 12-16k token trên model cửa sổ lớn, occupancy không
+        bao giờ vượt ngưỡng, nên suốt session có tới 6 ảnh — đo trên máy thật: TTFT
+        7,0s → 40,9s → 53,3s → 98,7s khi số ảnh 1 → 4. Ảnh mới nhất là thứ duy nhất cần
+        cho việc nhận diện màn hình hiện tại; ảnh cũ được thay bằng một dòng chữ.
+        """
+        limit = int(getattr(self, "max_context_images", 0) or 0)
+        if limit <= 0:
+            return 0
+        try:
+            from artemis.utils.context_images import cap_context_images
+
+            before = len(messages)
+            dropped = cap_context_images(messages, limit)
+        except Exception as exc:  # noqa: BLE001 - tối ưu context không được làm gãy lượt
+            logger.warning(f"Không áp được trần ảnh context: {exc}")
+            return 0
+        if dropped:
+            logger.info(
+                f"Trần ảnh context: bỏ {dropped} ảnh cũ (giữ tối đa {limit}); "
+                f"messages giữ nguyên {before} phần tử."
+            )
+            self._record_context_image_event(dropped, limit)
+        return dropped
+
+    def _record_context_image_event(self, dropped: int, limit: int) -> None:
+        """Ghi số ảnh bị bỏ vào performance log (không cộng vào công đoạn nào khác)."""
+        try:
+            from artemis.perf import PerfStage, record_event
+
+            record_event(
+                PerfStage.COMPRESSION,
+                "context_image_cap",
+                status="success",
+                detail={
+                    "images_dropped": dropped,
+                    "max_context_images": limit,
+                    "note": "cắt xác định trước lượt gọi, không gọi LLM",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Không ghi được context image cap event: {exc}")
+
     # ------------------------------------------------------------------
     # run() setup helpers
     # ------------------------------------------------------------------
@@ -278,13 +327,23 @@ class FlashRunner:
     _llm = None
 
     def _init_llm(self):
-        """Initializes the Universal LLM via the Service Layer."""
+        """Initializes the Universal LLM via the Service Layer.
+
+        Fallback **không** đổi provider: nếu cấu hình không đọc được thì thử lại qua router
+        với vai trò ``operator`` mà không ghi đè tên model.  Trước đây nhánh này hardcode
+        ``get_google_llm(model_name="gemini-2.5-flash")`` — tức âm thầm nhảy sang Google
+        native (404 khi hệ thống chỉ có gateway OpenAI-compatible) và đổi cả model mà
+        người vận hành không hề cấu hình.
+        """
         try:
             return get_llm(self.ctx, name="operator")
         except Exception as e:
-            logger.warning(f"Failed to get operator LLM from config, using default: {e}")
+            logger.warning(f"Failed to get operator LLM from config, retrying via router: {e}")
 
-            return RobustChatModelWrapper(get_google_llm(model_name="gemini-2.5-flash"), self.ctx)
+            routed = get_routed_llm(self.ctx, role="operator", is_utils=False)
+            if routed is not None:
+                return routed
+            raise
 
     def _render_system_prompt(self, tools_declaration: list) -> str:
         """Renders the system prompt from the flash_runner.md template.
@@ -883,6 +942,10 @@ class FlashRunner:
 
     async def _invoke_model(self, llm, current_tools: list, messages: list[BaseMessage]):
         """Binds the active tools and invokes the model through the LLM gateway."""
+        # Trần ảnh trong context: chạy ngay trước lượt gọi, giữ ảnh mới nhất.
+        # Đây là chỗ duy nhất model được gọi trong Flash, nên mọi lượt đều được áp.
+        self._cap_context_images(messages)
+
         # Bind active tools
         bound_llm = llm.bind_tools(current_tools)
 
