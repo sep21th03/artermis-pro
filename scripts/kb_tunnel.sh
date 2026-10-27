@@ -30,8 +30,39 @@ REMOTE_PORT="${KB_REMOTE_PORT:-5432}"
 PID_FILE="${TMPDIR:-/tmp}/artemis_kb_tunnel.pid"
 LOG_FILE="${TMPDIR:-/tmp}/artemis_kb_tunnel.log"
 
+port_open() {
+  # Kiểm tra cổng **thật sự nhận kết nối**, không chỉ pid còn sống.  Tunnel từng ở trạng thái
+  # "pid còn nhưng cổng đã đóng" (kết nối SSH nửa chết): ``status`` báo "đang chạy" trong khi
+  # mọi truy vấn KB đều "connection refused", và tester tưởng KB hỏng chứ không phải tunnel.
+  if command -v nc >/dev/null 2>&1; then
+    nc -z 127.0.0.1 "$LOCAL_PORT" >/dev/null 2>&1
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$LOCAL_PORT" -sTCP:LISTEN >/dev/null 2>&1
+  else
+    return 0  # không có công cụ kiểm tra thì đành tin pid
+  fi
+}
+
 is_up() {
-  [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+  [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null && port_open
+}
+
+# Dọn tiến trình ssh cũ còn giữ pid file (kể cả trường hợp pid còn nhưng cổng đã đóng).
+kill_stale() {
+  if [ -f "$PID_FILE" ]; then
+    local old
+    old="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
+      kill "$old" 2>/dev/null || true
+      sleep 1
+    fi
+    rm -f "$PID_FILE"
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    for listener in $(lsof -nP -iTCP:"$LOCAL_PORT" -sTCP:LISTEN -t 2>/dev/null || true); do
+      kill "$listener" 2>/dev/null || true
+    done
+  fi
 }
 
 start() {
@@ -44,6 +75,9 @@ start() {
     echo "Đặt KB_VPS_KEY trỏ tới khoá đúng, rồi thử lại." >&2
     exit 1
   fi
+  # Cổng đang bị một ssh cũ (đã chết đường truyền) giữ, hoặc pid file cũ còn lại: dọn trước,
+  # nếu không thì ExitOnForwardFailure làm tunnel mới thoát ngay và ta lại tưởng "đang chạy".
+  kill_stale
   # ExitOnForwardFailure: cổng đã bị chiếm thì phải báo, đừng chạy câm.
   # ServerAliveInterval: mạng rớt thì tunnel tự hồi thay vì treo.
   ssh -i "$VPS_KEY" -o BatchMode=yes -o ExitOnForwardFailure=yes \
@@ -62,13 +96,11 @@ start() {
 }
 
 stop() {
-  if ! is_up; then
+  if ! is_up && [ ! -f "$PID_FILE" ]; then
     echo "Tunnel không chạy."
-    rm -f "$PID_FILE"
     return 0
   fi
-  kill "$(cat "$PID_FILE")" 2>/dev/null || true
-  rm -f "$PID_FILE"
+  kill_stale
   echo "Đã đóng tunnel."
 }
 
@@ -84,10 +116,22 @@ status() {
   fi
 }
 
+# ensure: bảo đảm tunnel đang chạy, im lặng khi mọi thứ đã sẵn sàng.
+# Dùng cho script khởi động console và cho tester: chạy bao nhiêu lần cũng được, không
+# bao giờ mở hai tunnel (mở trùng thì cổng đã bị chiếm và ssh thoát ngay).
+ensure() {
+  if is_up; then
+    return 0
+  fi
+  start >/dev/null 2>&1
+  is_up
+}
+
 case "${1:-status}" in
   start)   start ;;
   stop)    stop ;;
   status)  status ;;
   restart) stop; start ;;
-  *) echo "Dùng: sh scripts/kb_tunnel.sh start|stop|status|restart" >&2; exit 2 ;;
+  ensure)  ensure ;;
+  *) echo "Dùng: sh scripts/kb_tunnel.sh start|stop|status|restart|ensure" >&2; exit 2 ;;
 esac

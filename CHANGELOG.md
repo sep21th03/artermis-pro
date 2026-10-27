@@ -2,6 +2,274 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tunnel Knowledge base: `status` báo "đang chạy" trong khi cổng 5433 đã đóng.** Nguyên nhân
+  gốc của việc KB "đứt" liên tục: `kb_tunnel.sh` chỉ kiểm tra **pid còn sống**, nên khi kết nối
+  SSH nửa chết (VPS không tới được, ssh chưa kịp thoát) thì `status` vẫn nói "Tunnel đang chạy",
+  còn mọi truy vấn KB đều `connection refused` — tester tưởng KB hỏng.  Đo thực tế: ssh pid còn,
+  `nc -z 127.0.0.1 5433` đóng, `ping 103.199.18.222` mất 100% gói.
+
+  - `scripts/kb_tunnel.sh`: `is_up` kiểm tra **cổng thật sự nhận kết nối** (`nc`/`lsof`), không
+    chỉ pid; `kill_stale` dọn ssh cũ (pid còn nhưng cổng đóng) trước khi mở tunnel mới, nên
+    `ExitOnForwardFailure` không còn làm tunnel mới thoát ngay; thêm lệnh `ensure` (idempotent,
+    dùng cho script khởi động).
+  - `apps/test_console/run.sh`: tự `ensure` tunnel trước khi chạy và in rõ
+    `Knowledge base: tunnel sẵn sàng (127.0.0.1:5433).` — hoặc cảnh báo kèm đúng lệnh cần chạy.
+    Tắt bằng `KB_TUNNEL=0` cho máy vai `server`.
+  - `README.md`: mục 7 mới "Kết nối Knowledge base" — lệnh cho tester, điều kiện một lần cho
+    mỗi máy (khoá SSH, biến `KB_VPS_*`), cách kiểm tra cổng, và bảng triệu chứng → nguyên nhân.
+
+- **Prompt chỉ dẫn "chạm" trong khi thực tế phải "nhấn giữ" — agent nhảy bước và lặp.** Đo trên
+  trace thật (prompt *bật tắt công tắc "Ổ cắm 12" 3 lần rồi vào màn hẹn giờ…*): KB ghi
+  ``navigation.open_device_settings`` bước 1 là ``tap`` "Thẻ hoặc tên của thiết bị đích", nhưng
+  trên máy **chạm thẻ thiết bị là bật/tắt**, phải **nhấn giữ ≥2 giây** mới mở màn chi tiết.
+  Prompt trung thành với KB nên agent chạm → thiết bị đổi trạng thái (hai bước liên tiếp cùng
+  "Chạm 'Ổ cắm 12'"), màn hình không sang cài đặt, và nó lặp lại thao tác.
+
+  Sửa ở hai phía:
+
+  - **KB (nguồn sự thật)** — ``navigation.open_device_settings``: bước 1 đổi thành
+    ``long_press`` với thời lượng nêu rõ trong target ("NHẤN GIỮ ít nhất 2 giây"), thêm câu
+    giải thích ngay trong mô tả ("CHẠM … là BẬT/TẮT — KHÔNG mở chi tiết"), bước bánh răng thành
+    phương án dự phòng.  Thêm workflow ``device.card_tap_vs_hold`` nói rõ ngữ nghĩa thẻ thiết
+    bị: chạm = bật/tắt, nhấn giữ ≥2s = chi tiết/cài đặt, kèm cảnh báo "chạm khi định vào cài
+    đặt là lỗi đã gặp".  ``device.toggle_power`` sửa câu "mở thiết bị" mơ hồ thành "NHẤN GIỮ
+    … để mở màn chi tiết".  (Agent đã hỗ trợ ``long_press`` kèm ``duration`` — không phải sửa
+    code agent.)
+  - **Composer** — ``_same_action`` nay so **tập** khái niệm thao tác phải *bằng nhau*, nên
+    "nhấn giữ" và "chạm" **không** còn bị coi là cùng một thao tác (trước đây "nhấn" gộp cả
+    hai, có thể làm mất bước nhấn giữ khi lọc trùng văn xuôi).  Mục điều kiện dừng thêm luật
+    chống lặp: làm đúng thao tác KB ghi, không lặp lại y nguyên quá 2 lần, kiểm lại xem có
+    phải thao tác khác (nhấn giữ thay vì chạm), vẫn không được thì dừng và báo chưa làm được.
+  - ``labels_grounded`` bỏ báo oan: nhãn trích dẫn trong câu **của tester** ("Ổ cắm 12") là dữ
+    liệu hợp lệ, không phải nhãn UI bịa — trước đó nó làm bản ghép bị từ chối và rơi về builder
+    cũ.  3 test mới.
+
+### Added
+
+- **Điều kiện dừng & nhánh thất bại trong prompt.** Workflow trước đây chỉ sinh các bước
+  thành công: không nói phải làm gì khi không tìm thấy phần tử hoặc thiếu dữ liệu bắt buộc,
+  nên agent tự chọn mục khác hoặc quét lại danh sách vô hạn.
+
+  - `artemis/knowledge/composer.py` — mục mới ``KHI KHÔNG THỰC HIỆN ĐƯỢC (điều kiện dừng)``
+    (ngay sau các bước): bước chỉ bắt đầu khi kết quả mà bước trước khai đã quan sát được;
+    bước tìm/chọn trong danh sách chỉ đi tiếp khi thấy **đúng** mục tiêu, không chọn mục thay
+    thế, không tự đoán giá trị, không lặp quá 2 lần; hết danh sách mà không thấy ⇒ DỪNG và
+    kết luận FAILED kèm lý do cụ thể (``NOT_FOUND``); **chưa** kiểm tra hết ⇒ ``NOT_VERIFIED``,
+    không được kết luận là không có.  Bước tìm/chọn được gắn chốt ngay trên dòng của nó
+    (``⟵ …``) để không phải suy ra từ mục khác.
+  - Nhận diện "bước tìm/chọn" bằng **ngôn ngữ KB** (target/kết quả mong đợi nhắc tới một tập
+    hợp nhiều mục) — không hardcode ứng dụng, và phần nói về danh sách chỉ in khi thật sự có
+    bước loại đó nên prompt không phình.
+  - Sửa hai trường KB đang bị **bỏ mất**: ``value`` (12 bước khai giá trị cần nhập — bỏ đi là
+    agent tự đoán giá trị) và ``until`` (13 bước khai điều kiện dừng của vòng lặp cuộn).  Nay
+    in thành ``(giá trị: …)`` và ``(lặp cho tới khi: …)``.
+  - `validate_composed` thêm phép kiểm ``stop_conditions_present``: có bước tìm/chọn mà prompt
+    thiếu một trong hai mã kết luận thì bản ghép bị coi là không đạt.
+  - 6 test mới (`tests/unit/test_knowledge_composer.py`): tìm thấy, không tìm thấy (hết danh
+    sách), chưa kiểm tra hết, nhận diện theo ngôn ngữ (kể cả câu tiếng Anh), app khác, và
+    ``value``/``until`` vào prompt.
+
+- **Prompt Composer tất định: bỏ lượt LLM viết lại prompt, ghép theo cấu trúc.** Nguyên nhân
+  gốc của prompt lộn xộn/thiếu ý là **viết lại văn bản**: brief đã phân loại được đưa cho một
+  lượt LLM "viết lại cho gọn", và lượt đó nuốt mất đúng phần cốt lõi (bước "mũi tên caret-down
+  ở CUỐI ô nhập số điện thoại" rút thành "chọn tài khoản trong danh sách"), trộn thứ tự, lặp
+  câu giữa các mục, và có lúc tự thêm thao tác không có trong KB.
+
+  `artemis/knowledge/composer.py` (mới) ghép prompt bằng luật, năm mục theo thứ tự:
+  ``NHIỆM VỤ`` → ``KIỂM TRA TRẠNG THÁI`` → ``CÁC BƯỚC THỰC HIỆN`` → ``LƯU Ý QUAN TRỌNG`` →
+  ``XÁC MINH KẾT QUẢ`` (mục nào không có nội dung thì bỏ). Mỗi việc trong phần bước là một
+  tiêu đề nhỏ ghi **workflow nguồn** (truy vết), các bước **đánh số liên tục trong việc đó**,
+  kèm điều kiện hoàn thành của từng bước. ``normalize_workflow`` chuẩn hoá mỗi workflow thành
+  ``preconditions → actions → expected_results → verification``, giữ nguyên thứ tự bước của KB
+  (quan hệ phụ thuộc) thay vì thứ tự truy hồi; điều hướng tới màn hình đứng trước vì đó là phụ
+  thuộc trạng thái. ``expected_results`` thẳng hàng theo chỉ số với ``actions`` (lệch một bước
+  là gán sai điều kiện hoàn thành).
+
+  Ba luật lọc, mỗi luật có điều kiện rõ: (1) câu gần trùng ⇒ bỏ; (2) câu **có điều kiện** là
+  bản đầy đủ hơn của câu mệnh lệnh **về cùng một thao tác** ⇒ giữ câu có điều kiện — và luật
+  này **không áp cho danh sách bước** (hai bước liên tiếp cùng là "tap" vẫn là hai thao tác;
+  áp vào đó từng làm mất một bước); (3) xung đột chỉ báo khi **trích được hai câu** mâu thuẫn
+  (cùng câu chữ mà ngược khẳng định), kèm bằng chứng, và giữ cả hai thay vì tự chọn.
+
+  Chỗ KB thiếu (không có bước, không có cách mở màn hình) thì phát ra đúng một câu "quan sát
+  UI để xác định…", và quy tắc "không tự suy ra vị trí nút/biểu tượng/đường điều hướng" được
+  đặt ở **đầu prompt** nên Planner nhận cùng ràng buộc như Operator.
+
+  Chi phí: **0 lượt LLM thêm** — lượt viết lại bị bỏ, bước "chọn cách làm" đọc mô tả KB vẫn là
+  1 lượt, nên tổng vẫn 2 lượt (hiểu yêu cầu + chọn cách làm). Đo trên KB thật: prompt
+  ``đăng xuất và đăng nhập tài khoản 0972842548`` dài ~1,6k ký tự, ghép trong ~8 ms,
+  ``checks`` không có mục nào trượt.
+
+### Fixed
+
+- **Prompt tester đã duyệt không được gửi cho agent — và không ai thấy điều đó.** Đã xảy ra
+  thật: tester bấm "Chuẩn bị prompt", xem bản đã ghép kiến thức (có cả
+  ``navigation.open_menu``), rồi bấm "Chạy test" mà **không** bấm "Dùng bản này". Agent nhận
+  đúng câu gốc **43 ký tự**, không có KIẾN THỨC nào ⇒ Planner tự bịa bước điều hướng
+  ("tap profile icon ở góc trên bên phải"), Object Detector xác nhận vật thể không tồn tại
+  với `confidence=1.00`, cú tap trả `ui_changed=False`. Kiểm chứng trên trace: log chỉ ghi
+  `artemis run đăng xuất và đăng nhập tài khoản 0972842548 …`, và **mọi** lượt chạy gần đây
+  đều có `goal_sent` = câu gốc 43 ký tự — kể cả lượt được coi là "thành công".
+
+  Ba sửa đổi, không đổi hành vi mặc định:
+
+  - `apps/test_console/server.py` — `remember_prepared_prompt` ghi nhớ bản vừa chuẩn bị
+    (từ `/api/knowledge/prepare` và `/api/knowledge/context`); `forgotten_prepared_prompt`
+    sinh cảnh báo khi lượt chạy không có `prompt_override` mà console biết mình vừa ghép
+    kiến thức cho đúng câu đó. Cảnh báo đi theo kênh `warnings` sẵn có nên hiện thành toast
+    và vào log task. Câu gốc được khớp sau khi chuẩn hoá khoảng trắng/hoa-thường; bản "chuẩn
+    bị" trùng câu gốc (KB không ghép được gì) thì không ghi nhớ.
+  - `apps/test_console/static/index.html` — dòng `#runPromptState` nói rõ lượt chạy sắp tới
+    gửi prompt **gốc** hay **đã chuẩn bị** (kèm số ký tự); cờ `promptOverride` được lưu vào
+    `localStorage` khoá theo câu gốc, nên tải lại trang (hoặc khởi động lại console) không
+    còn làm mất bản tester đã duyệt như trước.
+
+  8 test mới (`tests/unit/test_console_run_prompt.py`), gồm cả kiểm chứng đầu-cuối qua
+  `TestClient`: chưa chuẩn bị → im lặng; đã chuẩn bị mà chạy câu gốc → cảnh báo; chạy bằng
+  bản đã duyệt → im lặng và `goal_sent` có kiến thức.
+
+### Added
+
+- **Tầng điều hướng: workflow chính được nối với hướng dẫn *đi tới màn hình* nó cần.**
+  Lỗi gốc: KB nói "'Đăng xuất' nằm ở màn hình Menu, ~73% chiều cao, đã hiện sẵn" nhưng
+  **không nói cách mở màn Menu** — nên Planner tự bịa ra bước "navigate to account
+  settings/profile", Operator bịa tiếp vị trí ("profile icon in the top right"), Object
+  Detector "xác nhận" vật thể không tồn tại với `confidence=1.00`, và cú tap cuối cùng trả
+  `ui_changed=False`. Ba tầng bịa nối tiếp nhau vì prompt thiếu đúng một câu.
+
+  Quy ước dữ liệu: namespace ``navigation.*`` = "hướng dẫn đi vào một màn hình"
+  (``navigation.open_menu`` = "làm sao tới màn Menu"). Hai thay đổi:
+
+  - `artemis/knowledge/prepare.py` — `_attach_navigation_knowledge`: với mỗi workflow
+    PRIMARY, rút ra **tên màn hình** nó nhắc tới (description, preconditions,
+    `steps[].expected_state`, `steps[].target`) rồi phát một truy vấn KB theo *màn hình*
+    (``mở màn hình Menu``). Chỉ nhận hit thuộc namespace điều hướng và `trusted` — cùng
+    luật bằng chứng như mọi hit khác. Lỗi ở bước này không làm hỏng prepare.
+    Vì sao phải truy vấn riêng: truy hồi *theo task* không đáng tin cho việc này — đo trên
+    KB thật, ``xóa phòng`` không trả về navigation nào, còn ``đăng xuất`` có trả
+    ``navigation.open_menu`` nhưng ở vai trò phụ và không được render.
+  - `artemis/knowledge/intent.py` — `screen_phrases` / `needed_screens` / `navigation_query`
+    / `render_navigation_knowledge`, và `build_knowledge_brief` render workflow điều hướng
+    vào mục **KIẾN THỨC** (kèm **bước**) thay vì mục bối cảnh. Đây là chỗ duy nhất bước của
+    một workflow được phép vào prompt, và là lý do có hàm render riêng: với workflow chức
+    năng, bước bị giấu để agent tự tìm phần tử trên UI hiện tại; với ``navigation.*`` thì
+    bước *chính là* câu trả lời, giấu đi là bỏ hết thông tin.
+
+  Bộ rút tên màn hình phải siết ba lần vì KB viết màn hình lẫn trong câu: lần đầu nó sinh
+  ra những "màn hình" như ``và ĐÃ HIỆN SẴN — không cần cuộn``, ``hiện tại không``,
+  ``thì tap NGAY`` (mỗi cái tốn một truy vấn KB vô ích). Luật hiện tại: đuôi sau "màn hình"
+  phải viết hoa (tên riêng), ≤ 4 từ, và không chứa dấu câu/từ khẳng định.
+
+  Đo trên KB thật (31 → 37 workflow sau khi import 7 workflow ``navigation.*``): prompt
+  ``đăng xuất và đăng nhập tài khoản 0972842548`` nay chứa
+  ``navigation.open_menu: tap Tab Menu ở ngoài cùng bên phải của thanh điều hướng dưới cùng
+  → Màn hình Menu và thông tin tài khoản xuất hiện``, chỉ **một** workflow điều hướng được
+  nối (không kèm ``open_rooms``/``open_home``/``open_collections``), và 2 workflow chính
+  vẫn giữ nguyên. 12 test mới; toàn bộ unit suite 3066 passed.
+
+### Changed
+
+- **Đổi đường đi của LLM agent sang Google trực tiếp: nhanh hơn ~3,8× mỗi lượt và task
+  vượt được ngân sách (đo 27/10/2026).** Nút thắt độ trễ **không phải model** mà là gateway
+  OpenAI-compatible (`sep21th03.com/artemis/llm/v1` → `api.vilao.ai`). Cùng một model
+  `gemini-3.5-flash-lite`, cùng client của app, chỉ khác đường đi:
+
+  | prompt | gateway `openai:ts/gemini-3.5-flash-lite` | Google `google:gemini-3.5-flash-lite` |
+  |---|---|---|
+  | ~50 token | 4,65s / **38,03s** | **0,95s / 0,92s** |
+  | ~5.000 token | **38,08s** / 4,33s | **1,35s / 1,40s** |
+  | ~15.000 token | **56,85s** / 8,61s | **1,62s / 1,39s** |
+  | + 1 ảnh chụp thật | **>200s** (không trả về) | **1,69s / 2,92s** |
+
+  Gateway có **hai cực** (~4,5s hoặc ~38s) và **không phụ thuộc kích thước prompt** (prompt
+  50 token cũng dính 38s) — tức phần lớn thời gian là xếp hàng/tầng vận chuyển, không phải
+  model suy nghĩ. Google trực tiếp gần như **phẳng** theo kích thước (50 → 15k token chỉ
+  +0,5s). Đúng như trace cũ cho thấy: `operator_llm` trung vị 10,56s, max 198,81s.
+
+  Hệ quả trên một task thật (`pro`, `đăng xuất và đăng nhập tài khoản 0972842548`): trước đây
+  hết ngân sách 480s mà chưa xong; nay **thành công trong 294,8s**, 70 lượt LLM, `operator_llm`
+  trung vị **2,80s** (min 1,04s, max 7,54s). Planner 1,66s/5,96s, checker 1,78s/3,50s.
+
+  Lợi thêm: `thinking_level` trong `config/artemis.jsonc` **chỉ có tác dụng khi
+  `provider=google`**, nên trước đây `low` (operator) và `high` (planner) bị bỏ qua. Đo trên
+  `gemini-3.5-flash`: mặc định 7,25s → `thinking_level=low` còn **1,54s**, đáp án vẫn đúng.
+
+  Cấu hình: bốn node `operator` / `explorer` / `planner` / `checker` dùng
+  `GEMINI35FLASH_*_PROVIDER=google` với tên model **bỏ tiền tố `ts/`** (gửi `ts/...` sang
+  Google là 404 — đúng lỗi của bộ nén ngữ cảnh ở mục Fixed). `hopper` và `summarizer` giữ
+  nguyên đường gateway vì chúng chỉ đọc chữ và chạy thưa. Lưu ý: `gemini-2.5-flash` trong
+  ghi chú `.env` nay đã **404 "no longer available"**, và bản checkout MCP
+  (`/Users/nguyenhoa/Developer/artemis`) không có cơ chế `${env:...}` nên không đổi được
+  bằng biến môi trường.
+
+### Fixed
+
+- **Bộ nén ngữ cảnh gọi thẳng Google nên 404 ở mọi lượt — nay đi qua router đã cấu hình.**
+  `artemis/memory/chunking.py` (StepCapsuleLens) và `artemis/agents/flash/summarizer.py`
+  gọi `get_google_llm(model_name=...)`, mà hàm đó **ép** `provider=google`, trong khi tên
+  model lấy từ `config/artemis.jsonc` là tên của gateway OpenAI-compatible
+  (`ts/gemini-3.5-flash-lite`). Endpoint Google native không biết tên đó ⇒ 404 (đo được
+  trước đây: một lần chạy Pro có 60 lượt vision, tất cả 404). Tệ hơn, nhánh `except` của
+  summarizer còn **âm thầm** rơi về Google, và `FlashRunner._init_llm` hardcode
+  `get_google_llm("gemini-2.5-flash")` — tức đổi provider mà người vận hành không cấu hình.
+
+  Nay có `artemis.services.llm.get_routed_llm(ctx, role=..., model_name=...)`: provider /
+  endpoint / khoá lấy từ cấu hình, `model_name` chỉ ghi đè *tên model*, và lỗi ⇒ trả `None`
+  để bên gọi **giữ nguyên context chưa nén** (không raise, không tự đổi provider). Lens nén
+  ghi lý do vào performance log thay vì im lặng; `render()` trả `None` (không có capsule)
+  khi không resolve được model, nên tác vụ chính không bị ảnh hưởng.
+
+- **Performance log nay nói được "token đi đâu".** Mỗi lượt gọi LLM mang thêm
+  `context_breakdown` (số ký tự theo nguồn: system / quan sát / lịch sử + số ảnh), và mỗi
+  lượt nén ghi `stage=compression` với token trước/sau, thời lượng, lỗi và lý do fallback.
+  Token trong các trường đó là **ước lượng (chars/4)** và được ghi rõ, tách khỏi token do
+  provider báo cáo.
+
+### Added
+
+- **Lớp đo hiệu năng (Performance monitoring) — chỉ quan sát, không tối ưu.** Mục tiêu: khi
+  agent đứng yên 20 giây, nhìn vào Web Console là biết nó đang chờ Planner, Operator, LLM
+  API, retry, ADB, screenshot hay đang lặp.
+
+  - `artemis/perf/` (mới) — span đo bằng `time.perf_counter()`, timestamp thực bằng
+    `time.time()`, ghi JSONL vào `traces/<session_id>/perf_events.jsonl`.  Bốn nhóm được đo
+    ở đúng điểm chốt: **ADB** (`AndroidAdbDriver`: tap/swipe/input/key/launch/stop/shell và
+    từng pha của một lần quan sát màn hình), **LLM**
+    (`RobustChatModelWrapper.ainvoke/complete`: model/provider/endpoint, token, TTFT,
+    retry/backoff, vai trò Planner/Operator/Checker/Summarizer), **node agent + tool**
+    (decorator `trace` của DataEngine), **RAG** (`retrieve_for_run`, cả đường local lẫn
+    remote, tách embedding/vector search theo `timings_ms` mà service đã đo sẵn).
+  - **Recorder mở trong tiến trình thực thi** (`DataEngine.start_session`), không phải trong
+    console: tiến trình lái điện thoại là Artemis Daemon, nên chỉ ở đó mới đo được.
+    `allocate_step_id` gắn `step_id` vào ngữ cảnh để timeline nhóm theo bước.
+  - **Tab Performance** trong Mobile Test Console: bảng công đoạn (Calls / Total / Avg / Max
+    / Errors / % Runtime), timeline từng bước mở rộng được (Request ID, retry, HTTP, TTFT,
+    lỗi, UI trước/sau, thời gian chờ giữa các bước), khối nhận định bottleneck, nút **xuất
+    JSON**.  Số liệu hiện ra **trong lúc agent đang chạy**: console đọc lại file perf của
+    đúng session mỗi 3 giây.
+  - **Exclusive time, không cộng trùng.** Bảng cộng theo thời gian *riêng* của từng span
+    (đã trừ span con), nên `Operator LLM` không bị tính hai lần bên trong node Operator.
+    Idle = phần wall-clock không có span nào chạy.  Nếu các công đoạn chạy song song
+    (screenshot + hierarchy) làm tổng vượt 100%, báo cáo **nói rõ** thay vì im lặng.
+  - **Không đo được thì N/A, không gán 0** — mọi trường số đo là optional; provider không
+    trả token thì bảng ghi `N/A`.  Cùng nguyên tắc cho các con số đếm khi session chưa có
+    sự kiện nào.
+  - **Không rò dữ liệu**: `redact()` chạy trên mọi payload trước khi ghi (api key,
+    authorization, password, token → `<redacted>`; chuỗi dài như prompt/ảnh base64 → độ
+    dài).  Nội dung gõ vào ô nhập cũng chỉ ghi **độ dài** (có thể là mật khẩu).
+  - **Phát hiện "không tiến triển" có bằng chứng**: chuỗi hành động lặp cùng chữ ký (toạ độ
+    làm tròn 10px) mà UI không đổi, dựa trên `ui_fingerprint` (hash của hierarchy).  Màn
+    hình không đổi **một lần** không bị coi là lỗi — nó chỉ là một số đo.
+  - Cấu hình: `ARTEMIS_PERF_ENABLED` (mặc định bật), `ARTEMIS_PERF_LEVEL`
+    (`full`/`summary`/`off`), `ARTEMIS_PERF_UI_POLL_MS`.
+  - Test: `tests/unit/test_perf_recorder.py` (7 ca), `test_perf_aggregate.py` (16 ca),
+    `test_perf_instrumentation.py` (9 ca — chạy trên driver ADB thật với device giả),
+    `test_console_perf_api.py` (6 ca), `test_console_perf_ui.py` (10 ca).  Có ca đo
+    **overhead** của lớp đo (chênh lệch có/không monitoring) và ca bảo đảm không ghi nội
+    dung đã gõ.
+
 ### Changed
 
 - **Bước chuẩn bị prompt nay *hiểu mục tiêu* trước khi truy xuất.** Trước đây cả câu của
@@ -49,9 +317,11 @@
     `ARTEMIS_PREPARE_INTENT_MAX_TOKENS`, `ARTEMIS_PREPARE_INTENT_TIMEOUT`,
     `ARTEMIS_PREPARE_NAME_COVERAGE_FLOOR`, `ARTEMIS_PREPARE_INTENT_COVERAGE_FLOOR`,
     `ARTEMIS_PREPARE_CONFLICT_FLOOR`.
-  - Test: `tests/unit/test_knowledge_intent.py` (27 ca), `tests/unit/test_prepare_cases.py`
-    (34 ca — đúng sáu ca bắt buộc), `tests/unit/test_knowledge_prepare.py` (39 ca cơ chế),
-    `tests/unit/test_console_prepare_api.py` (36 ca), `tests/unit/test_console_prepare_ui.py`
+  - Test: `tests/unit/test_knowledge_intent.py` (28 ca — gồm ca mục kiến thức phải rút gọn
+    để *còn* khi hạn mức chật), `tests/unit/test_prepare_cases.py`
+    (34 ca — đúng sáu ca bắt buộc), `tests/unit/test_knowledge_prepare.py` (40 ca cơ chế —
+    gồm ca bản LLM bỏ "cách làm" thì bị từ chối), `tests/unit/test_console_prepare_api.py`
+    (36 ca), `tests/unit/test_console_prepare_ui.py`
     (20 ca), `tests/integration/test_prepare_pipeline.py` (9 ca). Không hardcode từ khoá
     theo miền nghiệp vụ: từ vựng duy nhất mà hệ thống biết là *schema của KB* (một workflow
     gắn tag `rule`/`modal` là luật) và chính câu của tester.
@@ -99,6 +369,33 @@
   hợp vào **hạn mức ngày** (`Budget.record_prepare`), không vào hạn mức của task.
 
 ### Fixed
+
+- **Mục `KIẾN THỨC ỨNG DỤNG` bị bỏ *toàn bộ* khi hạn mức kiến thức chật — nên bản tổng hợp
+  viết chung chung và chi tiết "chọn tài khoản đã lưu" không bao giờ tới được agent.**
+  Đo trên KB thật, prompt `đăng xuất và đăng nhập tài khoản 0972842548`, hai workflow
+  (`auth.logout`, `auth.switch_account`): `build_knowledge_brief` cắt *theo mục*, mà kế
+  hoạch + tiêu chí đã chiếm hết ngân sách 1200 ký tự, nên **brief gửi cho LLM chỉ còn 384
+  ký tự và không có mục kiến thức nào**. LLM chỉ còn kế hoạch để viết, và nó viết
+  "`auth.switch_account: thực hiện đăng nhập tài khoản 0972842548`" — nghe hợp lý nhưng
+  agent sẽ đi tìm ô nhập tài khoản và gõ tay, trong khi đường đúng là **mở danh sách tài
+  khoản đã lưu rồi chọn**. Bước của workflow cố tình không vào prompt, nên *câu đầu phần
+  Mô tả* là chỗ duy nhất nói cách làm.
+
+  Nay mục kiến thức được **rút gọn để còn** thay vì bị bỏ
+  (`compact_knowledge_lines`): giữ mọi dòng tiêu đề workflow (id + tên) trước, bỏ dòng
+  tiêu chí (đã có nguyên vẹn ở mục `TIÊU CHÍ XÁC MINH`), rồi cắt bớt từng dòng chi tiết.
+  Trần mặc định nâng **1200 → 2400** vì 1200 không đủ cho hai workflow thông thường.
+  Đo lại cùng prompt: brief có đủ kiến thức, và bản LLM trả về đúng chi tiết cần —
+  *"Mở danh sách tài khoản đã từng đăng nhập trên máy này rồi chọn một tài khoản để đăng
+  nhập… chọn xong chỉ cần bấm Đăng nhập, không phải gõ mật khẩu"*.
+
+- **Kiểm tra `primary_knowledge_kept` không hề soi phần "cách làm".** Nó chỉ so điều kiện
+  trước, tiêu chí và cảnh báo, nên một bản LLM bỏ hẳn mô tả vẫn được coi là đạt — đúng ca
+  trên: độ phủ của mô tả trong bản LLM là **0.49**, dưới ngưỡng 0.5, nhưng không tiêu chí
+  nào bắt được. Nay `first_sentence(description)` của workflow THỰC HIỆN nằm trong danh
+  sách kiểm (chỉ câu đầu: phần sau là ghi chú đo đạc, đòi cả đoạn sẽ từ chối oan), và quy
+  tắc 8 trong chỉ dẫn cho LLM nói rõ phải giữ "cách làm". Trượt ⇒ **dự phòng**, và bản dự
+  phòng vẫn nói được cách làm nên tester không mất thông tin.
 
 - **Tên model trong `config/artemis.jsonc` được nội suy trước khi gọi LLM.** Trên VPS
   model là `${env:GEMINI35FLASHLITE_DEFAULT:-ts/gemini-3.5-flash-lite}`; hàm đọc config

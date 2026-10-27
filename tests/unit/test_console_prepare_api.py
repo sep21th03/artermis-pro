@@ -293,13 +293,17 @@ def test_the_response_carries_everything_the_tester_needs(client, fake_service, 
     assert body["matched_workflows"][0]["role"] == "primary"
     assert body["excluded_workflows"] == []
     assert body["knowledge_gaps"] == []
-    assert body["warnings"] == []
+    # Bước sắp xếp KB chạy bằng LLM giả không trả JSON chọn cách làm, nên có cảnh báo để
+    # tester biết prompt đang dùng phân loại theo từ.
+    assert any("mô tả KB" in str(note) for note in body["warnings"])
     assert [task["query"] for task in body["tasks"]] == ["Test đăng xuất tài khoản 0987654321"]
     assert body["plan"]["final_goal"]["expected_value"] == "đã đăng xuất"
     assert body["metrics"]["llm_calls"] == 2
     assert body["metrics"]["queries"] == ["Test đăng xuất tài khoản 0987654321"]
     assert body["source"]["app_id"] == "hunonic"
-    assert body["source"]["synthesis"] == "llm"
+    # Ghép prompt luôn bằng luật (không tốn lượt LLM nào); ``llm.used`` nói LLM có được dùng
+    # cho việc *hiểu yêu cầu / chọn cách làm* hay không.
+    assert body["source"]["synthesis"] == "deterministic"
     assert body["source"]["per_query"][0]["found"] is True
     assert body["llm"]["used"] is True
     assert body["found"] is True
@@ -333,10 +337,11 @@ def test_both_llm_stages_carry_what_they_need(client, fake_service, synthesizer)
     assert "JSON" in analysis["messages"][0]["content"]
     assert PROMPT in analysis["messages"][1]["content"]
     assert analysis["max_tokens"] > 0
-    # Lượt 2: tổng hợp — có mục tiêu gốc và kiến thức đã phân loại.
+    # Lượt 2: sắp xếp KB — phải thấy *toàn văn KB* của ứng viên (mô tả + điều kiện + bước),
+    # vì luật chọn nằm trong mô tả chứ không ở tên workflow.
     assert PROMPT in synthesis["messages"][1]["content"]
     assert "auth.logout" in synthesis["messages"][1]["content"]
-    assert "KẾ HOẠCH:" in synthesis["messages"][1]["content"]
+    assert "mô tả:" in synthesis["messages"][1]["content"]
     assert synthesis["timeout"] > 0
 
 
@@ -351,9 +356,10 @@ def test_a_broken_llm_still_answers_200_with_a_fallback(client, fake_service, sy
 
     assert response.status_code == 200
     assert body["status"] == "fallback"
-    assert "502" in body["fallback_reason"]
+    # Prompt vẫn được ghép bằng luật từ kiến thức đã truy hồi, kèm cảnh báo để kiểm lại.
     assert body["enhanced_prompt"].startswith(PROMPT)
     assert "auth.logout" in body["enhanced_prompt"]
+    assert any("mô tả KB" in str(note) for note in body["warnings"])
     assert body["llm"]["synthesis"] == "deterministic"
 
 
@@ -396,8 +402,8 @@ def test_prepare_can_be_switched_off_without_touching_the_route(
     ).json()
 
     assert body["status"] == "fallback"
-    assert "Chưa cấu hình LLM" in body["fallback_reason"]
     assert calls == []
+    assert body["enhanced_prompt"].startswith(PROMPT)
 
 
 # ── Hạn mức và xác thực dữ liệu vào ──────────────────────────────────────

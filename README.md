@@ -36,17 +36,19 @@
 4. [Cài đặt](#4-cài-đặt)
 5. [Cấu hình biến môi trường (.env)](#5-cấu-hình-biến-môi-trường-env)
 6. [Cấu hình model (config/artemis.jsonc)](#6-cấu-hình-model-configartemisjsonc)
-7. [Kết nối thiết bị Android](#7-kết-nối-thiết-bị-android)
-8. [Chạy task bằng CLI](#8-chạy-task-bằng-cli)
-9. [Web UI & Admin Console](#9-web-ui--admin-console)
-10. [Kết nối MCP cho IDE](#10-kết-nối-mcp-cho-ide)
-11. [Dừng/huỷ task](#11-dừnghuỷ-task)
-12. [Kiểm tra sức khoẻ & xử lý lỗi](#12-kiểm-tra-sức-khoẻ--xử-lý-lỗi)
-13. [Chạy test & phát triển](#13-chạy-test--phát-triển)
-14. [Cấu trúc thư mục](#14-cấu-trúc-thư-mục)
-15. [Giấy phép & ghi công](#15-giấy-phép--ghi-công)
-16. [Test Console tiếng Việt](#16-test-console-tiếng-việt)
-17. [ADB server từ xa (máy DEV + máy tester)](#17-adb-server-từ-xa-máy-dev--máy-tester)
+7. [Kết nối Knowledge base](#7-kết-nối-knowledge-base-bắt-buộc-cho-tab-knowledge)
+8. [Kết nối thiết bị Android](#8-kết-nối-thiết-bị-android)
+9. [Chạy task bằng CLI](#9-chạy-task-bằng-cli)
+10. [Web UI & Admin Console](#10-web-ui--admin-console)
+11. [Kết nối MCP cho IDE](#11-kết-nối-mcp-cho-ide)
+12. [Dừng/huỷ task](#12-dừnghuỷ-task)
+13. [Kiểm tra sức khoẻ & xử lý lỗi](#13-kiểm-tra-sức-khoẻ--xử-lý-lỗi)
+14. [Chạy test & phát triển](#14-chạy-test--phát-triển)
+15. [Cấu trúc thư mục](#15-cấu-trúc-thư-mục)
+16. [Giấy phép & ghi công](#16-giấy-phép--ghi-công)
+17. [Test Console tiếng Việt](#17-test-console-tiếng-việt)
+18. [ADB server từ xa (máy DEV + máy tester)](#18-adb-server-từ-xa-máy-dev--máy-tester)
+
 
 ## 1. ARTEMIS Pro làm được gì
 
@@ -188,7 +190,64 @@ Lưu ý khi đổi model:
   Nếu bạn có `GEMINI_API_KEY`, có thể bật lại.
 - Đổi `default` là đổi toàn bộ hệ thống; muốn thử nhanh một preset thì sửa `default` trỏ tới preset tương ứng.
 
-## 7. Kết nối thiết bị Android
+## 7. Kết nối Knowledge base (bắt buộc cho tab Knowledge)
+
+Knowledge base là **PostgreSQL trên VPS**, không mở cổng ra Internet. Máy tester kết nối qua
+**SSH tunnel** `127.0.0.1:5433 → VPS:5432`. Không có tunnel thì console báo
+*"Không kết nối được PostgreSQL: port 5433 → Connection refused"* và tab Knowledge bị khoá
+(prompt vẫn chạy được, chỉ là không ghép kiến thức).
+
+**Tester chỉ cần một lệnh** — tunnel được mở tự động khi khởi động console:
+
+```bash
+sh apps/test_console/run.sh          # tự mở tunnel rồi chạy console ở http://127.0.0.1:8787
+```
+
+Dòng `Knowledge base: tunnel sẵn sàng (127.0.0.1:5433).` là dấu hiệu KB dùng được. Nếu thấy
+`CẢNH BÁO: chưa mở được tunnel tới Knowledge base` thì chạy lệnh bên dưới để xem lý do.
+
+**Chuẩn đoán / chạy tay:**
+
+```bash
+sh scripts/kb_tunnel.sh ensure     # mở nếu chưa có, im lặng khi đã sẵn sàng (idempotent)
+sh scripts/kb_tunnel.sh status     # đang chạy? cổng nào? pid nào?
+sh scripts/kb_tunnel.sh start      # mở tunnel
+sh scripts/kb_tunnel.sh restart    # đóng rồi mở lại (dùng khi status báo lỗi)
+sh scripts/kb_tunnel.sh stop       # đóng tunnel
+
+nc -z 127.0.0.1 5433 && echo "KB port OK"        # cổng thật sự nhận kết nối?
+curl -s http://127.0.0.1:8787/api/kb/workflows | head -c 80   # KB trả dữ liệu?
+```
+
+Sau khi mở tunnel, **phải khởi động lại console**: nó ghi nhớ trạng thái "KB không dùng được"
+từ lần kết nối lỗi đầu tiên.
+
+**Điều kiện một lần cho mỗi máy:**
+
+```bash
+# 1) Khoá SSH tới VPS (mặc định ~/.ssh/greencloud)
+ls -l ~/.ssh/greencloud && chmod 600 ~/.ssh/greencloud
+
+# 2) Nếu VPS/user/cổng khác mặc định, đặt trong .env (hoặc biến môi trường)
+KB_VPS_HOST=103.199.18.222
+KB_VPS_USER=root
+KB_VPS_KEY=$HOME/.ssh/greencloud
+KB_LOCAL_PORT=5433
+```
+
+**Khi tunnel không lên được**, thứ tự kiểm tra:
+
+| Triệu chứng | Nguyên nhân thường gặp |
+|---|---|
+| `ssh: connect to host … port 22: Operation timed out` | VPS tắt hoặc mạng tới VPS bị chặn — không lệnh nào trên máy tester sửa được, cần VPS sống lại |
+| `Permission denied (publickey)` | Sai/thiếu khoá SSH, hoặc khoá chưa được thêm cho user đó |
+| `bind: Address already in use` | Còn tunnel cũ giữ cổng — `sh scripts/kb_tunnel.sh restart` |
+| `status` báo "đang chạy" mà KB vẫn lỗi | Kết nối SSH nửa chết (pid còn, cổng đóng). Từ bản này `status` kiểm tra **cổng thật** và tự dọn tiến trình cũ |
+
+Máy chạy vai `server` (VPS, nối PostgreSQL trực tiếp) đặt `KB_TUNNEL=0` để bỏ bước này:
+`KB_TUNNEL=0 sh apps/test_console/run.sh`.
+
+## 8. Kết nối thiết bị Android
 
 ```bash
 # 1) Cắm cáp, bật Developer options → USB debugging, chấp nhận "Allow USB debugging"
@@ -211,7 +270,7 @@ uv run artemis helper install      # cài/cập nhật APK helper trên máy đa
 uv run artemis helper --help       # các lệnh con khác
 ```
 
-## 8. Chạy task bằng CLI
+## 9. Chạy task bằng CLI
 
 ```bash
 # 1) Task đơn giản — profile flash (vòng lặp phản ứng, nhanh)
@@ -264,7 +323,7 @@ uv run artemis trace view <trace_id>
 
 Mọi lệnh đều có `--help`, ví dụ `uv run artemis run --help`.
 
-## 9. Web UI & Admin Console
+## 10. Web UI & Admin Console
 
 ```bash
 uv run artemis ui --open          # mở http://localhost:8000
@@ -277,7 +336,7 @@ uv run artemis stop --force       # dừng server
 Trên UI có: wizard kiểm tra kết nối thiết bị, mirror màn hình trực tiếp, ô prompt để gửi task,
 danh sách session/task đang chạy và trình replay từng bước (ảnh + hành động + lý do).
 
-## 10. Kết nối MCP cho IDE
+## 11. Kết nối MCP cho IDE
 
 ```bash
 uv run artemis mcp --install all             # cài cho mọi IDE được hỗ trợ
@@ -313,7 +372,7 @@ Bộ tool MCP có sẵn:
 Nên mount thêm `mcp_server/rules.md` vào rules của IDE để agent tuân thủ quy trình test
 (khám phá UI trước khi viết test, chọn Flash/Pro hợp lý, locator "dynamic-first, coordinate-fallback").
 
-## 11. Dừng/huỷ task
+## 12. Dừng/huỷ task
 
 Đây là nội dung được sửa trong session này — **bấm Stop/Ctrl+C phải làm agent dừng thật**.
 
@@ -344,7 +403,7 @@ Lưu ý:
 - Task bị huỷ vẫn để lại trace/screenshot để bạn xem lại bước cuối.
 - Muốn theo dõi dài hạn rồi kết thúc êm: `mobile_manage_task(action="inject_instruction", release_loop=true)`.
 
-## 12. Kiểm tra sức khoẻ & xử lý lỗi
+## 13. Kiểm tra sức khoẻ & xử lý lỗi
 
 ```bash
 uv run artemis doctor        # Python, uv, ADB, thiết bị, key, toolchain
@@ -364,7 +423,7 @@ uv run artemis doctor -v     # chi tiết hơn
 | Bấm dừng mà vẫn chạy | Xem mục 11 (bản này đã vá; nếu vẫn gặp, kiểm tra đang chạy đúng `run.py` mới) |
 | MCP không start trong IDE | Gọi `mobile_diagnose`; kiểm tra `command` trỏ đúng `.venv/bin/python` |
 
-## 13. Chạy test & phát triển
+## 14. Chạy test & phát triển
 
 ```bash
 make test              # test không cần thiết bị / key
@@ -377,7 +436,7 @@ make build-ui          # build Angular showcase UI
 make setup             # cài deps + build UI + pre-commit hooks
 ```
 
-## 14. Cấu trúc thư mục
+## 15. Cấu trúc thư mục
 
 ```
 artermis-pro/
@@ -401,14 +460,14 @@ artermis-pro/
 └── README.md · README_EN.md · README_CN.md
 ```
 
-## 15. Giấy phép & ghi công
+## 16. Giấy phép & ghi công
 
 - Phát hành theo **Apache License 2.0** — xem [LICENSE](./LICENSE).
 - Dựa trên dự án ARTEMIS của Google ([google/artemis](https://github.com/google/artemis)); toàn bộ bản quyền
   và ghi công thuộc về các tác giả gốc. Repo này giữ nguyên license và bổ sung các thay đổi ở [mục 2](#2-thay-đổi-so-với-upstream).
 - Tài liệu gốc: [README_EN.md](./README_EN.md) (English) · [README_CN.md](./README_CN.md) (中文).
 
-## 16. Test Console tiếng Việt
+## 17. Test Console tiếng Việt
 
 Nằm trong repo tại [`apps/test_console/`](./apps/test_console/) — web UI tiếng Việt cho tester,
 chạy song song với UI gốc (cổng 8000). Console chỉ gọi `artemis run ... --locked-app <package>`,
@@ -449,7 +508,7 @@ LOCAL_LLM=1 sh apps/test_console/run.sh                     # Ollama, 0đ
 - **Wrapper CLI**: [`scripts/artemis.sh`](./scripts/artemis.sh) (tự thêm `adb` vào PATH, tự dùng
   `.venv` hoặc `uv run`).
 
-## 17. ADB server từ xa (máy DEV + máy tester)
+## 18. ADB server từ xa (máy DEV + máy tester)
 
 Mô hình: **máy DEV** chạy ARTEMIS backend + Web UI, **máy tester** cắm điện thoại qua USB và chạy
 ADB server mở ra LAN. Mọi thao tác thiết bị (screenshot, tap, swipe, input, đọc UI, UIAutomator2)

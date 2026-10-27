@@ -178,6 +178,34 @@
   .step-arrow{color:#94a3b8;font-size:18px}
   @media(max-width:1100px){.grid{grid-template-columns:1fr}.phone{max-height:520px}
     .stage{height:auto;min-height:560px}.steps-pane{max-height:72vh}}
+/* ── Performance tab ─────────────────────────────────────────────────── */
+.perf-pane{padding:10px 14px 18px}
+.perf-bar{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.perf-h{margin:14px 0 6px;font-size:13px;color:var(--muted,#8b95a1);font-weight:600}
+.perf-table-wrap{overflow:auto;max-height:46vh;border:1px solid var(--line,#e3e8ef);border-radius:8px}
+.perf-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.perf-table th,.perf-table td{padding:6px 8px;border-bottom:1px solid var(--line,#eef2f7);text-align:left;vertical-align:top}
+.perf-table th{position:sticky;top:0;background:var(--panel,#f8fafc);z-index:1;font-weight:600}
+.perf-table td.num,.perf-table th.num{text-align:right;font-variant-numeric:tabular-nums}
+.perf-table tr.perf-row{cursor:pointer}
+.perf-table tr.perf-row:hover{background:#f6f9ff}
+.perf-table tr.perf-detail td{background:#fbfdff;font-size:12px;color:#44506b}
+.perf-badge{display:inline-block;padding:1px 6px;border-radius:999px;font-size:11px;font-weight:600}
+.perf-badge.ok{background:#e7f7ee;color:#116b3a}
+.perf-badge.err{background:#fdeaea;color:#a01a1a}
+.perf-badge.warn{background:#fff4e0;color:#8a5a00}
+.perf-findings{margin:6px 0 2px}
+.perf-finding{border-left:3px solid #cfd8e3;padding:6px 10px;margin-bottom:6px;background:#fbfcfe;border-radius:0 6px 6px 0}
+.perf-finding.high{border-left-color:#e05252}
+.perf-finding.medium{border-left-color:#e0a13a}
+.perf-finding.info{border-left-color:#4a86e8}
+.perf-finding .t{font-weight:600;font-size:12.5px}
+.perf-finding .e{font-size:12px;color:#5a6478;margin-top:2px}
+/* ── Dòng "đang chờ gì" trên tab Các bước ─────────────────────────────── */
+.now-line{margin:8px 0;padding:8px 10px;border-left:3px solid #4a86e8;background:#f4f8ff;
+  border-radius:0 6px 6px 0;font-size:12.5px;line-height:1.5}
+.now-line b{font-weight:600}
+.now-line .muted{color:#5a6478}
 </style>
 </head>
 <body>
@@ -281,6 +309,11 @@
           <button class="btn primary" id="btnRun">▶ Chạy test</button>
           <button class="btn danger" id="btnStop" disabled>■ Dừng</button>
         </div>
+        <!-- Nhãn này nói lượt chạy sắp tới sẽ gửi prompt NÀO. Trước đây trạng thái đó vô
+             hình: tester xem bản đã ghép kiến thức ở tab Knowledge, bấm Chạy mà không bấm
+             "Dùng bản này", và agent nhận câu gốc không có kiến thức — rồi tự bịa bước
+             điều hướng. Log cũng chỉ ghi câu gốc nên không ai thấy. -->
+        <div class="hint" id="runPromptState" style="margin-top:8px;font-size:12px"></div>
         <div class="hint" style="margin-top:10px">Task chỉ thao tác trong app ở ô Package. Không đăng xuất, không đổi cài đặt trừ khi kịch bản yêu cầu.</div>
       </div>
     </section>
@@ -292,6 +325,7 @@
           <button data-tab="screen">Màn hình trực tiếp</button>
           <button data-tab="log">Log kỹ thuật</button>
           <button data-tab="kb">Knowledge</button>
+          <button data-tab="perf">Performance</button>
         </div>
         <div class="status">
           <span class="pill" id="statusPill">Sẵn sàng</span>
@@ -300,6 +334,7 @@
       </div>
       <div class="steps-pane" id="stepsPane">
         <div id="resultCard"></div>
+        <div id="nowLine" class="now-line" style="display:none"></div>
         <div id="activityBox"></div>
         <div id="stepsEmpty" class="empty">Chưa có lần chạy. Chọn kịch bản hoặc nhập prompt rồi bấm <b>Chạy test</b>.</div>
         <div id="stepsList"></div>
@@ -312,6 +347,40 @@
       </div>
       <div class="log-pane" id="logPane" style="display:none">
         <div id="log"></div>
+      </div>
+      <div class="perf-pane" id="perfPane" style="display:none">
+        <div class="perf-bar">
+          <span id="perfStatus" class="muted">Chưa có số liệu.</span>
+          <span style="flex:1"></span>
+          <button class="btn small" id="btnPerfReload">↻ Cập nhật</button>
+          <button class="btn small" id="btnPerfExport">⤓ Xuất JSON</button>
+        </div>
+        <div id="perfFindings"></div>
+        <h4 class="perf-h">Bảng công đoạn (exclusive time — không cộng trùng)</h4>
+        <div class="perf-table-wrap">
+          <table class="perf-table" id="perfStages">
+            <thead><tr>
+              <th>Stage</th><th class="num">Calls</th><th class="num">Total</th>
+              <th class="num">Avg</th><th class="num">Max</th><th class="num">Errors</th>
+              <th class="num">% Runtime</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <h4 class="perf-h">Timeline từng bước (bấm một dòng để xem chi tiết)</h4>
+        <div class="perf-table-wrap">
+          <table class="perf-table" id="perfTimeline">
+            <thead><tr>
+              <th>Step</th><th>Stage</th><th>Action</th><th class="num">Duration</th>
+              <th>Model</th><th class="num">Tokens</th><th>Result</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="empty" id="perfEmpty" style="display:none">
+          Chưa có số liệu Performance cho lần chạy này. Số liệu xuất hiện ngay khi agent
+          bắt đầu gọi model hoặc thao tác thiết bị.
+        </div>
       </div>
       <div class="kb-pane" id="kbPane" style="display:none">
         <div class="kb-status" id="kbStatus"></div>
@@ -601,14 +670,163 @@ function setTab(tab){
   $('screenPane').style.display = tab === 'screen' ? 'flex' : 'none';
   $('logPane').style.display = tab === 'log' ? 'block' : 'none';
   $('kbPane').style.display = tab === 'kb' ? 'block' : 'none';
+  $('perfPane').style.display = tab === 'perf' ? 'block' : 'none';
   if(tab === 'kb'){
     // Nạp lần đầu khi mở tab, và điền sẵn prompt đang gõ để thử truy xuất ngay.
     if(!kbState.loaded) loadKb();
     if(!$('kbQuery').value) $('kbQuery').value = ($('goal').value || '').trim();
     loadKbLogs();
   }
+  if(tab === 'perf'){
+    // Số liệu cập nhật trong lúc agent đang chạy: poll file perf của session.
+    startPerfPolling();
+  }else{
+    stopPerfPolling();
+  }
   if(tab === 'steps'){ state.followSteps = true; scrollToLatestStep(true); }
 }
+/* ── Performance tab: đọc số liệu của session đang chạy ───────────── */
+const perfState = { timer: null, data: null, loading: false };
+
+function perfFmt(ms){
+  if(ms === null || ms === undefined) return 'N/A';
+  if(ms >= 1000) return (ms/1000).toFixed(2) + 's';
+  return Math.round(ms) + 'ms';
+}
+function perfEsc(s){
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function perfStatusBadge(status){
+  const s = String(status || '');
+  const cls = (s === 'success' || s === 'completed') ? 'ok'
+            : (s === 'retry' || s === 'running' || s === 'paused') ? 'warn' : 'err';
+  return '<span class="perf-badge ' + cls + '">' + perfEsc(s) + '</span>';
+}
+
+async function loadPerf(){
+  if(perfState.loading) return;
+  const pane = $('perfPane');
+  if(!pane || pane.style.display === 'none') return;
+  if(!state.task){
+    $('perfStatus').textContent = 'Chưa có lần chạy nào — chạy một test rồi mở lại tab này.';
+    return;
+  }
+  perfState.loading = true;
+  try{
+    const data = await api('/api/tasks/' + state.task.id + '/performance');
+    perfState.data = data;
+    renderPerf(data);
+  }catch(err){
+    $('perfStatus').textContent = 'Không đọc được số liệu Performance: ' + err.message;
+  }finally{
+    perfState.loading = false;
+  }
+}
+
+function renderPerf(data){
+  const empty = $('perfEmpty');
+  if(!data || data.ready === false){
+    $('perfStatus').textContent = (data && data.note) || 'Chưa xác định được session.';
+    if(empty) empty.style.display = 'block';
+    $('perfStages').querySelector('tbody').innerHTML = '';
+    $('perfTimeline').querySelector('tbody').innerHTML = '';
+    return;
+  }
+  const summary = data.summary || {};
+  const session = data.session || {};
+  $('perfStatus').innerHTML =
+    'Session <code>' + perfEsc(String(data.session_id || '').slice(0, 8)) + '</code> · '
+    + 'tổng <b>' + perfFmt(summary.total_session_ms) + '</b> · '
+    + (summary.llm_calls === null || summary.llm_calls === undefined ? 'N/A' : summary.llm_calls) + ' lượt LLM · '
+    + (summary.actions === null || summary.actions === undefined ? 'N/A' : summary.actions) + ' hành động · '
+    + 'idle ' + perfFmt(summary.idle_ms)
+    + (session.status ? ' · trạng thái: ' + perfEsc(session.status) : '');
+
+  const rows = data.stages || [];
+  const hasRows = rows.some(r => r.total_ms !== null || r.calls);
+  if(empty) empty.style.display = hasRows ? 'none' : 'block';
+
+  $('perfStages').querySelector('tbody').innerHTML = rows.map(r => {
+    const share = r.runtime_share_pct === null || r.runtime_share_pct === undefined
+      ? 'N/A' : r.runtime_share_pct + '%';
+    return '<tr>'
+      + '<td>' + perfEsc(r.label || r.stage) + '</td>'
+      + '<td class="num">' + r.calls + '</td>'
+      + '<td class="num">' + perfFmt(r.total_ms) + '</td>'
+      + '<td class="num">' + perfFmt(r.avg_ms) + '</td>'
+      + '<td class="num">' + perfFmt(r.max_ms) + '</td>'
+      + '<td class="num">' + (r.errors || 0) + '</td>'
+      + '<td class="num">' + share + '</td>'
+      + '</tr>';
+  }).join('');
+
+  renderPerfTimeline(data.timeline || []);
+  renderPerfFindings(data.findings || []);
+}
+
+function renderPerfTimeline(timeline){
+  $('perfTimeline').querySelector('tbody').innerHTML = timeline.map(row => {
+    const tokens = row.total_tokens === null || row.total_tokens === undefined ? '—' : row.total_tokens;
+    const model = row.model ? perfEsc(row.model) : '—';
+    const action = perfEsc(row.action_type ? row.action_type + ' · ' + row.event_name : row.event_name);
+    const main = '<tr class="perf-row" data-span="' + perfEsc(row.span_id) + '">'
+      + '<td>' + (row.step === null || row.step === undefined ? '—' : row.step) + '</td>'
+      + '<td>' + perfEsc(row.stage_label || row.stage) + '</td>'
+      + '<td>' + action + '</td>'
+      + '<td class="num">' + perfFmt(row.duration_ms) + '</td>'
+      + '<td>' + model + '</td>'
+      + '<td class="num">' + tokens + '</td>'
+      + '<td>' + perfStatusBadge(row.status) + '</td>'
+      + '</tr>';
+    const bits = [
+      'Request ID: ' + (row.request_id ? perfEsc(row.request_id) : 'N/A'),
+      'Retry: ' + (row.retry_count === null || row.retry_count === undefined ? 'N/A' : row.retry_count)
+        + (row.retry_wait_ms ? ' · chờ ' + perfFmt(row.retry_wait_ms) : ''),
+      'HTTP: ' + (row.http_status === null || row.http_status === undefined ? 'N/A' : row.http_status),
+      'TTFT: ' + perfFmt(row.ttft_ms),
+      'Lỗi: ' + (row.error_type ? perfEsc(row.error_type)
+        + (row.error_code ? ' (' + perfEsc(row.error_code) + ')' : '') : 'không'),
+      'UI: ' + (row.ui_fingerprint ? perfEsc(row.ui_fingerprint) : 'N/A')
+        + (row.ui_changed === null || row.ui_changed === undefined ? ''
+           : (row.ui_changed ? ' · có đổi' : ' · KHÔNG đổi')),
+      'Chờ trước span: ' + perfFmt(row.gap_before_ms),
+      'Span: ' + perfEsc(row.span_id)
+        + (row.parent_span_id ? ' ← ' + perfEsc(row.parent_span_id) : ' (gốc)'),
+    ];
+    const detail = '<tr class="perf-detail" data-detail="' + perfEsc(row.span_id) + '" style="display:none">'
+      + '<td colspan="7">' + bits.map(b => '<div>' + b + '</div>').join('') + '</td></tr>';
+    return main + detail;
+  }).join('');
+
+  $('perfTimeline').querySelectorAll('tr.perf-row').forEach(tr => {
+    tr.onclick = () => {
+      const span = tr.getAttribute('data-span');
+      const detail = $('perfTimeline').querySelector('tr.perf-detail[data-detail="' + span + '"]');
+      if(detail) detail.style.display = detail.style.display === 'none' ? 'table-row' : 'none';
+    };
+  });
+}
+
+function renderPerfFindings(findings){
+  $('perfFindings').innerHTML = findings.length
+    ? '<div class="perf-findings">' + findings.map(f =>
+        '<div class="perf-finding ' + perfEsc(f.severity) + '">'
+        + '<div class="t">' + perfEsc(f.title) + '</div>'
+        + '<div class="e">' + (f.evidence || []).map(perfEsc).join('<br>') + '</div>'
+        + '</div>').join('') + '</div>'
+    : '';
+}
+
+function startPerfPolling(){
+  if(perfState.timer) return;
+  loadPerf();
+  perfState.timer = setInterval(loadPerf, 3000);
+}
+function stopPerfPolling(){
+  if(perfState.timer){ clearInterval(perfState.timer); perfState.timer = null; }
+}
+
 function openModal(title, html){
   $('modalTitle').textContent = title;
   $('modalBody').innerHTML = html;
@@ -873,6 +1091,46 @@ function renderResult(summary){
   }
 }
 
+async function loadNow(){
+  const box = $('nowLine');
+  if(!box) return;
+  if(!state.task || (state.task.status !== 'running' && state.task.status !== 'queued')){
+    box.style.display = 'none';
+    return;
+  }
+  try{
+    const d = await api('/api/tasks/' + state.task.id + '/now');
+    if(!d.ready){ box.style.display = 'none'; return; }
+    const parts = [];
+    if(d.in_flight){
+      parts.push('⏳ <b>Đang chờ: ' + perfEsc(d.in_flight.stage_label) + '</b>'
+        + ' <span class="muted">(' + perfEsc(d.in_flight.event_name) + ')</span>'
+        + ' — đã ' + perfFmt(d.in_flight.elapsed_ms));
+    }else if(d.silent_ms !== null && d.silent_ms !== undefined){
+      parts.push('⏳ <b>Không có span nào đang chạy</b> — im lặng ' + perfFmt(d.silent_ms));
+    }
+    if(d.last_llm){
+      parts.push('lượt LLM gần nhất: <b>' + perfFmt(d.last_llm.duration_ms) + '</b>'
+        + ' (chờ token đầu ' + perfFmt(d.last_llm.ttft_ms) + ')'
+        + (d.last_llm.input_tokens ? ' · ' + d.last_llm.input_tokens + ' token vào' : ''));
+    }
+    if(d.last_action && d.last_action.action_type){
+      parts.push('hành động gần nhất: ' + perfEsc(d.last_action.action_type)
+        + ' ' + perfFmt(d.last_action.duration_ms)
+        + (d.last_action.ui_changed === false ? ' <span class="muted">(UI không đổi)</span>' : ''));
+    }
+    if(d.last_events && d.last_events.length){
+      parts.push('<span class="muted">vừa xong: '
+        + d.last_events.map(e => perfEsc(e.event_name) + ' ' + perfFmt(e.duration_ms)).join(' · ')
+        + '</span>');
+    }
+    box.innerHTML = parts.join('<br>');
+    box.style.display = parts.length ? 'block' : 'none';
+  }catch(err){
+    box.style.display = 'none';
+  }
+}
+
 async function poll(){
   try{
     const data = await api('/api/status?since=' + state.seq);
@@ -890,6 +1148,7 @@ async function poll(){
     (data.lines || []).forEach(addLog);
     if(data.seq) state.seq = data.seq;
     setRunning(data.running, data.task || state.task);
+    loadNow();
     updateBudget(data.budget);
     const justFinished = state.wasRunning && !data.running;
     if(data.task && (data.running || !state.viewingTaskId)){
@@ -1139,6 +1398,39 @@ function prepareErrorHint(e){
 // Prompt tester đã sửa. Rỗng = chưa sửa gì, chạy bằng prompt gốc.
 let promptOverride = '';
 
+//: Nhãn nói lượt chạy sắp tới gửi prompt nào. Trạng thái này từng *vô hình*: tester xem
+//: bản đã ghép kiến thức rồi bấm Chạy mà không bấm "Dùng bản này" — agent nhận câu gốc
+//: không có kiến thức và tự bịa bước điều hướng, còn log chỉ ghi câu gốc.
+function updateRunPromptState(){
+  const el = $('runPromptState');
+  if(!el) return;
+  const goalLen = $('goal').value.trim().length;
+  if(promptOverride){
+    el.innerHTML = '✅ Sẽ chạy bằng <b>prompt đã chuẩn bị</b> (' + promptOverride.length +
+      ' ký tự, có kiến thức ứng dụng). Agent không truy xuất KB lần nữa.';
+  }else{
+    el.innerHTML = '⚠ Sẽ chạy bằng <b>prompt gốc</b> (' + goalLen +
+      ' ký tự, KHÔNG có kiến thức). Muốn ghép kiến thức: mở tab Knowledge → Chuẩn bị prompt → <b>Dùng bản này</b>.';
+  }
+}
+
+function persistPromptOverride(){
+  try{
+    if(promptOverride){
+      localStorage.setItem('testconsole.promptOverride',
+        JSON.stringify({goal: $('goal').value.trim(), prompt: promptOverride}));
+    }else{
+      localStorage.removeItem('testconsole.promptOverride');
+    }
+  }catch(_){}
+}
+
+function setPromptOverride(text){
+  promptOverride = (text || '').trim();
+  persistPromptOverride();
+  updateRunPromptState();
+}
+
 async function previewPrompt(){
   const goal = $('goal').value.trim();
   if(goal.length < 5){ toast('Nhập prompt ít nhất 5 ký tự rồi mới xem được.', 'err'); return; }
@@ -1165,13 +1457,13 @@ async function previewPrompt(){
 function usePreviewedPrompt(){
   const text = $('promptPreview').value.trim();
   if(text.length < 5){ toast('Prompt hoàn chỉnh quá ngắn.', 'err'); return; }
-  promptOverride = text;
+  setPromptOverride(text);
   // Nói rõ hệ quả: agent nhận đúng bản này và không tự lấy thêm kiến thức lần nữa.
   toast('Sẽ chạy bằng prompt hoàn chỉnh này (' + text.length + ' ký tự). Agent không truy xuất KB lần nữa.', 'ok');
 }
 
 function resetPreviewedPrompt(){
-  promptOverride = '';
+  setPromptOverride('');
   toast('Đã bỏ bản sửa — chạy bằng prompt gốc.');
 }
 
@@ -1739,6 +2031,11 @@ function bindEvents(){
   $('kbSearch').oninput = renderKbList;
   $('btnKbNew').onclick = newKbWorkflow;
   $('btnKbReload').onclick = async () => { await loadKb(true); toast('Đã tải lại knowledge base'); };
+  $('btnPerfReload').onclick = async () => { await loadPerf(); toast('Đã cập nhật số liệu Performance'); };
+  $('btnPerfExport').onclick = () => {
+    if(!state.task){ toast('Chưa có lần chạy nào để xuất'); return; }
+    window.open('/api/tasks/' + state.task.id + '/performance.json', '_blank');
+  };
   $('btnKbAddStep').onclick = () => addKbStep({action:'tap'});
   $('btnKbSave').onclick = saveKbWorkflow;
   $('btnKbDelete').onclick = deleteKbWorkflow;
@@ -1767,7 +2064,8 @@ function bindEvents(){
     persistPrompt();
     // Prompt gốc đổi thì bản hoàn chỉnh đã sửa không còn khớp nữa — bỏ đi, nếu
     // không sẽ chạy một prompt chứa nội dung của lần gõ trước.
-    if(promptOverride){ promptOverride = ''; $('promptPreviewNote').textContent = 'Prompt đã đổi — bấm xem lại.'; }
+    if(promptOverride){ setPromptOverride(''); $('promptPreviewNote').textContent = 'Prompt đã đổi — bấm xem lại.'; }
+    updateRunPromptState();
     $('prepareStatus').textContent = '';
   });
   $('btnFreePrompt').onclick = () => {
@@ -1800,8 +2098,21 @@ try{
   if(savedPackage){ $('pkg').value = savedPackage; }
   const savedProfile = localStorage.getItem('testconsole.profile');
   if(savedProfile === 'flash' || savedProfile === 'pro'){ setProfile(savedProfile); }
+  // Khôi phục bản prompt tester đã duyệt: nó từng chỉ nằm trong bộ nhớ trang, nên chỉ cần
+  // tải lại trang (hoặc khởi động lại console) là mất, và lượt chạy sau lặng lẽ dùng câu
+  // gốc không có kiến thức.
+  const savedOverride = localStorage.getItem('testconsole.promptOverride');
+  if(savedOverride){
+    const parsed = JSON.parse(savedOverride);
+    if(parsed && parsed.prompt && (parsed.goal || '') === ($('goal').value || '').trim()){
+      promptOverride = parsed.prompt;
+    }else{
+      localStorage.removeItem('testconsole.promptOverride');
+    }
+  }
 }catch(_){}
 updateGoalCount();
+updateRunPromptState();
 renderPresets();
 // Cho phép mở thẳng một tab bằng URL: /?tab=kb — tiện bookmark tab Knowledge.
 const wantedTab = (() => {

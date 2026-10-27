@@ -76,6 +76,23 @@ if [ "${LOCAL_LLM:-0}" = "1" ]; then
   echo "LLM local: $ARTEMIS_UPSTREAM_BASE_URL · model $ARTEMIS_LOCAL_MODEL"
 fi
 
+# --- Knowledge base: bảo đảm tunnel tới PostgreSQL trên VPS --------------------
+# KB nằm ở PostgreSQL trên VPS, chỉ mở qua SSH tunnel. Tunnel hay đứt (mạng, hoặc tiến
+# trình ssh bị kill) và khi đó console báo "Không kết nối được PostgreSQL: port 5433" —
+# tester phải nhớ chạy lại lệnh. Ở đây tự mở lại trước khi khởi động.
+#
+#   KB_TUNNEL=0 sh apps/test_console/run.sh   # tắt bước này (ví dụ máy chạy vai server)
+#   sh scripts/kb_tunnel.sh status|start|restart|ensure
+if [ "${KB_TUNNEL:-1}" = "1" ] && [ -f "$REPO_ROOT/scripts/kb_tunnel.sh" ]; then
+  if sh "$REPO_ROOT/scripts/kb_tunnel.sh" ensure >/dev/null 2>&1; then
+    echo "Knowledge base: tunnel sẵn sàng (127.0.0.1:${KB_LOCAL_PORT:-5433})."
+  else
+    echo "CẢNH BÁO: chưa mở được tunnel tới Knowledge base." >&2
+    echo "         Console vẫn chạy nhưng tab Knowledge sẽ báo KB không dùng được." >&2
+    echo "         Kiểm tra khoá SSH (~/.ssh/greencloud) rồi chạy: sh scripts/kb_tunnel.sh start" >&2
+  fi
+fi
+
 if [ ! -x "$ARTEMIS_DIR/.venv/bin/python" ]; then
   echo "Không tìm thấy Artemis tại $ARTEMIS_DIR" >&2
   echo "Đặt ARTEMIS_DIR hoặc xem Documents/artemis.md." >&2

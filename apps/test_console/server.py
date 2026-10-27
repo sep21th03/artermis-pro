@@ -385,6 +385,46 @@ def metro_warning(serial: str, port: str = RN_METRO_PORT) -> str:
     )
 
 
+#: Prompt đã chuẩn bị gần nhất cho mỗi câu gốc: ``câu gốc (đã chuẩn hoá) -> (độ dài, lúc)``.
+#: Mục đích duy nhất là phát hiện lượt chạy *bỏ quên* bản tester đã xem.
+_PREPARED_PROMPTS: dict[str, tuple[int, float]] = {}
+
+
+def _prompt_key(goal: str) -> str:
+    return " ".join((goal or "").split()).lower()
+
+
+def remember_prepared_prompt(goal: str, enhanced: str) -> None:
+    """Ghi nhớ bản đã chuẩn bị để lượt chạy sau đó có thể tự kiểm tra."""
+    key = _prompt_key(goal)
+    if key and enhanced and enhanced.strip() != (goal or "").strip():
+        _PREPARED_PROMPTS[key] = (len(enhanced), time.time())
+
+
+def forgotten_prepared_prompt(goal: str, override: str) -> str:
+    """Cảnh báo khi lượt chạy bỏ quên bản prompt đã chuẩn bị (rỗng = không có gì).
+
+    **Vì sao cần.**  Đã xảy ra thật và **âm thầm**: tester bấm "Chuẩn bị prompt", xem bản
+    đã ghép kiến thức (có cả ``navigation.open_menu``), rồi bấm "Chạy test" mà không bấm
+    "Dùng bản này".  Agent nhận đúng câu gốc 43 ký tự, **không có KIẾN THỨC nào**, nên
+    Planner tự bịa bước điều hướng ("tap profile icon ở góc trên bên phải"), Object
+    Detector xác nhận vật thể không tồn tại với ``confidence=1.00``, và cú tap trả
+    ``ui_changed=False``.  Không có dấu hiệu nào trong log: nó chỉ ghi câu gốc, y hệt một
+    lượt chạy cố ý không dùng kiến thức.  Cảnh báo này làm trạng thái đó hiện ra.
+    """
+    if (override or "").strip():
+        return ""
+    size = _PREPARED_PROMPTS.get(_prompt_key(goal), (0, 0.0))[0]
+    if not size:
+        return ""
+    return (
+        f"⚠ Task này chạy bằng PROMPT GỐC ({len((goal or '').strip())} ký tự) — console đã "
+        f"chuẩn bị bản có kiến thức ({size} ký tự) cho đúng câu này nhưng bạn chưa bấm "
+        "“Dùng bản này”, nên agent KHÔNG nhận kiến thức ứng dụng (dễ tự bịa bước điều "
+        "hướng). Dừng task, bấm “Dùng bản này” rồi chạy lại nếu muốn dùng."
+    )
+
+
 # `--locked-app` của ARTEMIS chỉ đảm bảo app ở foreground **lúc khởi động**; nó
 # không ràng buộc hành động sau đó và agent cũng không được thông báo. Đo thực tế:
 # agent tự force-stop app khác ("Tuya Smart"), bấm HOME, mở app switcher rồi chạm
@@ -1106,6 +1146,10 @@ ACTION_LABELS = {
     "back": "Quay lại", "open_app": "Mở app", "launch_app": "Mở app",
     "input_text": "Nhập nội dung", "type": "Nhập nội dung", "set_text": "Nhập nội dung",
     "wait": "Chờ", "wait_for_delay": "Chờ", "home": "Về màn hình chính",
+    # Bước không có hành động (agent chỉ suy nghĩ/quan sát). Hiện chúng để thời gian đã
+    # tiêu có chỗ giải thích — trước đây chúng bị ẩn nên tab trông như agent đứng yên.
+    "planning": "Lập kế hoạch", "plan": "Lập kế hoạch", "observation": "Quan sát",
+    "perception": "Quan sát", "thinking": "Suy nghĩ", "reasoning": "Suy nghĩ",
 }
 
 SKIP_STEP_ACTIONS = {
@@ -1135,6 +1179,22 @@ def _step_label(action: str, args: dict, target: str) -> str:
     return base
 
 
+def _step_actions(item: dict) -> list[dict]:
+    """Các hành động của một bước, chuẩn hoá về list[dict].
+
+    Backend trả ``action_taken`` ở ba dạng khác nhau: ``None`` (bước lập kế hoạch),
+    một ``dict`` (bước một hành động), hoặc một ``list`` (bước nhiều hành động — burst).
+    Giả định nó luôn là dict làm endpoint ném ``AttributeError: 'list' object has no
+    attribute 'get'`` và tab "Các bước" trắng trơn dù agent đã thao tác thật.
+    """
+    raw = item.get("action_taken")
+    if isinstance(raw, dict):
+        return [raw]
+    if isinstance(raw, list):
+        return [entry for entry in raw if isinstance(entry, dict)]
+    return []
+
+
 def _fetch_steps(task: Task) -> list[dict]:
     session_id = _resolve_session(task)
     if not session_id:
@@ -1143,29 +1203,62 @@ def _fetch_steps(task: Task) -> list[dict]:
         raw_steps = _http_json(f"{ARTEMIS_API}/api/sessions/{session_id}/steps", timeout=10)
     except Exception:  # noqa: BLE001
         return []
+    if not isinstance(raw_steps, list):
+        return []
     steps = []
     for item in raw_steps:
-        action = item.get("action_taken") or {}
-        action_name = action.get("action", "")
-        if action_name in SKIP_STEP_ACTIONS:
+        # Một bước hỏng không được làm mất cả tab: bỏ qua đúng bước đó.
+        if not isinstance(item, dict):
             continue
-        args = action.get("args") or {}
-        target = _clean_target(action.get("target_text") or args.get("text") or "")
-        pre_image = item.get("pre_image_name")
-        post_image = item.get("post_image_name")
-        steps.append({
-            "number": item.get("step_number"),
-            "action": action_name,
-            "label": _step_label(action_name, args, target),
-            "before": f"/api/tasks/{task.id}/image/{pre_image}" if pre_image else "",
-            "after": f"/api/tasks/{task.id}/image/{post_image}" if post_image else "",
-            "result": (item.get("last_execution_result") or {}).get("status", ""),
-            "detail": (item.get("last_execution_result") or {}).get("result", ""),
-            "tokens": item.get("total_tokens") or 0,
-            # Lý do agent chọn hành động này — có bước nhãn rỗng (nút chỉ có icon)
-            # nên đây là thứ duy nhất giải thích được nó đang làm gì.
-            "thinking": _clean_target(item.get("operator_raw_thinking"))[:300],
-        })
+        try:
+            actions = _step_actions(item)
+            if not actions:
+                # Bước không có hành động (lập kế hoạch / chỉ quan sát) vẫn phải hiện:
+                # đó là thời gian agent đã tiêu và là chỗ giải thích "đứng yên làm gì".
+                if str(item.get("step_type") or "").strip():
+                    steps.append(
+                        {
+                            "number": item.get("step_number"),
+                            "action": "",
+                            "label": _step_label(str(item.get("step_type")), {}, ""),
+                            "before": "",
+                            "after": "",
+                            "result": "",
+                            "detail": "",
+                            "tokens": item.get("total_tokens") or 0,
+                            "thinking": _clean_target(item.get("operator_raw_thinking"))[:300],
+                        }
+                    )
+                continue
+            for action in actions:
+                action_name = str(action.get("action") or "")
+                if action_name in SKIP_STEP_ACTIONS:
+                    continue
+                args = action.get("args") if isinstance(action.get("args"), dict) else {}
+                target = _clean_target(action.get("target_text") or args.get("text") or "")
+                pre_image = item.get("pre_image_name")
+                post_image = item.get("post_image_name")
+                steps.append(
+                    {
+                        "number": item.get("step_number"),
+                        "action": action_name,
+                        "label": _step_label(action_name, args, target),
+                        "before": f"/api/tasks/{task.id}/image/{pre_image}" if pre_image else "",
+                        "after": f"/api/tasks/{task.id}/image/{post_image}" if post_image else "",
+                        "result": (item.get("last_execution_result") or {}).get("status", "")
+                        if isinstance(item.get("last_execution_result"), dict)
+                        else "",
+                        "detail": (item.get("last_execution_result") or {}).get("result", "")
+                        if isinstance(item.get("last_execution_result"), dict)
+                        else "",
+                        "tokens": item.get("total_tokens") or 0,
+                        # Lý do agent chọn hành động này — có bước nhãn rỗng (nút chỉ có
+                        # icon) nên đây là thứ duy nhất giải thích được nó đang làm gì.
+                        "thinking": _clean_target(item.get("operator_raw_thinking"))[:300],
+                    }
+                )
+        except Exception:  # noqa: BLE001 - một bước lạ không được làm sập tab
+            continue
     return steps
 
 
@@ -1645,6 +1738,228 @@ def task_summary(task_id: str) -> dict:
     return _task_summary(task)
 
 
+# ── Performance: bảng công đoạn, timeline, bottleneck của một session ────
+PERF_FILENAME = "perf_events.jsonl"
+
+
+def _perf_path(session_id: str) -> Path:
+    """File perf của một session, đọc thẳng trong thư mục trace của session đó.
+
+    Vì sao đọc file chứ không qua API backend: tiến trình thực thi là Artemis Daemon,
+    và nó ghi span vào ``traces/<session_id>/``.  Đọc đúng thư mục của session bảo đảm
+    console không bao giờ trộn số liệu của session khác, kể cả khi CLI đã thoát mà daemon
+    vẫn đang chạy.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}", session_id or ""):
+        raise HTTPException(400, "Session id không hợp lệ.")
+    return ARTEMIS_DIR / "traces" / session_id / PERF_FILENAME
+
+
+def _perf_report(session_id: str) -> dict:
+    from artemis.perf import build_report, read_events
+
+    path = _perf_path(session_id)
+    report = build_report(read_events(path), session_id=session_id)
+    report["perf_file"] = str(path)
+    report["perf_file_exists"] = path.exists()
+    return report
+
+
+def _perf_session_for_task(task: Task) -> tuple[str, str]:
+    """``(session_id, nguồn)`` của task — dùng được cả khi task còn đang chạy.
+
+    ``_resolve_session`` cần stdout của CLI hoặc API ``/api/sessions``; cả hai đều có độ
+    trễ, nên vài giây đầu của một lần chạy sẽ chưa có số liệu.  Fallback ở đây lấy file
+    perf **mới nhất được tạo sau khi task bắt đầu**: một file perf chỉ tồn tại khi session
+    đó đã chạy, nên điều kiện thời gian là đủ để không đọc nhầm session khác.
+    """
+    from artemis.perf import iter_sessions_with_perf
+
+    resolved = _resolve_session(task)
+    if resolved:
+        return resolved, "resolved"
+    try:
+        started = float(getattr(task, "started_at", 0) or 0)
+        candidates: list[tuple[float, str]] = []
+        for session_id, path, _size in iter_sessions_with_perf(base=ARTEMIS_DIR / "traces"):
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime >= started - 2:
+                candidates.append((mtime, session_id))
+        if candidates:
+            candidates.sort(reverse=True)
+            return candidates[0][1], "perf-file"
+    except Exception:  # noqa: BLE001 - thiếu số liệu thì báo chưa sẵn sàng
+        pass
+    return "", "none"
+
+
+@edge_route("get", "/api/tasks/{task_id}/performance")
+def task_performance(task_id: str) -> dict:
+    """Số liệu Performance của task, cập nhật được trong lúc agent đang chạy."""
+    task = runner.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Không tìm thấy task.")
+    session_id, source = _perf_session_for_task(task)
+    if not session_id:
+        return {
+            "task_id": task_id,
+            "session_id": "",
+            "ready": False,
+            "note": "Chưa xác định được session của lần chạy này — thử lại sau vài giây.",
+        }
+    report = _perf_report(session_id)
+    report.update({"task_id": task_id, "ready": True, "session_source": source})
+    return report
+
+
+@edge_route("get", "/api/tasks/{task_id}/now")
+def task_now(task_id: str) -> dict:
+    """Agent **đang làm gì ngay lúc này** — đọc span đang mở trong performance log.
+
+    Trả lời đúng câu hỏi "đứng yên một màn cả phút là đang chờ gì". Ba thứ được trả về:
+
+    * ``in_flight`` — span gốc đang mở (node agent / vòng Flash) kèm số giây đã trôi;
+    * ``silent_ms`` — bao lâu kể từ sự kiện cuối cùng (dấu hiệu đang chờ model);
+    * ``last_events`` — vài sự kiện vừa xong (công đoạn, thời lượng, token, TTFT).
+
+    Không suy đoán: nếu không có số liệu thì trả ``in_flight=None`` kèm ghi chú, thay vì
+    bịa một trạng thái.
+    """
+    task = runner.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Không tìm thấy task.")
+    session_id, source = _perf_session_for_task(task)
+    if not session_id:
+        return {
+            "task_id": task_id,
+            "status": task.status,
+            "ready": False,
+            "note": "Chưa có số liệu của lần chạy này.",
+        }
+
+    from artemis.perf import STAGE_LABELS, read_events
+
+    events = read_events(_perf_path(session_id))
+    if not events:
+        return {
+            "task_id": task_id,
+            "session_id": session_id,
+            "session_source": source,
+            "status": task.status,
+            "ready": False,
+            "note": "Session chưa ghi sự kiện nào.",
+        }
+
+    now = time.time()
+    ended = [event.ended_at for event in events if event.ended_at is not None]
+    running = [
+        event
+        for event in events
+        if event.ended_at is None and event.started_at is not None and event.status == "running"
+    ]
+    running.sort(key=lambda event: event.started_at or 0.0)
+    in_flight = None
+    if running:
+        current = running[-1]
+        in_flight = {
+            "stage": current.stage,
+            "stage_label": STAGE_LABELS.get(current.stage, current.stage),
+            "event_name": current.event_name,
+            "elapsed_ms": round((now - (current.started_at or now)) * 1000.0, 1),
+            "agent_role": current.agent_role,
+        }
+
+    finished = [event for event in events if event.ended_at is not None]
+    finished.sort(key=lambda event: event.ended_at or 0.0)
+    last_llm = next(
+        (event for event in reversed(finished) if event.is_llm()), None
+    )
+    last_action = next(
+        (event for event in reversed(finished) if event.is_device()), None
+    )
+    return {
+        "task_id": task_id,
+        "session_id": session_id,
+        "session_source": source,
+        "status": task.status,
+        "ready": True,
+        "in_flight": in_flight,
+        "silent_ms": round((now - max(ended)) * 1000.0, 1) if ended else None,
+        "last_llm": {
+            "stage": last_llm.stage,
+            "duration_ms": last_llm.duration_ms,
+            "ttft_ms": last_llm.ttft_ms,
+            "input_tokens": last_llm.input_tokens,
+            "output_tokens": last_llm.output_tokens,
+        }
+        if last_llm
+        else None,
+        "last_action": {
+            "action_type": last_action.action_type,
+            "duration_ms": last_action.duration_ms,
+            "ui_changed": last_action.ui_changed,
+        }
+        if last_action
+        else None,
+        "last_events": [
+            {
+                "stage_label": STAGE_LABELS.get(event.stage, event.stage),
+                "event_name": event.event_name,
+                "duration_ms": event.duration_ms,
+                "status": event.status,
+            }
+            for event in reversed(finished[-5:])
+        ],
+    }
+
+
+@edge_route("get", "/api/tasks/{task_id}/performance.json")
+def task_performance_json(task_id: str) -> Response:
+    """Xuất báo cáo Performance của task ra file JSON."""
+    task = runner.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Không tìm thấy task.")
+    session_id, _source = _perf_session_for_task(task)
+    if not session_id:
+        raise HTTPException(409, "Chưa xác định được session của task này.")
+    report = _perf_report(session_id)
+    return Response(
+        content=json.dumps(report, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="perf_{session_id}.json"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@edge_route("get", "/api/perf/sessions")
+def perf_sessions(limit: int = 30) -> list[dict]:
+    """Các session có dữ liệu perf — để xem lại báo cáo của lần chạy đã xong."""
+    from artemis.perf import iter_sessions_with_perf
+
+    rows: list[dict] = []
+    for session_id, path, size in iter_sessions_with_perf(base=ARTEMIS_DIR / "traces"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        rows.append({"session_id": session_id, "size_bytes": size, "mtime": mtime})
+    rows.sort(key=lambda row: -row["mtime"])
+    return rows[: max(1, min(limit, 200))]
+
+
+@edge_route("get", "/api/perf/session/{session_id}")
+def perf_session(session_id: str) -> dict:
+    """Báo cáo Performance của một session đã hoàn thành (xem lại sau khi chạy)."""
+    report = _perf_report(session_id)
+    report["ready"] = True
+    return report
+
+
 @edge_route("get", "/api/tasks/{task_id}/final.png")
 def task_final_image(task_id: str) -> FileResponse:
     path = LOG_DIR / f"{task_id}_final.png"
@@ -1688,7 +2003,11 @@ def run(req: RunRequest) -> dict:
         task = runner.start(req)
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
-    warnings = [w for w in (metro_warning(req.serial.strip()),) if w]
+    warnings = [
+        w
+        for w in (metro_warning(req.serial.strip()), forgotten_prepared_prompt(req.goal, req.prompt_override))
+        if w
+    ]
     for warning in warnings:
         runner.note(warning)
     return {"ok": True, "task": asdict(task), "warnings": warnings}
@@ -1750,6 +2069,8 @@ def knowledge_context(req: KnowledgeContextRequest, request: Request) -> dict:
     # đoán", và máy đoán không được lái agent. Không ghép được gì thì trả lại đúng
     # prompt gốc — tester vẫn chạy được, y như khi chưa có knowledge base.
     prompt = "\n\n".join(part for part in (req.goal, kb_block if kb_meta.get("found") else "") if part)
+    # Ghi nhớ bản vừa ghép để lượt "Chạy test" có thể cảnh báo nếu tester bỏ quên nó.
+    remember_prepared_prompt(req.goal, prompt)
     return {
         "prompt": prompt,
         "found": bool(kb_meta.get("found")),
@@ -1920,6 +2241,10 @@ def knowledge_prepare(req: PrepareRequest, request: Request) -> dict:
         print(f"⚠ Chuẩn bị prompt: fallback — {outcome.fallback_reason}")
     elif outcome.status == STATUS_DEGRADED:
         print(f"⚠ Chuẩn bị prompt: knowledge base suy giảm — {outcome.fallback_reason}")
+
+    # Bản tester vừa xem là bản phải được chạy. Ghi nhớ để nếu họ bấm "Chạy test" mà quên
+    # "Dùng bản này", console cảnh báo thay vì âm thầm chạy câu gốc không có kiến thức.
+    remember_prepared_prompt(req.prompt, outcome.enhanced_prompt)
 
     return {
         **outcome.as_dict(),
