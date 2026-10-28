@@ -12,9 +12,11 @@
   "default": {
     "provider": "openai",
     "model": "${env:GEMINI35FLASHLITE_DEFAULT:-ts/gemini-3.5-flash-lite}",
+    // Điểm cuối của mọi chuỗi xoay: giữ trong Google.  Đã đo 28/10/2026: đi qua gateway bên
+    // thứ ba (Vilao) có lượt không kết nối được, và đã có lúc chậm hơn Google 10–50 lần.
     "fallback": {
-      "provider": "openai",
-      "model": "${env:GEMINI35FLASHLITE_DEFAULT:-ts/gemini-3.5-flash-lite}"
+      "provider": "google",
+      "model": "gemini-3.5-flash"
     }
   },
 
@@ -29,8 +31,8 @@
     },
     "gemini-flash": {
       "provider": "google",
-      "model": "gemini-2.5-flash",
-      "fallback": { "provider": "google", "model": "gemini-2.0-flash" }
+      "model": "gemini-3.5-flash",
+      "fallback": { "provider": "google", "model": "gemini-3.1-flash-lite" }
     },
     "openai-gpt4o": {
       "provider": "openai",

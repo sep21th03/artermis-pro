@@ -27,6 +27,19 @@
   thật qua console (task read-only): **xong trong ~18 giây**, 0 lần `500`. Upstream chết thật
   (`127.0.0.1:9`) ⇒ **502 trong 0,0s** kèm `upstream_unreachable` và tên host. 3 test mới.
 
+- **Chuỗi xoay model trỏ vào model đã chết (404).** Kiểm bằng chính key này qua endpoint Google
+  (28/10/2026): `gemini-2.5-flash` và `gemini-2.5-flash-lite` trả **404 "no longer available to
+  new users"**, trong khi `gemini-3.5-flash-lite` (1,3s), `gemini-3.1-flash-lite` (3,6s),
+  `gemini-3.5-flash` (1,9s) và `gemini-robotics-er-2-preview` (1,1s) đều chạy được.  Vì 404 bị
+  `classify_failure` xếp vào `BAD_REQUEST` (**không** xoay được), một model chết nằm trong chuỗi
+  là **chốt chặn giả**: đúng lúc model chính cạn quota, lượt xoay sẽ gặp 404 và dừng hẳn.
+
+  - `.env`: bốn chuỗi `ARTEMIS_LLM_CHAIN_*` chỉ còn model đã kiểm (`gemini-3.1-flash-lite`,
+    `gemini-3.5-flash`), kèm bảng kết quả kiểm để lần sau không phải đo lại.
+  - `config/artemis.jsonc`: `default.fallback` và preset `gemini-flash` chuyển hết về Google
+    (bỏ `ts/…` và `gemini-2.0-flash`) ⇒ **mọi chuỗi của cả 4 vai trò giờ kết thúc trong Google**,
+    không còn mắt xích nào ra gateway bên thứ ba.
+
 ### Added
 
 - **Action Guard cho Flash + kiểm soát thao tác lặp (P0), và trace đọc lại được (P1).**
