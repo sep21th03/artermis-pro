@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Proxy LLM của console đi thẳng Google, bỏ hẳn Vilao.** Đo trên máy thật 28/10/2026: lượt
+  chạy 13:47 đứng ở "Lập kế hoạch" rồi bị console giết sau **120s không có log mới**
+  (`⛔ Dừng task: treo 120s`). Nguyên nhân **không phải model** và cũng không phải Gemini: agent
+  gọi proxy console (`127.0.0.1:8787/llm/v1/chat/completions`), proxy chuyển tiếp tới
+  `ARTEMIS_UPSTREAM_BASE_URL=https://api.vilao.ai/v1`, và upstream này **từ chối kết nối**
+  (`httpx.ConnectError: All connection attempts failed`, 18 lần `500 Internal Server Error`).
+  SDK OpenAI retry trong im lặng (mỗi lần ~20s connect), console không thấy log mới nên giết task.
+
+  - `.env`: `ARTEMIS_UPSTREAM_BASE_URL` → `https://generativelanguage.googleapis.com/v1beta/openai`
+    (API tương thích OpenAI của Google). Đây cũng là đường đã đo **nhanh hơn** gateway từ 27/10:
+    Google 0,9–1,6s so với gateway 4,3–56,9s (có lượt kèm ảnh >200s).
+  - `apps/test_console/server.py`: khoá xác thực chọn **theo upstream** (`upstream_key()`): đi
+    Google thì dùng `GEMINI_API_KEY`, gateway thì `OPENAI_API_KEY` — gửi sai khoá thì Google trả
+    401 và người đọc log tưởng lỗi cấu hình của mình. Tên model của gateway (`ts/…`) được bỏ tiền
+    tố khi đi Google (`normalize_upstream_model`) nên **phía agent không phải đổi gì**.
+  - `apps/test_console/server.py`: **fail-fast** thay vì treo — `httpx.Timeout(120s, connect=5s)`,
+    và `ConnectError`/`Timeout` trả **502/504 kèm tên upstream** thay vì 500 rồi để SDK retry mù.
+
+  Kiểm chứng: gọi proxy đúng kiểu harness gửi (`model: ts/gemini-3.5-flash-lite`) ⇒ **200 trong
+  1,2s**, response có `model=gemini-3.5-flash-lite` + `thought_signature` của Google. Lượt chạy
+  thật qua console (task read-only): **xong trong ~18 giây**, 0 lần `500`. Upstream chết thật
+  (`127.0.0.1:9`) ⇒ **502 trong 0,0s** kèm `upstream_unreachable` và tên host. 3 test mới.
+
 ### Added
 
 - **Action Guard cho Flash + kiểm soát thao tác lặp (P0), và trace đọc lại được (P1).**

@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import unicodedata
 import uuid
 
@@ -2274,6 +2275,47 @@ def upstream_base() -> str:
         return configured.rstrip("/")
     return os.getenv("ARTEMIS_DEFAULT_UPSTREAM", "https://api.openai.com/v1")
 
+#: Host của endpoint **tương thích OpenAI** do Google cung cấp.  Đi thẳng vào đây thay vì qua
+#: gateway bên thứ ba: đo trên máy thật 27/10, Google 0,9–1,6s còn gateway 4,3–56,9s (có lượt
+#: kèm ảnh >200s); 28/10 gateway đứt hẳn (``httpx.ConnectError`` → proxy trả 500 → SDK OpenAI
+#: retry im lặng → console giết task vì "treo 120s không có log mới").
+GOOGLE_OPENAI_HOST = "generativelanguage.googleapis.com"
+
+
+def upstream_is_google() -> bool:
+    """True khi upstream là endpoint Google (cần khoá Gemini và tên model không có ``ts/``)."""
+    return GOOGLE_OPENAI_HOST in upstream_base()
+
+
+def upstream_key() -> str:
+    """Khoá xác thực với upstream, chọn theo **upstream** chứ không theo tên biến.
+
+    Google chỉ nhận khoá Gemini, gateway OpenAI-compatible nhận ``OPENAI_API_KEY``.  Gửi sai
+    khoá thì upstream trả 401 — SDK không retry, nhưng người đọc log dễ tưởng lỗi cấu hình.
+    """
+    env = read_env_file(ARTEMIS_ENV)
+    if upstream_is_google():
+        return (env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY") or "").strip()
+    return (env.get("OPENAI_API_KEY") or "").strip()
+
+
+def upstream_host() -> str:
+    """Host của upstream — để thông báo lỗi nói đúng chỗ không tới được, không lộ khoá."""
+    return urllib.parse.urlsplit(upstream_base()).netloc or upstream_base()
+
+
+def normalize_upstream_model(model: str) -> str:
+    """Tên model đúng như upstream cần: bỏ tiền tố định tuyến ``ts/`` khi đi Google.
+
+    Tên ``ts/gemini-3.5-flash-lite`` là của **gateway** (tiền tố dùng để định tuyến); endpoint
+    Google không biết nó nên gửi nguyên sẽ 404.  Bỏ ở đây để phía agent không phải đổi gì.
+    """
+    if upstream_is_google() and model.startswith("ts/"):
+        return model[len("ts/") :]
+    return model
+
+
+
 
 LOCAL_MODEL = os.getenv("ARTEMIS_LOCAL_MODEL", "artemis-local")
 
@@ -2326,11 +2368,12 @@ async def llm_proxy(path: str, request: Request) -> Response:
             status_code=401,
         )
     raw = await request.body()
-    env_key = read_env_file(ARTEMIS_ENV).get("OPENAI_API_KEY", "")
+    env_key = upstream_key()
     key = env_key or "ollama-local"
     if not local and not env_key:
+        missing = "GEMINI_API_KEY" if upstream_is_google() else "OPENAI_API_KEY"
         return JSONResponse(
-            {"error": {"message": "Thiếu OPENAI_API_KEY trong Artemis .env",
+            {"error": {"message": f"Thiếu {missing} trong Artemis .env",
                        "type": "configuration_error", "code": "missing_key"}},
             status_code=400,
         )
@@ -2371,6 +2414,8 @@ async def llm_proxy(path: str, request: Request) -> Response:
                 status_code=429,
             )
         body = budget.clamp_output(body)
+        if isinstance(body.get("model"), str):
+            body["model"] = normalize_upstream_model(body["model"])
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
 
     headers = {
@@ -2378,11 +2423,43 @@ async def llm_proxy(path: str, request: Request) -> Response:
         "Content-Type": request.headers.get("content-type", "application/json"),
         "Accept": request.headers.get("accept", "application/json"),
     }
-    client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=20.0), trust_env=False)
+    client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0), trust_env=False)
     target = f"{upstream_base()}/{path}"
-    upstream = await client.send(
-        client.build_request(request.method, target, content=raw, headers=headers), stream=True
-    )
+    try:
+        upstream = await client.send(
+            client.build_request(request.method, target, content=raw, headers=headers), stream=True
+        )
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        # Upstream chết thì phải NÓI NGAY. Trước đây lỗi này thành 500, SDK OpenAI tự retry
+        # hàng chục lần trong im lặng, console thấy "treo 120s không có log mới" và giết task
+        # — người dùng chỉ thấy "lập kế hoạch mãi không xong" mà không biết vì sao.
+        await client.aclose()
+        return JSONResponse(
+            {
+                "error": {
+                    "message": (
+                        f"Không kết nối được upstream LLM tại {upstream_host()} "
+                        f"({type(exc).__name__}). Kiểm tra mạng, hoặc đổi "
+                        "ARTEMIS_UPSTREAM_BASE_URL trong .env."
+                    ),
+                    "type": "upstream_unreachable",
+                    "code": "upstream_unreachable",
+                }
+            },
+            status_code=502,
+        )
+    except httpx.TimeoutException as exc:
+        await client.aclose()
+        return JSONResponse(
+            {
+                "error": {
+                    "message": f"Upstream LLM tại {upstream_host()} quá hạn ({type(exc).__name__}).",
+                    "type": "upstream_timeout",
+                    "code": "upstream_timeout",
+                }
+            },
+            status_code=504,
+        )
     content_type = upstream.headers.get("content-type", "application/json")
 
     if body and body.get("stream") and "text/event-stream" in content_type:
