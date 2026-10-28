@@ -768,6 +768,48 @@ def test_a_choice_that_violates_its_own_precondition_is_replaced():
     assert "auth.login_password" in outcome.enhanced_prompt
 
 
+def test_the_validator_allows_ids_that_are_in_the_kb_but_not_retrieved():
+    """Guard nhắc workflow **có thật trong KB** dù nó không được truy hồi — phải cho qua.
+
+    ``auth.logout`` và ``auth.current_account`` không nằm trong tập truy hồi của câu tester
+    (chúng là *cách đạt* và *cách quan sát*, không phải việc cần làm), nên nếu chốt "nhắc
+    workflow không có trong KB" không được mở cho chúng thì prompt đúng bị thay bằng bản dự
+    phòng — guard biến mất đúng lúc cần nhất.
+    """
+    from artemis.knowledge.intent import ROLE_PRIMARY, RoleAssignment, TaskKnowledge, TaskSpec
+    from artemis.knowledge.prepare import failed_checks, validate_composed
+
+    composed = (
+        "đăng nhập tài khoản 0999\n\n"
+        "CÁC BƯỚC THỰC HIỆN:\n"
+        "«đăng nhập tài khoản 0999» — theo KB auth.switch_account\n"
+        "  1. tap: Mũi tên caret-down cuối ô số điện thoại\n"
+        "- Cách quan sát tài khoản đang đăng nhập: theo KB auth.current_account.\n"
+        "- Nếu phải đổi: làm theo KB auth.logout rồi auth.login_password.\n"
+    )
+    entry = TaskKnowledge(
+        task=TaskSpec(action="đăng nhập tài khoản", target="0999"),
+        index=0,
+        primary=[
+            WorkflowHit(workflow=SWITCH_ACCOUNT, score=0.9, channels={"keyword": 1}, trusted=True)
+        ],
+        roles=[RoleAssignment(workflow_id=SWITCH_ACCOUNT.id, role=ROLE_PRIMARY, reason="test")],
+    )
+
+    allowed = validate_composed(
+        composed,
+        composed,
+        [entry],
+        max_chars=4000,
+        known_extra={"auth.current_account", "auth.logout", "auth.login_password"},
+    )
+    assert failed_checks(allowed) == []
+
+    # Răng của test: thiếu ``known_extra`` thì đúng chốt đó phải bắt được.
+    blocked = validate_composed(composed, composed, [entry], max_chars=4000)
+    assert "workflow_ids_grounded" in [check.name for check in failed_checks(blocked)]
+
+
 def test_the_lexical_path_is_guarded_too():
     """Lượt chọn cách làm hỏng ⇒ prepare rơi về phân loại theo từ.  Chốt phải áp *cả* đường này,
     vì đây chính là đường đã tạo ra prompt sai trên máy thật.

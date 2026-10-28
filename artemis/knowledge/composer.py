@@ -54,7 +54,7 @@ from artemis.knowledge.intent import (
     workflow_warnings,
 )
 from artemis.knowledge.models import Workflow, WorkflowHit
-from artemis.knowledge.text import content_tokens, normalize
+from artemis.knowledge.text import content_tokens, identity_tokens, normalize
 
 SECTION_TASK = "NHIỆM VỤ:"
 SECTION_STATE = "KIỂM TRA TRẠNG THÁI (xác minh trên UI, KHÔNG mặc định là đúng):"
@@ -106,6 +106,15 @@ _WARNING_STRONG = ("cẩn thận", "đừng", "tuyệt đối", "tránh", "lỗi
 #: Từ phủ định — dùng để nhận ra hai câu *xung đột* thật (một khẳng định, một phủ định).
 _NEGATIONS = ("không", "đừng", "chớ", "tránh")
 
+#: Từ chỉ *một mục đang dùng* — dấu hiệu điều kiện trước nói về **trạng thái hiện tại**
+#: ("Đã chọn đúng nhà") chứ không phải một đối tượng để thao tác ("Đã xác định đúng nhà cần
+#: xóa").  Lớp ngôn ngữ, không phải từ khoá của ứng dụng nào.
+_SELECTION_MARKERS = ("chọn", "đang ở", "đang dùng", "đang chọn", "đang hoạt động", "hiện tại")
+
+#: Dấu hiệu điều kiện trước nói về **màn hình/trạng thái hiển thị** — nhóm duy nhất mà câu
+#: "workflow khác đạt được điều kiện này" là đúng; xem :func:`render_condition_achievers`.
+_SCREEN_MARKERS = ("màn hình", "thanh điều hướng", "đã mở", "đang ở")
+
 #: Nói rõ khi hai nguồn KB chưa thống nhất, thay vì tự chọn một cái làm sự thật.
 CONFLICT_NOTE = (
     "Hai nguồn KB chưa thống nhất về điểm này — quan sát UI hiện tại để quyết định, "
@@ -136,6 +145,22 @@ def _has_marker_exact(text: str, markers: Sequence[str]) -> bool:
     """
     lowered = text.casefold()
     return any(marker.casefold() in lowered for marker in markers)
+
+
+def _mentions(text: object, phrase: str) -> bool:
+    """``phrase`` có mặt trong ``text`` xét theo **token**, không phải theo chuỗi con.
+
+    So chuỗi con khớp sai trong tiếng Việt không dấu (``"chon"`` nằm trong ``"chong"``), và
+    ``content_tokens`` đã bỏ từ dừng nên ``"đang ở"`` chỉ còn ``o`` — đúng thứ cần so.
+    """
+    tokens = set(content_tokens(text))
+    return all(part in tokens for part in content_tokens(phrase))
+
+
+def _mentions_any(text: object, phrases: Sequence[str]) -> bool:
+    """``text`` có nhắc tới **một trong** các cụm ``phrases`` hay không."""
+    return any(_mentions(text, phrase) for phrase in phrases)
+
 
 
 def _is_warning(text: str) -> bool:
@@ -198,13 +223,22 @@ def _concept_tokens(text: object) -> set[str]:
     return {_SYNONYM_INDEX.get(token, token) for token in tokens if token}
 
 
-def _similar(left: str, right: str, threshold: float = 0.8) -> bool:
-    """Hai câu nói cùng một điều (độ phủ token hai chiều, không phụ thuộc thứ tự)."""
+def _overlap_ratio(left: str, right: str) -> float:
+    """Tỉ lệ token khái niệm chung trên câu **ngắn hơn** (0 khi một câu rỗng).
+
+    Tách ra thành một hàm vì có hai chỗ cần **cùng công thức**: nhận ra hai câu nói cùng một
+    điều, và tìm workflow *đạt được* một điều kiện trước. Để hai chỗ tự viết lại công thức là
+    để chúng lệch nhau lúc nào không biết.
+    """
     left_tokens, right_tokens = _concept_tokens(left), _concept_tokens(right)
     if not left_tokens or not right_tokens:
-        return False
-    overlap = len(left_tokens & right_tokens)
-    return overlap / min(len(left_tokens), len(right_tokens)) >= threshold
+        return 0.0
+    return len(left_tokens & right_tokens) / min(len(left_tokens), len(right_tokens))
+
+
+def _similar(left: str, right: str, threshold: float = 0.8) -> bool:
+    """Hai câu nói cùng một điều (độ phủ token hai chiều, không phụ thuộc thứ tự)."""
+    return _overlap_ratio(left, right) >= threshold
 
 
 def _is_conditional(text: str) -> bool:
@@ -443,6 +477,265 @@ def render_state(entries: Sequence[TaskKnowledge]) -> list[str]:
     return dedupe_sentences(lines)
 
 
+@dataclass(frozen=True)
+class StateDimension:
+    """Một *trạng thái có giá trị* của ứng dụng, KB khai trong ``metadata.state_dimension``.
+
+    **Vì sao khai ở KB, không phải một bảng trong Python.**  KB đã là nguồn sự thật của luồng
+    thao tác; thêm một danh sách từ khoá trong code là chỗ thứ hai phải sửa mỗi khi có ứng
+    dụng mới — đúng bài học của ``REQUIRED_INPUT_MARKERS`` đã bị xoá.  Khai trên chính workflow
+    **quan sát** được trạng thái đó nên không có bảng nào phải đồng bộ với KB.
+
+    ``label`` là câu người dùng nói để chỉ trạng thái ("tài khoản đang đăng nhập"), còn
+    ``value_hint`` là từ dẫn ra **giá trị** của nó ("tài khoản", "nhà") — dùng để biết một giá
+    trị tester nêu thuộc trạng thái nào.
+
+    ``set_workflows`` là **nhiều** workflow vì một trạng thái có thể có nhiều đường đặt giá trị
+    và đường nào dùng được là do dữ liệu tester cung cấp quyết định: đổi tài khoản đang đăng nhập
+    thì có mật khẩu ⇒ ``auth.login_password``, không có mật khẩu mà tài khoản đã lưu trên máy ⇒
+    ``auth.switch_account``.  Chốt cứng một đường là dạy agent đăng nhập bằng mật khẩu nó không có.
+    """
+
+    id: str
+    label: str
+    value_hint: str = ""
+    observe: str = ""
+    set_workflows: tuple[str, ...] = ()
+    clear_workflow: str = ""
+
+
+def state_dimensions(workflows: Iterable[Workflow]) -> list[StateDimension]:
+    """Đọc khai báo trạng thái từ ``metadata.state_dimension`` của các workflow của một app.
+
+    ``observe`` luôn là chính workflow đang khai (nó là workflow *đọc* giá trị); ``set_workflows``
+    và ``clear_workflow`` do KB trỏ tới.  Workflow được trỏ tới mà **không có trong KB** thì bỏ
+    trống, không in ra: prompt không được nhắc một id không tồn tại.
+    """
+    workflows = list(workflows)
+    known = {workflow.id for workflow in workflows}
+    out: list[StateDimension] = []
+    for workflow in workflows:
+        spec = (workflow.metadata or {}).get("state_dimension")
+        if not isinstance(spec, dict):
+            continue
+        dimension_id = one_line(spec.get("id"))
+        label = one_line(spec.get("label"))
+        if not dimension_id or not label:
+            continue
+        setters = spec.get("set_workflows") or spec.get("set_workflow") or ()
+        if isinstance(setters, str):
+            setters = [setters]
+        clear = one_line(spec.get("clear_workflow"))
+        out.append(
+            StateDimension(
+                id=dimension_id,
+                label=label,
+                value_hint=one_line(spec.get("value_hint")),
+                observe=workflow.id,
+                set_workflows=tuple(
+                    item
+                    for item in (one_line(value) for value in setters)
+                    if item and item in known
+                ),
+                clear_workflow=clear if clear in known else "",
+            )
+        )
+    return out
+
+
+def _dimension_value(entry: TaskKnowledge, dimension: StateDimension, goal_value: str) -> str:
+    """Giá trị mà việc này (hoặc mục tiêu cuối) nêu cho trạng thái ``dimension``.
+
+    **Giá trị là định danh, không phải cả mệnh đề.**  Đo trên lần chạy thật: bước phân tích
+    mục tiêu trả ``target`` = ``"0972842548 mật khẩu (Hoa21092003)"``, nên lấy nguyên ``target``
+    làm giá trị sẽ sinh dòng "tài khoản đang đăng nhập LÀ «0972842548 mật khẩu (Hoa21092003)»"
+    — vừa sai (không tài khoản nào tên như vậy) vừa kéo mật khẩu vào phép so sánh.  Ở đây lấy
+    **định danh** trong câu tester (``identity_tokens``) trước, và chỉ nhận cả ``target`` khi nó
+    ngắn — tức đúng là một giá trị ("0999", "nhà Dled").
+
+    Không suy diễn: không có giá trị dùng được ⇒ chuỗi rỗng, và guard không in (thiếu một lời
+    khuyên còn hơn một phép so sánh sai).
+    """
+    hint = dimension.value_hint or dimension.label
+    target = one_line(entry.task.target)
+    if target and _mentions(f"{entry.task.action} {target}", hint):
+        identifiers = identity_tokens(target)
+        if identifiers:
+            return identifiers[0]
+        if len(_concept_tokens(target)) <= 3:
+            return target
+        return ""
+    # Việc này không nêu giá trị, nhưng mục tiêu cuối có thể nêu (điều kiện trước "Đã chọn
+    # đúng nhà" của `scene.create_press` lấy giá trị từ "nhà Dled" ở mục tiêu cuối).
+    goal = one_line(goal_value)
+    if goal and _mentions(goal, hint):
+        identifiers = identity_tokens(goal)
+        return identifiers[0] if identifiers else goal
+    return ""
+
+
+def _guard_lines(
+    entry: TaskKnowledge,
+    dimension: StateDimension,
+    trigger: str,
+    value: str,
+) -> list[str]:
+    """Các dòng của một guard trạng thái: khi nào điều kiện đã đúng, cách quan sát, cách đổi.
+
+    ``value`` là giá trị tester đã nêu (hàm gọi đã chắc chắn có): guard chỉ tồn tại để **so**
+    giá trị, nên không có giá trị thì không có guard.
+    """
+    head = _task_head(entry)
+    lines = [
+        f"- «{head}»: {trigger} chỉ được coi là ĐÃ ĐÚNG khi quan sát thấy {dimension.label} "
+        f"LÀ «{value}». Đang là giá trị KHÁC thì điều kiện CHƯA đúng: phải đạt «{value}» "
+        f"trước khi bỏ qua việc này."
+    ]
+    if dimension.observe:
+        lines.append(f"- Cách quan sát {dimension.label}: theo KB {dimension.observe}.")
+    setters = list(dimension.set_workflows)
+    if dimension.clear_workflow and setters:
+        lines.append(
+            f"- Nếu phải đổi {dimension.label}: làm theo KB {dimension.clear_workflow}, rồi "
+            f"một trong: {', '.join(setters)} — chọn cách mà câu tester đủ dữ liệu để làm."
+        )
+    elif dimension.clear_workflow:
+        lines.append(f"- Nếu phải đổi {dimension.label}: làm theo KB {dimension.clear_workflow}.")
+    elif setters:
+        lines.append(
+            f"- Nếu phải đặt {dimension.label}: làm theo KB " + ", ".join(setters) + "."
+        )
+    lines.append(
+        f"- Không quan sát được {dimension.label} ⇒ DỪNG, báo {CODE_NOT_VERIFIED}; KHÔNG được "
+        f"coi là đã đúng."
+    )
+    return lines
+
+
+def render_state_guards(
+    entries: Sequence[TaskKnowledge],
+    dimensions: Sequence[StateDimension] = (),
+    final_goal: dict | None = None,
+) -> list[str]:
+    """Mục 2 (phần 2): trạng thái *có giá trị* phải đạt — và cách quan sát nó.
+
+    **Vì sao cần.**  Điều kiện ``"chỉ khi chưa đăng nhập"`` là phép kiểm tra **nhị phân**:
+    đang đăng nhập bằng *bất kỳ* tài khoản nào cũng tính là "đã đúng", nên agent **bỏ qua việc
+    đăng nhập**.  Đo trên máy thật với câu *"đăng nhập tài khoản 0999 rồi vào màn ngữ cảnh chạy
+    khi ấn…"*: prompt không có dòng nào buộc phải quan sát *đang đăng nhập bằng tài khoản nào*,
+    và agent vào thẳng màn Ngữ cảnh.  Yêu cầu thật của tester là **so giá trị**, không phải so
+    trạng thái.
+
+    Hai đường sinh ra cùng một luật "chỉ đúng khi thấy ĐÚNG giá trị":
+
+    * việc có ``condition`` (tester/KB nói "chỉ khi…") và việc đó nói về trạng thái này;
+    * điều kiện trước của cách làm chính nói về một mục **đang dùng** ("Đã chọn đúng nhà").
+
+    Mỗi cặp (việc, trạng thái) chỉ in một lần, dù cả hai đường cùng đúng.
+    """
+    goal_value = one_line((final_goal or {}).get("expected_value"))
+    lines: list[str] = []
+    covered: set[tuple[int, str]] = set()
+    for entry in entries:
+        for dimension in dimensions:
+            key = (entry.index, dimension.id)
+            if key in covered:
+                continue
+            value = _dimension_value(entry, dimension, goal_value)
+            # Không có giá trị tester nêu thì **không** có gì để so: điều kiện "chỉ khi chưa
+            # đăng nhập" khi tester không nêu tài khoản nào đúng là phép kiểm nhị phân, và dòng
+            # "quan sát thấy đúng giá trị mà câu tester nêu" chỉ làm prompt khó hiểu.
+            if not value:
+                continue
+            trigger = ""
+            condition = one_line(entry.task.condition)
+            if condition and _mentions(
+                f"{entry.task.action} {entry.task.target}", dimension.label
+            ):
+                trigger = f"điều kiện «{condition}»"
+            if not trigger:
+                hit = _primary(entry)
+                preconditions = normalize_workflow(hit.workflow).preconditions if hit else ()
+                for text in preconditions:
+                    if _mentions_any(text, _SELECTION_MARKERS) and _mentions(
+                        text, dimension.label
+                    ):
+                        trigger = f"điều kiện trước «{text}»"
+                        break
+            if not trigger:
+                continue
+            covered.add(key)
+            lines.extend(_guard_lines(entry, dimension, trigger, value))
+    return lines
+
+
+def render_condition_achievers(
+    entries: Sequence[TaskKnowledge],
+    index: Sequence[Workflow] = (),
+    dimensions: Sequence[StateDimension] = (),
+    final_goal: dict | None = None,
+    *,
+    threshold: float = 0.8,
+) -> list[str]:
+    """Mục 2 (phần 3): điều kiện trước *đạt được* bằng workflow khác — nói rõ **cách đạt**.
+
+    Đo trên KB thật (61 workflow, 148 điều kiện trước):
+
+    * khớp với **mọi trường** của workflow khác (``success_criteria`` + ``expected_state``) ở
+      ngưỡng 0,8 cho 21 cặp nhưng chỉ **7 cặp đúng (33%)** — sai điển hình là *phản nghĩa*:
+      "Ứng dụng đang ở màn hình Đăng nhập" ↔ "Ứng dụng **rời** màn hình Đăng nhập" (0,86);
+    * khớp **chỉ với ``success_criteria``** ở cùng ngưỡng cho 9 cặp, **8 cặp đúng**.
+
+    Ngữ nghĩa của chênh lệch đó: ``success_criteria`` là trạng thái *sau khi* workflow xong nên
+    là điểm vào hợp lệ cho workflow khác; ``expected_state`` là trạng thái *giữa* một workflow
+    khác nên không thể là đích đến.  Vì vậy ở đây chỉ dùng ``success_criteria``, và chỉ cho
+    điều kiện nói về **màn hình/trạng thái hiển thị** — cặp sai duy nhất ở 0,8 là "Có quyền
+    chia sẻ các thiết bị" ← "màn hình chia sẻ … xuất hiện", mà mở màn hình không tạo ra quyền.
+
+    Hạ ngưỡng xuống 0,75 là hỏng ngay (đo được): nhiều cặp "Người dùng đã đăng nhập" bị ghép
+    với ``auth.logout`` vì tiêu chí của nó là "*Không còn* thanh điều hướng …" — ngược nghĩa.
+    Sau chốt màn hình, đo lại **trên KB thật bằng chính hàm này**: 6 lời khuyên, cả 6 đều đúng
+    (``auth.switch_account`` ← ``auth.logout``; bốn ``navigation.*`` ← ``auth.login_password``;
+    ``room.toggle_all_devices`` ← ``navigation.open_rooms``).  Hai cặp đúng bị chốt màn hình bỏ
+    qua (``scene.run_press`` ← ``scene.create_press``, ``timer.edit_device_timer`` ←
+    ``timer.create_device_timer``) vì điều kiện của chúng nói về *dữ liệu có sẵn*, không phải
+    màn hình — đổi lại là không còn lời khuyên sai nào.
+
+    **Chốt "tester đã nêu giá trị".**  Đạt một điều kiện trước có thể phải **phá** trạng thái
+    hiện tại (đăng xuất để về màn hình Đăng nhập).  Phá trạng thái mà tester không yêu cầu thì
+    tệ hơn hẳn việc thiếu một lời khuyên, nên dòng này chỉ in khi việc đó nêu **giá trị cụ thể**
+    cho một trạng thái (tài khoản, nhà).  Hệ quả đã biết: cặp *cộng thêm* (mở Menu cần "đã đăng
+    nhập" ← ``auth.login_password``) không được in khi câu tester không nêu tài khoản nào — muốn
+    bật thêm trường hợp thì khai thêm ``state_dimension`` trong KB, không sửa code.
+    """
+    goal_value = one_line((final_goal or {}).get("expected_value"))
+    lines: list[str] = []
+    for entry in entries:
+        hit = _primary(entry)
+        if hit is None:
+            continue
+        if not any(_dimension_value(entry, item, goal_value) for item in dimensions):
+            continue
+        for precondition in normalize_workflow(hit.workflow).preconditions:
+            if not _mentions_any(precondition, _SCREEN_MARKERS):
+                continue
+            best: tuple[float, str] | None = None
+            for candidate in index:
+                if candidate.id == hit.workflow.id:
+                    continue
+                for criterion in candidate.success_criteria:
+                    score = _overlap_ratio(precondition, criterion)
+                    if score >= threshold and (best is None or score > best[0]):
+                        best = (score, candidate.id)
+            if best is None:
+                continue
+            lines.append(
+                f"- Nếu «{precondition}» chưa đúng: làm theo KB {best[1]} để đạt "
+                f"«{precondition}» trước khi làm «{_task_head(entry)}»."
+            )
+    return lines
+
+
 def render_steps(entries: Sequence[TaskKnowledge]) -> list[str]:
     """Mục 3: điều hướng tới màn hình trước, rồi các bước của workflow chính, theo thứ tự.
 
@@ -629,15 +922,28 @@ def compose_prompt(
     final_goal: dict,
     *,
     max_chars: int,
+    index: Sequence[Workflow] = (),
+    dimensions: Sequence[StateDimension] = (),
 ) -> str:
     """Prompt cuối cùng: prompt gốc nguyên văn + các mục có nội dung, đúng thứ tự.
 
     Mục nào không có nội dung thì bỏ — việc đơn giản không cần đủ năm tiêu đề.  Mục
     ``CÁC BƯỚC THỰC HIỆN`` không bao giờ bị bỏ (chỉ cắt bớt) vì nó là phần nói *cách làm*.
+
+    ``index`` (toàn bộ workflow của app) và ``dimensions`` (các trạng thái có giá trị mà KB
+    khai) là dữ liệu KB **phụ trợ**: thiếu chúng thì prompt vẫn dựng được, chỉ không nói được
+    *cách đạt* một điều kiện trước và *cách quan sát* một trạng thái.
     """
+    state_lines = dedupe_sentences(
+        [
+            *render_state(entries),
+            *render_state_guards(entries, dimensions, final_goal),
+            *render_condition_achievers(entries, index, dimensions, final_goal),
+        ]
+    )
     blocks: list[tuple[str, list[str]]] = [
         (SECTION_TASK, render_tasks(entries)),
-        (SECTION_STATE, render_state(entries)),
+        (SECTION_STATE, state_lines),
         (SECTION_STEPS, render_steps(entries)),
         (SECTION_STOP, render_stop_conditions(entries)),
         (SECTION_NOTES, render_notes(entries)),

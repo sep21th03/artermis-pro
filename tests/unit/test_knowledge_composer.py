@@ -38,9 +38,13 @@ from artemis.knowledge.composer import (
     SECTION_STEPS,
     SECTION_TASK,
     SECTION_VERIFY,
+    StateDimension,
     compose_prompt,
     dedupe_sentences,
+    render_condition_achievers,
+    render_state_guards,
     render_steps,
+    state_dimensions,
 )
 from artemis.knowledge.intent import (
     ROLE_PRIMARY,
@@ -63,6 +67,7 @@ def workflow(
     success_criteria=(),
     warnings=(),
     steps=(),
+    metadata=None,
 ) -> Workflow:
     return Workflow(
         id=workflow_id,
@@ -73,7 +78,7 @@ def workflow(
         preconditions=list(preconditions),
         success_criteria=list(success_criteria),
         steps=[{"action": "tap", "target": target} for target in steps],
-        metadata={"warnings": list(warnings)} if warnings else {},
+        metadata=metadata if metadata is not None else ({"warnings": list(warnings)} if warnings else {}),
         revision_no=1,
         updated_at="2026-10-27T10:00:00",
     )
@@ -109,11 +114,34 @@ def entry(
     )
 
 
-def compose(entries, goal=None, *, max_chars: int = 6000) -> str:
+def compose(entries, goal=None, *, max_chars: int = 6000, index=(), dimensions=()) -> str:
     return compose_prompt(
-        "yêu cầu của tester", entries, goal or {"type": "kết quả cuối", "expected_value": "X"},
+        "yêu cầu của tester",
+        entries,
+        goal or {"type": "kết quả cuối", "expected_value": "X"},
         max_chars=max_chars,
+        index=list(index),
+        dimensions=list(dimensions),
     )
+
+
+#: Trạng thái "tài khoản đang đăng nhập" như KB khai trong ``metadata.state_dimension``.
+ACCOUNT_DIMENSION = StateDimension(
+    id="account",
+    label="tài khoản đang đăng nhập",
+    value_hint="tài khoản",
+    observe="auth.current_account",
+    set_workflows=("auth.login_password", "auth.switch_account"),
+    clear_workflow="auth.logout",
+)
+
+HOUSE_DIMENSION = StateDimension(
+    id="house",
+    label="nhà đang chọn",
+    value_hint="nhà",
+    observe="home.current_house",
+    set_workflows=("home.switch_house",),
+)
 
 
 # ── 1. Thông tin lặp chỉ hiện một lần ─────────────────────────────────────
@@ -698,3 +726,190 @@ def test_navigation_knowledge_is_rendered_before_the_main_steps():
     assert "navigation.open_menu" in steps[1]
     assert steps[1].strip().startswith("1.")
     assert "Mục 'Đăng xuất'" in steps[-1]
+
+
+
+# ── Guard trạng thái có giá trị ────────────────────────────────────────────
+def test_the_condition_is_bound_to_the_value_the_tester_named():
+    """Điều kiện "chỉ khi chưa đăng nhập" phải thành "… LÀ tài khoản 0999".
+
+    Đo trên máy thật: prompt chỉ ghi ``"đăng nhập tài khoản 0999 — chỉ khi chưa đăng nhập"``,
+    nên agent đang đăng nhập bằng tài khoản **khác** vẫn coi điều kiện đã đúng và **bỏ qua việc
+    đăng nhập** — vào thẳng màn Ngữ cảnh.
+    """
+    login = workflow(
+        "auth.login_password",
+        "Đăng nhập bằng tài khoản và mật khẩu",
+        preconditions=["Ứng dụng đang ở màn hình Đăng nhập"],
+        steps=["Ô Số điện thoại hoặc Email", "Nút Đăng nhập"],
+    )
+
+    lines = render_state_guards(
+        [
+            entry(
+                "đăng nhập tài khoản",
+                primary=login,
+                target="0999",
+                condition="chỉ khi chưa đăng nhập",
+            )
+        ],
+        [ACCOUNT_DIMENSION],
+        {"type": "nhà hiện tại", "expected_value": "nhà Dled"},
+    )
+
+    text = " ".join(lines)
+    assert "LÀ «0999»" in text
+    assert "tài khoản đang đăng nhập" in text
+    assert "theo KB auth.current_account" in text
+    # Hai đường đổi tài khoản đều phải có: có mật khẩu thì đăng nhập bằng mật khẩu, không có
+    # mật khẩu mà tài khoản đã lưu trên máy thì dùng danh sách tài khoản đã lưu.
+    assert "auth.logout" in text
+    assert "auth.login_password" in text
+    assert "auth.switch_account" in text
+    assert "NOT_VERIFIED" in text
+
+
+def test_the_value_is_the_identifier_not_the_whole_clause():
+    """``target`` thật có thể là "0972842548 mật khẩu (Hoa21092003)" — giá trị phải là số điện thoại.
+
+    Đo trên lần chạy thật: lấy nguyên ``target`` sinh dòng "tài khoản đang đăng nhập LÀ
+    «0972842548 mật khẩu (Hoa21092003)»" — sai, và kéo mật khẩu vào phép so sánh.
+    """
+    login = workflow("auth.login_password", "Đăng nhập", steps=["Nút Đăng nhập"])
+
+    lines = render_state_guards(
+        [
+            entry(
+                "đăng nhập tài khoản",
+                primary=login,
+                target="0972842548 mật khẩu (Hoa21092003)",
+                condition="chỉ khi chưa đăng nhập bằng tài khoản 0972842548",
+            )
+        ],
+        [ACCOUNT_DIMENSION],
+        {},
+    )
+
+    text = " ".join(lines)
+    assert "LÀ «0972842548»" in text
+    # Và giá trị so sánh không được là cả mệnh đề (kèm mật khẩu).
+    assert "LÀ «0972842548 mật khẩu" not in text
+
+
+def test_the_same_guard_does_not_fire_without_a_value():
+    """Tester không nêu tài khoản nào thì không có gì để so — không in guard.
+
+    Ca thật: *"mở app và đăng nhập rồi chuyển sang nhà dled"*.  Điều kiện khi đó đúng là phép
+    kiểm nhị phân, và một dòng "quan sát thấy đúng giá trị mà câu tester nêu" là vô nghĩa.
+    """
+    login = workflow("auth.login_password", "Đăng nhập", steps=["Nút Đăng nhập"])
+
+    lines = render_state_guards(
+        [entry("đăng nhập", primary=login, condition="chỉ khi chưa đăng nhập")],
+        [ACCOUNT_DIMENSION],
+        {},
+    )
+
+    assert lines == []
+
+
+def test_a_precondition_about_the_chosen_house_names_the_value_to_reach():
+    """Điều kiện trước "Đã chọn đúng nhà" phải kèm giá trị tester nêu, không chỉ "đúng nhà"."""
+    scene = workflow(
+        "scene.create_press",
+        "Tạo ngữ cảnh chạy khi nhấn",
+        preconditions=["Đã chọn đúng nhà", "Có ít nhất một thiết bị làm hành động"],
+        steps=["Mục thêm hành động"],
+    )
+
+    lines = render_state_guards(
+        [entry("chạy khi ấn tạo ngữ cảnh", primary=scene)],
+        [HOUSE_DIMENSION],
+        {"type": "nhà hiện tại", "expected_value": "nhà Dled"},
+    )
+
+    text = " ".join(lines)
+    assert "LÀ «nhà Dled»" in text
+    assert "home.switch_house" in text
+
+
+def test_a_precondition_that_only_identifies_a_house_does_not_fire():
+    """`Đã xác định đúng nhà cần xóa` không phải "đang ở nhà đó" — không được đòi chuyển nhà."""
+    delete = workflow(
+        "home.delete_house",
+        "Xóa nhà",
+        preconditions=["Đã xác định đúng nhà cần xóa", "Tài khoản là chủ nhà"],
+        steps=["Nút xóa nhà"],
+    )
+
+    lines = render_state_guards(
+        [entry("xóa nhà", primary=delete, target="nhà Dled")],
+        [HOUSE_DIMENSION],
+        {"type": "nhà hiện tại", "expected_value": "nhà Dled"},
+    )
+
+    assert lines == []
+
+
+
+def test_a_screen_precondition_names_the_workflow_whose_result_is_that_screen():
+    """Điều kiện "Thanh điều hướng dưới cùng đang hiển thị" đạt được bằng **đăng nhập**.
+
+    Đo trên KB thật: bốn workflow ``navigation.*`` có điều kiện này, và ``auth.login_password``
+    khai ``success_criteria`` "Màn hình chính có thanh điều hướng dưới cùng xuất hiện" — khớp
+    0,86, nên agent có đường hợp lệ thay vì tự suy diễn.
+    """
+    home = workflow(
+        "navigation.open_home",
+        "Mở Trang chủ",
+        preconditions=["Người dùng đã đăng nhập", "Thanh điều hướng dưới cùng đang hiển thị"],
+        steps=["Tab Trang chủ"],
+    )
+    login = workflow(
+        "auth.login_password",
+        "Đăng nhập bằng tài khoản và mật khẩu",
+        success_criteria=["Màn hình chính có thanh điều hướng dưới cùng xuất hiện"],
+        steps=["Nút Đăng nhập"],
+    )
+
+    lines = render_condition_achievers(
+        [entry("vào trang chủ", primary=home, target="nhà Dled")],
+        [home, login],
+        [HOUSE_DIMENSION],
+        {},
+    )
+
+    text = " ".join(lines)
+    assert "auth.login_password" in text
+    assert "Thanh điều hướng dưới cùng đang hiển thị" in text
+
+
+def test_the_achiever_is_not_offered_when_no_value_was_named():
+    """Đạt điều kiện trước có thể phải **đăng xuất** — chỉ khuyên khi tester nêu tài khoản.
+
+    Ca thật *"mở app và đăng nhập rồi chuyển sang nhà dled"*: tester không nêu tài khoản nào,
+    nên khuyên đăng xuất để đăng nhập lại là phá phiên đăng nhập mà không ai yêu cầu.
+    """
+    login = workflow(
+        "auth.login_password",
+        "Đăng nhập bằng tài khoản và mật khẩu",
+        preconditions=["Ứng dụng đang ở màn hình Đăng nhập"],
+        steps=["Nút Đăng nhập"],
+    )
+    logout = workflow(
+        "auth.logout",
+        "Đăng xuất tài khoản",
+        success_criteria=[
+            "Màn hình đăng nhập hiện ra (ô nhập tài khoản/mật khẩu hoặc nút Đăng nhập)"
+        ],
+        steps=["Mục 'Đăng xuất'"],
+    )
+
+    lines = render_condition_achievers(
+        [entry("đăng nhập", primary=login)],
+        [login, logout],
+        [ACCOUNT_DIMENSION],
+        {},
+    )
+
+    assert lines == []

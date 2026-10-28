@@ -46,7 +46,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 import unicodedata
@@ -84,8 +84,10 @@ from artemis.knowledge.intent import (
 from artemis.knowledge.composer import (
     CODE_NOT_FOUND,
     CODE_NOT_VERIFIED,
+    StateDimension,
     compose_prompt,
     is_search_step,
+    state_dimensions,
 )
 from artemis.knowledge.models import RetrievalResult, Workflow, WorkflowHit
 from artemis.knowledge.prompt_builder import select_workflows
@@ -235,6 +237,46 @@ def _steps_check(
         not dropped,
         "" if not dropped else "Bỏ sót bước của workflow thực hiện: " + " | ".join(dropped[:3]),
     )
+
+
+#: TTL của chỉ mục KB theo app.  Mỗi lần chuẩn bị prompt không nên trả giá thêm một vòng KB
+#: nữa (đo được ~200 ms cho 61 workflow), mà dữ liệu này đổi rất chậm.
+_INDEX_TTL_S = 300.0
+
+
+def knowledge_index(
+    service: KnowledgeService, app_id: str
+) -> tuple[list[Workflow], list[StateDimension]]:
+    """Toàn bộ workflow của app + các trạng thái có giá trị mà KB khai.
+
+    Cần **toàn bộ** workflow chứ không chỉ những cái truy hồi được: điều kiện trước
+    "Ứng dụng đang ở màn hình Đăng nhập" của ``auth.login_password`` được *đạt* bằng
+    ``auth.logout``, mà ``auth.logout`` không nằm trong tập truy hồi của câu tester.  Không bao
+    giờ raise — chỉ mục là phụ trợ, KB hỏng thì trả rỗng và prompt vẫn dựng được.
+
+    Cache **gắn vào chính service** chứ không vào một dict toàn cục: console giữ một service
+    suốt vòng đời tiến trình, còn khoá theo ``app_id`` ở biến toàn cục thì hai service khác nhau
+    (hai KB khác nhau, hoặc hai test khác nhau) đọc nhầm chỉ mục của nhau.
+    """
+    now = time.monotonic()
+    cache: dict[str, tuple[float, list[Workflow], list[StateDimension]]] = getattr(
+        service, "_knowledge_index_cache", None
+    ) or {}
+    cached = cache.get(app_id)
+    if cached and now - cached[0] < _INDEX_TTL_S:
+        return cached[1], cached[2]
+    try:
+        workflows = list(service.list_workflows(app_id))
+    except Exception as exc:  # noqa: BLE001 - chỉ mục phụ trợ
+        logger.warning("Không lấy được chỉ mục KB của %s: %s", app_id, exc)
+        workflows = []
+    dimensions = state_dimensions(workflows)
+    cache[app_id] = (now, workflows, dimensions)
+    try:
+        service._knowledge_index_cache = cache  # type: ignore[attr-defined]
+    except AttributeError:  # service không cho gắn thuộc tính (duck-typed) — bỏ cache
+        pass
+    return workflows, dimensions
 
 
 def _mentions_id(text: str, ids: set[str]) -> list[str]:
@@ -494,6 +536,7 @@ def validate_composed(
     entries: Sequence[TaskKnowledge],
     *,
     max_chars: int,
+    known_extra: Iterable[str] = (),
 ) -> list[Check]:
     """Kiểm tra prompt do :mod:`artemis.knowledge.composer` ghép (đường tất định).
 
@@ -501,6 +544,11 @@ def validate_composed(
     bị LLM bỏ" — composer dựng theo cấu trúc.  Cái cần kiểm là những gì *không* được phép
     xảy ra dù là code: mất định danh của tester, lộ toạ độ, phình quá hạn, nhắc workflow
     không có trong KB, và **bịa nhãn UI** (nhãn được trích dẫn mà không có trong KB nào).
+
+    ``known_extra`` là id workflow **có thật trong KB** nhưng không nằm trong tập truy hồi của
+    câu tester (ví dụ ``auth.logout`` — workflow *đạt được* một điều kiện trước, hoặc
+    ``auth.current_account`` — workflow *quan sát* một trạng thái).  Không có nó thì đúng chốt
+    "nhắc workflow không có trong KB" sẽ chặn nhầm chính lời khuyên đúng.
     """
     checks: list[Check] = []
     original = (original_prompt or "").strip()
@@ -532,6 +580,7 @@ def validate_composed(
     known_ids = {
         hit.workflow.id for entry in entries for hit in [*entry.primary, *entry.supporting]
     }
+    known_ids |= {str(item) for item in known_extra}
     invented = _mentions_id(enhanced, known_ids)
     checks.append(
         Check(
@@ -1373,8 +1422,14 @@ def prepare_prompt(
     # nên agent gõ số vào ô nhập.  Viết lại văn bản là chỗ mất thông tin — sắp xếp, lọc trùng
     # và định dạng thì code làm chính xác hơn.
     mark = time.perf_counter()
+    index_workflows, dimensions = knowledge_index(service, resolved_app)
     enhanced = compose_prompt(
-        original, entries, plan.final_goal, max_chars=options.max_enhanced_chars
+        original,
+        entries,
+        plan.final_goal,
+        max_chars=options.max_enhanced_chars,
+        index=index_workflows,
+        dimensions=dimensions,
     )
     metrics["compose_ms"] = round((time.perf_counter() - mark) * 1000, 2)
     # Truy vết: prompt đã ghép + workflow nào được chọn, bị loại, còn thiếu.  Không có khoá,
@@ -1388,7 +1443,11 @@ def prepare_prompt(
     )
     logger.debug("Prompt ghép cho %r:\n%s", original[:60], enhanced)
     checks = validate_composed(
-        original, enhanced, entries, max_chars=options.max_enhanced_chars
+        original,
+        enhanced,
+        entries,
+        max_chars=options.max_enhanced_chars,
+        known_extra={workflow.id for workflow in index_workflows},
     )
     failures = failed_checks(checks)
     if failures:

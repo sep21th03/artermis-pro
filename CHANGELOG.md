@@ -4,6 +4,45 @@
 
 ### Fixed
 
+- **Prompt bỏ qua việc đăng nhập dù tester yêu cầu đăng nhập bằng một tài khoản cụ thể.**
+  Câu *"đăng nhập tài khoản 0999 rồi vào màn ngữ cảnh…"* sinh prompt có dòng
+  `1. đăng nhập tài khoản 0999 — chỉ khi chưa đăng nhập`, và agent **bỏ qua việc đăng nhập** —
+  vào thẳng màn Ngữ cảnh. Đo trên máy thật (SM-A066B): app đang đăng nhập **0972842548**, tức
+  một tài khoản KHÁC `0999`. Nguyên nhân không nằm ở agent: điều kiện `"chỉ khi chưa đăng nhập"`
+  là phép kiểm **nhị phân** (đang đăng nhập bằng tài khoản nào cũng tính là "đã đúng"), trong
+  khi yêu cầu thật là **so giá trị**. Prompt cũng không nói cách quan sát *đang đăng nhập bằng
+  tài khoản nào* — KB chưa có workflow nào đọc giá trị đó — và không nói *đạt* điều kiện trước
+  bằng cách nào (muốn về màn Đăng nhập thì phải đăng xuất).
+
+  Bốn lớp, tất cả bằng luật tất định (không thêm lượt gọi LLM nào):
+
+  - **Điều kiện gắn với giá trị** (`intent.ANALYSIS_SYSTEM` luật 6): khi câu tester nêu giá trị
+    thì `condition` phải ghi giá trị đó — *"chỉ khi chưa đăng nhập bằng tài khoản 0999"* thay vì
+    *"chỉ khi chưa đăng nhập"*; và condition không được chép mật khẩu hay phần khác của câu.
+  - **Guard trạng thái** (`composer.render_state_guards`): mục `KIỂM TRA TRẠNG THÁI` nay nói rõ
+    *"điều kiện chỉ được coi là ĐÃ ĐÚNG khi quan sát thấy tài khoản đang đăng nhập LÀ «0999»;
+    đang là giá trị KHÁC thì phải đạt «0999» trước khi bỏ qua việc này"*, kèm **cách quan sát**
+    và **cách đổi** (`auth.current_account` → `auth.logout` rồi `auth.login_password`), và
+    `NOT_VERIFIED` khi không quan sát được. Guard chỉ bắn khi tester **có nêu giá trị** — không
+    có giá trị thì không khuyên đăng xuất vô cớ (điều kiện khi đó đúng là nhị phân).
+  - **Điều kiện trước có cách đạt** (`composer.render_condition_achievers`): điều kiện nói về
+    màn hình được ghép với workflow có `success_criteria` **chính là** trạng thái đó. Đo trên KB
+    thật: khớp *mọi* trường cho 21 cặp nhưng chỉ **7 đúng (33%)** — sai điển hình là *phản
+    nghĩa* ("Ứng dụng đang ở màn hình Đăng nhập" ↔ "Ứng dụng **rời** màn hình Đăng nhập", 0,86);
+    khớp riêng `success_criteria` cho 9 cặp, **8 đúng**; sau chốt "chỉ điều kiện về màn hình",
+    hàm này sinh **6 lời khuyên và cả 6 đều đúng**. Hạ ngưỡng xuống 0,75 là hỏng ngay.
+  - **KB khai trạng thái có giá trị**: hai workflow mới đo trên máy thật —
+    `auth.current_account` (Menu → khối trên cùng: tên, **số điện thoại**, hạng thành viên) và
+    `home.current_house` (Trang chủ → góc trên trái: **tên nhà** + địa chỉ). Trạng thái khai
+    trong `metadata.state_dimension` của chính workflow *quan sát* được nó (`id`, `label`,
+    `value_hint`, `set_workflow`, `clear_workflow`), nên không có bảng nào phải đồng bộ: thêm
+    ứng dụng mới là thêm dữ liệu KB, không sửa code. KB: 61 → 63 workflow.
+
+  Kiểm chứng: 11 test mới; đã kiểm test **có răng** bằng cách tắt hai guard — **4 test fail**
+  đúng như mong đợi. Chạy console 3 lần liên tiếp với câu thật: cả 3 lần điều kiện đều gắn giá
+  trị, guard in đủ ba dòng (quan sát / đổi / `NOT_VERIFIED`), và bản ghép **không** rơi vào dự
+  phòng (`status=llm`). Suite: 3099+ passed, 4 lỗi có sẵn không liên quan.
+
 - **Prompt mang mật khẩu mà vẫn đi theo luồng "tài khoản đã lưu" (`auth.switch_account`).**
   Câu tester `đăng nhập tài khoản 0972842548 mật khẩu (Hoa21092003) chuyển nhà sang nhà Dled`
   có mật khẩu, nên cách làm đúng là `auth.login_password`; nhưng prompt sinh ra lại hướng dẫn
