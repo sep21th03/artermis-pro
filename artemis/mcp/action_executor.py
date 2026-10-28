@@ -77,6 +77,33 @@ AGENT_TOOL_NAMES: frozenset[str] = (
 #: Actions whose ``target`` is a single point: an element index or an [x, y] pair.
 _POINT_TARGET_ACTIONS: frozenset[str] = frozenset({"click", "long_press", "input_text"})
 
+#: Tên action của actuator → tên mà Action Guard của Pro dùng.  Flash gọi ``click`` còn guard
+#: (``agents/validator/precondition_xml.py``) khớp ``tap``; có bảng này thì Flash **gọi lại
+#: đúng hàm guard sẵn có**, không sinh bộ luật thứ hai.
+_GUARD_ACTION_NAMES: dict[str, str] = {
+    "click": "tap",
+    "long_press": "long_press_on",
+    "input_text": "focus_and_input_text",
+}
+
+#: Những action mà *kỳ vọng* màn hình đổi.  Đây là chốt để **không chặn oan** (yêu cầu #4):
+#: nhập chữ, cuộn tới cuối danh sách, ``wait``, ``assert``, mở app… đều có thể không làm
+#: hierarchy đổi một cách hoàn toàn hợp lệ.
+_CHANGE_EXPECTED_ACTIONS: frozenset[str] = frozenset({"click", "click_sequence", "long_press"})
+
+#: Nhóm action mà Action Guard của Pro **có luật** (nguồn sự thật:
+#: ``agents/validator/precondition_xml.XML_VALIDATED_ACTIONS``).  Khai lại ở đây để không
+#: import vòng lúc nạp module; ``tests/unit/test_flash_action_guard.py`` khoá hai danh sách
+#: này khớp nhau, nên lệch là test đỏ chứ không phải im lặng.
+_XML_GUARDED_ACTIONS: frozenset[str] = frozenset(
+    {"tap", "long_press_on", "focus_and_input_text", "focus_and_clear_text"}
+)
+
+#: Số lần **liên tiếp** cùng một (action, target) mà UI không đổi, trước khi lần lặp kế tiếp bị
+#: trả về cho model.  Trùng đúng con số đã ghi trong prompt KB ("KHÔNG lặp lại y nguyên quá 2
+#: lần") — đây là bản máy cưỡng chế của cùng một luật, không phải một chính sách mới.
+_REPEAT_LIMIT = 2
+
 
 class _ArgError(ValueError):
     """Argument-translation failure whose message is already fully formatted."""
@@ -95,6 +122,10 @@ class McpActionExecutor:
         self.ctx = ctx
         self.actuator = actuator or getattr(ctx, "actuator", None) or AdbActuator(ctx, controller)
         self.controller = self.actuator.controller
+        # P0 — kiểm soát lặp: đếm số lần **liên tiếp** một (action, target) không làm UI đổi,
+        # và vân tay UI của lần quan sát gần nhất. Chỉ trong bộ nhớ của lần chạy này.
+        self._no_effect_streak: dict[tuple[str, str], int] = {}
+        self._last_ui_fingerprint: str | None = None
         # Identifies the calling agent / profile to the Explorer tier resolver
         # (``explorer.flash_mode`` vs ``explorer.pro_mode``); the agent itself
         # never sees or chooses the tier.
@@ -149,6 +180,159 @@ class McpActionExecutor:
             text_summary=f"Error: Tool '{name}' not supported.",
         )
 
+    # --- P0: Action Guard (tái dùng guard của Pro) + kiểm soát lặp ---------------------
+
+    @staticmethod
+    def _repeat_key(raw_name: str, args: dict[str, Any]) -> tuple[str, str]:
+        """Khoá "cùng một thao tác lên cùng một đối tượng" để đếm lặp."""
+        target = args.get("target")
+        if isinstance(target, (list, tuple)):
+            target = ",".join(str(int(value)) for value in target)
+        return raw_name, str(target) if target is not None else ""
+
+    @staticmethod
+    def _fingerprint(elements: Any, xml_text: str | None) -> str | None:
+        """Vân tay UI — dùng lại đúng hàm driver đã dùng cho ``ui_changed``.
+
+        Không tự băm ở đây: hai chỗ tự băm là hai chỗ lệch nhau lúc nào không biết, và
+        ``AdbDriver._ui_fingerprint`` đã có sẵn đường lui là băm cả ``elements_text`` khi
+        danh sách phần tử thiếu trường.
+        """
+        try:
+            from artemis.drivers.android.adb_driver import AndroidAdbDriver
+
+            return AndroidAdbDriver._ui_fingerprint(list(elements or []), xml_text)
+        except Exception as exc:  # noqa: BLE001 - vân tay chỉ để chẩn đoán
+            # Không nuốt im lặng: thiếu vân tay thì tính năng chống lặp *ngừng hoạt động*,
+            # và đó là loại hỏng khó thấy nhất.
+            logger.warning(f"UI fingerprint unavailable ({exc!r}); repeat control disabled.")
+            return None
+
+    async def _guard_precondition(
+        self,
+        session: ActionSession,
+        raw_name: str,
+        target_semantics: dict[str, Any],
+        state: Any,
+        normalized_target: Any = None,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Gọi **đúng** Action Guard mà Pro dùng, với metadata của actuator.
+
+        Trả ``(cho_qua, thông_tin)``.  Ba nguyên tắc, đều để không chặn oan:
+
+        * action không thuộc nhóm guard kiểm (``tap``/``long_press_on``/``focus_and_input_text``)
+          ⇒ cho qua, ghi ``checked=False``;
+        * guard **không đọc được** hierarchy live (``xml_bypassed``) ⇒ cho qua: thiếu dữ liệu
+          không phải bằng chứng cú chạm sai (yêu cầu #4);
+        * guard lỗi vì bất kỳ lý do gì ⇒ cho qua và ghi cảnh báo — guard không bao giờ được
+          làm gãy một lượt chạy.
+
+        ``target_bounds`` trong ``target_semantics`` là **chuẩn hoá 0–1000**, còn guard so theo
+        **pixel** (nó tự tính ``scale_factor`` từ kích thước màn hình); quy về pixel ở đây để
+        hai đường dùng chung một thang đo, ngưỡng không lệch.
+
+        ``coordinates`` (điểm sẽ chạm, **pixel**) là bắt buộc phải truyền: guard dùng nó để
+        tính ``distance`` ⇒ hệ số giảm ``decay`` và **ngưỡng điểm**.  Thiếu nó, ``distance``
+        tính từ gốc (0,0) nên ngưỡng nhảy lên 0,75 trong khi điểm bị nhân 0,5 — guard sẽ chặn
+        *mọi* cú chạm.  Đây là lỗi đã bị test bắt được, không phải giả định.
+        """
+        info: dict[str, Any] = {"checked": False, "passed": True, "category": "none", "reason": ""}
+        guard_name = _GUARD_ACTION_NAMES.get(raw_name, raw_name)
+        if guard_name not in _XML_GUARDED_ACTIONS:
+            return True, info
+        try:
+            from artemis.agents.validator import precondition_xml
+
+            width, height = self._screen_size()
+            coordinates = None
+            if isinstance(normalized_target, (list, tuple)) and len(normalized_target) == 2:
+                coordinates = [
+                    int(normalized_target[0] * width / 1000),
+                    int(normalized_target[1] * height / 1000),
+                ]
+            bounds = target_semantics.get("target_bounds")
+            pixel_bounds = None
+            if isinstance(bounds, (list, tuple)) and len(bounds) == 4:
+                # ``_resolve_index`` ghi bounds **chuẩn hoá 0–1000** ⇒ quy về pixel.
+                pixel_bounds = [
+                    int(bounds[0] * width / 1000),
+                    int(bounds[1] * height / 1000),
+                    int(bounds[2] * width / 1000),
+                    int(bounds[3] * height / 1000),
+                ]
+            elif isinstance(bounds, str):
+                # Chuỗi ``"[l,t][r,b]"`` của UIAutomator đã là **pixel** ⇒ dùng nguyên.
+                from artemis.utils import visualization
+
+                parsed = visualization.parse_bounds(bounds)
+                pixel_bounds = list(parsed) if parsed else None
+            item = {
+                "action": guard_name,
+                # Cùng đơn vị và cùng khoá mà Pro truyền (xem operator.py `tap`/`long_press`).
+                "coordinates": coordinates,
+                "coordinate_space": "pixel",
+                "target_text": target_semantics.get("target_text"),
+                "target_bounds": pixel_bounds,
+                "target_resource_id": target_semantics.get("target_resource_id"),
+            }
+            passed, category, reason = await precondition_xml.validate_action_precondition_single(
+                self.ctx, session, item, state
+            )
+        except Exception as exc:  # noqa: BLE001 - guard là lớp phụ trợ
+            logger.warning(f"Action guard unavailable ({exc!r}); continuing without it.")
+            return True, info
+
+        category_name = str(getattr(category, "value", category))
+        if category_name == "xml_bypassed":
+            info.update(
+                {"checked": False, "passed": True, "category": category_name, "reason": reason}
+            )
+            return True, info
+        info.update(
+            {"checked": True, "passed": bool(passed), "category": category_name, "reason": reason}
+        )
+        return bool(passed), info
+
+    def _repeat_reason(self, raw_name: str, args: dict[str, Any]) -> str | None:
+        """Lý do chặn lần lặp *y nguyên* không có hiệu quả, hoặc ``None``.
+
+        Chỉ áp cho action mà màn hình **được kỳ vọng** đổi, và chỉ khi đã lặp tới hạn.  Câu trả
+        về nói **sự thật quan sát được**, không kết luận là action thất bại (yêu cầu #3): UI
+        không đổi có thể vì màn hình chưa kịp cập nhật, vì cú chạm vô tác dụng, hoặc vì đang
+        chờ mạng — model phải quan sát lại rồi đổi cách làm.
+        """
+        if raw_name not in _CHANGE_EXPECTED_ACTIONS:
+            return None
+        streak = self._no_effect_streak.get(self._repeat_key(raw_name, args), 0)
+        if streak < _REPEAT_LIMIT:
+            return None
+        return (
+            f"Skipped: the same «{raw_name}» target has been used {streak} times in a row and"
+            f" the UI did not change (fingerprint {self._last_ui_fingerprint})."
+            " That is not proof the action failed — the screen may not have settled yet, or the"
+            " tap may have no effect. Observe the screen again and change approach (different"
+            " target, scroll first, or another route) instead of repeating it unchanged."
+        )
+
+    def _note_effect(
+        self,
+        raw_name: str,
+        args: dict[str, Any],
+        fingerprint_before: str | None,
+        fingerprint_after: str | None,
+    ) -> bool | None:
+        """Ghi nhận UI có đổi không; trả ``True``/``False``, hoặc ``None`` khi thiếu dữ liệu."""
+        changed: bool | None = None
+        if fingerprint_before and fingerprint_after:
+            changed = fingerprint_before != fingerprint_after
+        key = self._repeat_key(raw_name, args)
+        if changed is False:
+            self._no_effect_streak[key] = self._no_effect_streak.get(key, 0) + 1
+        elif changed is True:
+            # UI vừa đổi: chuỗi "không hiệu quả" của đối tượng này hết hiệu lực.
+            self._no_effect_streak.pop(key, None)
+        return changed
+
     # --- Device actions --------------------------------------------------------------
 
     async def _execute_device_action(
@@ -184,7 +368,30 @@ class McpActionExecutor:
                     target_coordinates = wire_args.get("target")
                 extension = raw_name not in (REQUIRED_ACTIONS | OPTIONAL_ACTIONS)
 
-                if extension:
+                # P0 — Action Guard: gọi đúng hàm guard mà Pro dùng, trước khi bắn.
+                # Chỉ chặn khi guard *có* bằng chứng (phần tử đích đã đổi/mất); bỏ qua khi
+                # không đọc được hierarchy — xem ``_guard_precondition``.
+                guard_passed, guard_info = await self._guard_precondition(
+                    session, raw_name, target_semantics, state, target_coordinates
+                )
+                span.payload["guard"] = guard_info
+                fingerprint_before = self._last_ui_fingerprint
+                blocked: str | None = None
+                if not guard_passed:
+                    blocked = (
+                        f"Skipped: the target of «{raw_name}» no longer matches the live screen"
+                        f" ({guard_info['category']}: {guard_info['reason']}). Observe the screen"
+                        " again and pick the target from the current UI."
+                    )
+                else:
+                    # P0 — kiểm soát lặp: cùng action + cùng target mà UI không đổi liên tiếp.
+                    blocked = self._repeat_reason(raw_name, args)
+
+                if blocked:
+                    span.payload["blocked"] = blocked
+                    res = ActionResult.failure(raw_name, blocked, code=ActionCode.INVALID_ARGS)
+                    message = blocked
+                elif extension:
                     raw_result = await session.call_raw(wire_name, wire_args)
                     message = next(
                         (b.text for b in raw_result.content if getattr(b, "type", "") == "text"),
@@ -203,6 +410,18 @@ class McpActionExecutor:
                         if obs.hierarchy_ok:
                             state.indexed_points = [el["center"] for el in obs.elements]
                             state.indexed_elements = obs.elements
+                        # P1 — hiệu quả quan sát được, ghi vào trace: vân tay UI trước/sau và
+                        # UI có đổi không. Đây là dữ liệu để đọc lại vì sao một lần lặp bị chặn.
+                        fingerprint_after = self._fingerprint(obs.elements, obs.elements_text)
+                        span.payload["effect"] = {
+                            "ui_fingerprint_before": fingerprint_before,
+                            "ui_fingerprint_after": fingerprint_after,
+                            "ui_changed": self._note_effect(
+                                raw_name, args, fingerprint_before, fingerprint_after
+                            ),
+                        }
+                        if fingerprint_after:
+                            self._last_ui_fingerprint = fingerprint_after
                         if shot_path:
                             try:
                                 img_bytes = Path(shot_path).read_bytes()
@@ -247,6 +466,9 @@ class McpActionExecutor:
                 "normalized_coordinates": res.normalized_coordinates,
                 "target_semantics": target_semantics,
                 "target_coordinates": target_coordinates,
+                # P1 — đọc lại được: guard đã kiểm gì, kết luận gì, và UI có đổi không.
+                "guard": span.payload.get("guard"),
+                "effect": span.payload.get("effect"),
             },
         )
 

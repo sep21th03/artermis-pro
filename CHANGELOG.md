@@ -4,6 +4,36 @@
 
 ### Added
 
+- **Action Guard cho Flash + kiểm soát thao tác lặp (P0), và trace đọc lại được (P1).**
+  Trước đây **chỉ Pro** có safety net: `agents/validator/precondition_xml.py` kiểm phần tử đích
+  còn trên màn hình live trước khi thực thi, còn Flash bắn thẳng. Nay Flash **gọi lại đúng hàm
+  guard đó** (`validate_action_precondition_single`) trước khi bắn, với ba nguyên tắc để không
+  chặn oan:
+
+  - chỉ chặn khi guard **có bằng chứng** (phần tử đã đổi/mất);
+  - **không** chặn khi không đọc được hierarchy live (``xml_bypassed``) — thiếu dữ liệu không
+    phải bằng chứng cú chạm sai;
+  - guard lỗi vì bất kỳ lý do gì ⇒ **vẫn bắn** và ghi cảnh báo (guard không bao giờ làm gãy lượt chạy).
+
+  Kèm theo, **kiểm soát lặp** dựa trên vân tay UI + action + target: chỉ những action *kỳ vọng*
+  màn hình đổi (``click``/``long_press``/``click_sequence``) mới bị đếm; ``input_text``, ``swipe``,
+  ``wait``, ``assert``… không bao giờ bị coi là "lặp vô ích". Khi cùng một (action, target) đã
+  không làm UI đổi tới hạn thì lần lặp kế tiếp **được trả về cho model kèm mô tả trung thực**
+  ("UI không đổi — chưa phải bằng chứng action thất bại; hãy quan sát lại và đổi cách làm"),
+  đúng mức đã ghi trong prompt KB ("không lặp lại y nguyên quá 2 lần").
+
+  P1: kết quả mỗi action mang thêm ``guard`` (đã kiểm chưa, kết luận, lý do) và ``effect``
+  (vân tay UI trước/sau, ``ui_changed``) — vào cả span trace lẫn metadata của tool result, nên
+  đọc lại được vì sao một action bị chặn. Vân tay dùng **đúng** hàm
+  ``AndroidAdbDriver._ui_fingerprint`` mà đường Pro đã dùng, không băm ở chỗ thứ hai.
+
+  Phạm vi: ``ActionExecutor`` **chỉ** được Flash dùng (Pro đi qua ``action_execution.exec_action``),
+  nên cơ chế Pro không đổi. 10 test mới; tắt guard + chống lặp ⇒ **3 test fail** đúng như mong đợi.
+  Không thêm lượt gọi LLM nào ở đường thuận lợi — chỉ khi chặn (và khi đó thay cho một lượt chắc
+  chắn phải chạy lại).
+
+### Fixed
+
 - **Xoay model khi cạn quota — "model này hết thì dùng model khác", ưu tiên provider Google.**
   Đo trên máy thật 28/10/2026: bốn vai trò (`planner`/`operator`/`explorer`/`checker`) cùng trỏ
   `google:gemini-3.5-flash-lite`; quota Free Tier của Google là **500 request/ngày/mỗi model**,
