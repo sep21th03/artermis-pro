@@ -4,6 +4,19 @@
 
 ### Fixed
 
+- **`apps/test_console/run.sh` bị lặp hai bản — nửa sau là code chết.** File chứa hai bản script
+  nối nhau, bản đầu `exec … server.py` ở dòng 58 nên **mọi thứ sau đó không bao giờ chạy**: khối
+  `LOCAL_LLM=1` và khối tunnel KB mới thêm đều vô hiệu (đo bằng `sh -x`: không có dòng nào của
+  khối tunnel trong trace). Đã gộp thành một script (một `exec`), và `sh -x` xác nhận
+  `Knowledge base: tunnel sẵn sàng (127.0.0.1:5433).` được in trước khi console khởi động.
+- **Console không tự nhận KB sau khi tunnel lên.** `get_service()` dựng service **một lần** cho
+  cả tiến trình, nên nếu lần dựng đầu rơi đúng lúc KB chưa tới được thì console báo "KB tắt" mãi
+  cho tới khi ai đó khởi động lại — dù tunnel đã sẵn sàng. Nay nó dựng lại khi bản đang giữ
+  không dùng được và đã hết cooldown 15 giây (cooldown để KB hỏng thật không bị thử ở mỗi
+  request). Kiểm chứng đầu-cuối: console chạy với tunnel tắt (`degraded: true`) → mở tunnel,
+  không restart → 18 giây sau `/api/kb/workflows` trả 61 workflow. 3 test mới
+  (`tests/unit/test_knowledge_service_retry.py`).
+
 - **Tunnel Knowledge base: `status` báo "đang chạy" trong khi cổng 5433 đã đóng.** Nguyên nhân
   gốc của việc KB "đứt" liên tục: `kb_tunnel.sh` chỉ kiểm tra **pid còn sống**, nên khi kết nối
   SSH nửa chết (VPS không tới được, ssh chưa kịp thoát) thì `status` vẫn nói "Tunnel đang chạy",

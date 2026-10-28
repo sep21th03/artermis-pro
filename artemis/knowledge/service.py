@@ -415,17 +415,30 @@ class KnowledgeService:
 
 
 _SERVICE: KnowledgeService | None = None
+#: Khi instance đang giữ bị *degraded* (KB không tới được lúc dựng), thử dựng lại sau mỗi
+#: khoảng này.  Tunnel KB được `run.sh`/`kb_tunnel.sh` mở lại, nhưng console chỉ dựng service
+#: một lần cho cả tiến trình — không thử lại thì nó cứ báo "KB tắt" cho tới khi ai đó khởi
+#: động lại console, dù tunnel đã lên.
+_SERVICE_RETRY_COOLDOWN = 15.0
+_SERVICE_RETRY_AFTER = 0.0
 
 
 def get_service() -> KnowledgeService:
-    """Process-wide service, built from settings on first use."""
-    global _SERVICE
-    if _SERVICE is None:
+    """Process-wide service, built from settings on first use.
+
+    Dựng lại khi bản đang giữ không dùng được và đã hết thời gian chờ.  Giữ cooldown để một
+    KB thật sự hỏng không bị thử lại ở *mỗi* request.
+    """
+    global _SERVICE, _SERVICE_RETRY_AFTER
+    now = time.time()
+    if _SERVICE is None or (not _SERVICE.available and now >= _SERVICE_RETRY_AFTER):
         _SERVICE = KnowledgeService.from_settings()
+        _SERVICE_RETRY_AFTER = now + _SERVICE_RETRY_COOLDOWN
     return _SERVICE
 
 
 def reset_service() -> None:
     """Drop the cached service (tests, or after changing configuration)."""
-    global _SERVICE
+    global _SERVICE, _SERVICE_RETRY_AFTER
     _SERVICE = None
+    _SERVICE_RETRY_AFTER = 0.0

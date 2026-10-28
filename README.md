@@ -219,8 +219,9 @@ nc -z 127.0.0.1 5433 && echo "KB port OK"        # cổng thật sự nhận k�
 curl -s http://127.0.0.1:8787/api/kb/workflows | head -c 80   # KB trả dữ liệu?
 ```
 
-Sau khi mở tunnel, **phải khởi động lại console**: nó ghi nhớ trạng thái "KB không dùng được"
-từ lần kết nối lỗi đầu tiên.
+Không cần khởi động lại console sau khi mở tunnel: nếu KB không tới được lúc console khởi động,
+nó tự thử lại sau mỗi ~15 giây và tự nhận KB ngay khi tunnel lên (đo thực tế: mở tunnel xong,
+tab Knowledge sống lại trong vòng chưa tới 20 giây).
 
 **Điều kiện một lần cho mỗi máy:**
 
