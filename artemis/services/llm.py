@@ -24,6 +24,7 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar, Token
 import functools
 import logging
+import os
 from pathlib import Path
 import re
 import sys
@@ -37,7 +38,6 @@ from pydantic import BaseModel
 
 from artemis.config import (
     PAUSE_FILE,
-    LLMWithFallback,
     get_default_llm_config,
     settings,
 )
@@ -51,6 +51,7 @@ from artemis.llm.reliability import (
     LLMExhaustedError,
     LLMPermanentError,
     classify_failure,
+    quota_cooldown,
     retry_policy_for,
 )
 from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
@@ -542,7 +543,12 @@ async def _run_with_recovery[T](
                     if failure.category is FailureCategory.CANCELLED:
                         raise
                     if endpoint_key:
-                        _ENDPOINT_BREAKER.record_failure(endpoint_key, failure)
+                        # Lỗi quota có thời gian hồi do nhà cung cấp nói ⇒ mở mạch ngay bằng
+                        # đúng thời gian đó, để lượt sau **xoay sang model khác** thay vì chờ
+                        # vô ích (quota ngày của Google: 500 request/ngày/mỗi model).
+                        _ENDPOINT_BREAKER.record_failure(
+                            endpoint_key, failure, open_for=quota_cooldown(e)
+                        )
                     if not failure.retryable:
                         llm_logger.warning(
                             f"LLM call failed permanently ({failure.category.value}): {e}"
@@ -1179,6 +1185,127 @@ def get_google_llm(
     )
     return ModelFactory.create_model(ep)
 
+#: Tiền tố biến môi trường khai chuỗi model cho một vai trò: ``ARTEMIS_LLM_CHAIN_OPERATOR``.
+_CHAIN_ENV_PREFIX = "ARTEMIS_LLM_CHAIN_"
+
+
+def _endpoint_key_of(endpoint: ModelEndpoint) -> str:
+    """Khoá mạch điện của một endpoint — **phải trùng** khoá lúc gọi.
+
+    ``RobustChatModelWrapper._endpoint_key`` dùng ``provider:model``; lệch nhau thì mạch mở cho
+    model này mà lượt gọi lại ghi vào model khác, và việc xoay model không bao giờ xảy ra.
+    """
+    provider = getattr(endpoint.provider, "value", endpoint.provider)
+    return f"{provider}:{endpoint.model_name}"
+
+
+def _endpoint_from_config(cfg: Any, *, like: ModelEndpoint | None = None) -> ModelEndpoint:
+    """Đọc một mục config thành endpoint; ``like`` giữ nguyên các tham số không khai."""
+
+    def _get_val(obj, attr, expected_type):
+        val = getattr(obj, attr, None)
+        return val if isinstance(val, expected_type) else None
+
+    provider_val = getattr(cfg, "provider", None) or (like.provider if like else "google")
+    model_val = getattr(cfg, "model", None) or (like.model_name if like else "gemini-2.5-flash")
+    return ModelEndpoint(
+        provider=ModelProvider.from_string(provider_val),
+        model_name=str(model_val),
+        temperature=_get_val(cfg, "temperature", (int, float))
+        or (like.temperature if like else 0.0),
+        timeout_seconds=_get_val(cfg, "timeout", (int, float))
+        or (like.timeout_seconds if like else 60.0),
+        thinking_budget=_get_val(cfg, "thinking_budget", int)
+        if like is None
+        else (_get_val(cfg, "thinking_budget", int) or like.thinking_budget),
+        thinking_level=_get_val(cfg, "thinking_level", str)
+        if like is None
+        else (_get_val(cfg, "thinking_level", str) or like.thinking_level),
+        reasoning_effort=_get_val(cfg, "reasoning_effort", str)
+        if like is None
+        else (_get_val(cfg, "reasoning_effort", str) or like.reasoning_effort),
+        include_thoughts=_get_val(cfg, "include_thoughts", bool)
+        if like is None
+        else (_get_val(cfg, "include_thoughts", bool) or like.include_thoughts),
+        enable_grounding=bool(_get_val(cfg, "enable_grounding", bool))
+        or (like.enable_grounding if like else False),
+    )
+
+
+def _chain_specs(role: str) -> list[str]:
+    """Các mục trong ``ARTEMIS_LLM_CHAIN_<VAI TRÒ>``, giữ nguyên thứ tự khai.
+
+    Ví dụ: ``ARTEMIS_LLM_CHAIN_OPERATOR=gemini-2.5-flash, google:gemini-3.1-flash-lite``.
+    Mục không ghi ``provider:`` thì dùng provider của vai trò, nên "ưu tiên Google" chỉ cần
+    ``_PROVIDER=google`` như đang có, không phải lặp lại ở từng mục.
+    """
+    raw = os.environ.get(f"{_CHAIN_ENV_PREFIX}{role.upper().replace('-', '_')}", "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _endpoint_candidates(ctx: ArtemisContext, name: str, *, is_utils: bool) -> list[ModelEndpoint]:
+    """Danh sách ứng viên cho một vai trò, đã bỏ trùng và giữ thứ tự ưu tiên."""
+    cfg = ctx.llm_config.get_utils(name) if is_utils else ctx.llm_config.get_agent(name)
+    primary = _endpoint_from_config(cfg)
+    out = [primary]
+
+    for spec in _chain_specs(name):
+        provider, _, model = spec.partition(":")
+        if model:
+            endpoint = primary.model_copy(
+                update={"provider": ModelProvider.from_string(provider), "model_name": model}
+            )
+        else:
+            endpoint = primary.model_copy(update={"model_name": spec})
+        out.append(endpoint)
+
+    fallback = getattr(cfg, "fallback", None)
+    if fallback is not None:
+        out.append(_endpoint_from_config(fallback, like=primary))
+
+    seen: set[tuple[str, str]] = set()
+    unique: list[ModelEndpoint] = []
+    for endpoint in out:
+        key = (str(getattr(endpoint.provider, "value", endpoint.provider)), endpoint.model_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(endpoint)
+    return unique
+
+
+def _pick_healthy(candidates: list[ModelEndpoint], *, start: int, role: str) -> ModelEndpoint:
+    """Ứng viên đầu tiên chưa nghỉ, tính từ ``start``; hết thì lấy cái sớm hồi nhất.
+
+    Bỏ qua model đang nghỉ là toàn bộ việc "xoay model": sau một lần 429 quota ngày, mạch của
+    model đó mở tới lúc nhà cung cấp nói nó hồi, nên lượt sau tự dùng model kế tiếp trong chuỗi.
+    """
+    ordered = candidates[start:] + candidates[:start]
+    cooling: list[tuple[float, ModelEndpoint]] = []
+    for endpoint in ordered:
+        remaining = _ENDPOINT_BREAKER.open_remaining(_endpoint_key_of(endpoint))
+        if remaining <= 0:
+            if cooling:
+                llm_logger.warning(
+                    f"LLM model rotation for '{role}': bỏ qua "
+                    + ", ".join(
+                        f"{_endpoint_key_of(item)} (còn {seconds:.0f}s)" for seconds, item in cooling
+                    )
+                    + f" — dùng {_endpoint_key_of(endpoint)}."
+                )
+            return endpoint
+        cooling.append((remaining, endpoint))
+
+    soonest = min(cooling, key=lambda pair: pair[0])
+    llm_logger.warning(
+        f"LLM model rotation for '{role}': MỌI ứng viên đang nghỉ "
+        + ", ".join(f"{_endpoint_key_of(item)} (còn {seconds:.0f}s)" for seconds, item in cooling)
+        + f" — dùng tạm {_endpoint_key_of(soonest[1])}."
+    )
+    return soonest[1]
+
+
+
 
 def _resolve_endpoint(
     ctx: ArtemisContext,
@@ -1186,7 +1313,26 @@ def _resolve_endpoint(
     is_utils: bool = False,
     use_fallback: bool = False,
 ) -> ModelEndpoint:
-    """Cleanly resolves a ModelEndpoint from context llm_config."""
+    """Endpoint cho một vai trò — **xoay model** khi model trước đã cạn quota.
+
+    Vì sao không trả thẳng model trong config: quota của nhà cung cấp là *theo model*.  Đo
+    trên máy thật 28/10/2026: bốn vai trò (planner/operator/explorer/checker) cùng trỏ
+    ``google:gemini-3.5-flash-lite``, quota Free Tier là **500 request/ngày/mỗi model**, cạn
+    trong một buổi chạy — và vì chỉ có *một* model nên mọi lượt sau đều 429 cho tới khi hết
+    ngày (``retryDelay`` 14269s).  Chuỗi ứng viên ở đây là thứ biến "hết quota" thành "đổi
+    model": model nào đang trong thời gian nghỉ (mạch mở) thì bị bỏ qua, lượt sau dùng model kế.
+
+    Chuỗi được ghép theo thứ tự **ưu tiên**:
+
+    1. model của vai trò trong ``config/artemis.jsonc`` (kèm provider của nó);
+    2. chuỗi trong ``.env``: ``ARTEMIS_LLM_CHAIN_<VAI TRÒ>`` — mỗi mục là ``model`` hoặc
+       ``provider:model``, phân cách bằng dấu phẩy.  Mục không ghi provider thì **giữ provider
+       của vai trò**, nên khai ``_PROVIDER=google`` là cả chuỗi chạy trên Google;
+    3. ``fallback`` trong config (tương thích với cách khai cũ).
+
+    Hết ứng viên khoẻ mạnh thì **không** chặn tác vụ: chọn ứng viên sớm hồi nhất và ghi cảnh
+    báo kèm thời gian hồi — chặn cứng sẽ biến một rate limit 60 giây thành một tác vụ chết.
+    """
     if getattr(ctx, "llm_config", None) is None:
         try:
             ctx.llm_config = get_default_llm_config()
@@ -1198,32 +1344,11 @@ def _resolve_endpoint(
                 f"Default LLM config could not be loaded while resolving '{name}': {exc}"
             ) from exc
 
-    cfg = ctx.llm_config.get_utils(name) if is_utils else ctx.llm_config.get_agent(name)
-
-    if use_fallback:
-        if isinstance(cfg, LLMWithFallback) or (hasattr(cfg, "fallback") and cfg.fallback):
-            cfg = cfg.fallback
-        else:
-            raise ValueError(f"LLM configuration for '{name}' has no fallback!")
-
-    def _get_val(obj, attr, expected_type):
-        val = getattr(obj, attr, None)
-        return val if isinstance(val, expected_type) else None
-
-    provider_val = getattr(cfg, "provider", "google")
-    model_val = getattr(cfg, "model", "gemini-2.5-flash")
-
-    return ModelEndpoint(
-        provider=ModelProvider.from_string(provider_val),
-        model_name=str(model_val),
-        temperature=_get_val(cfg, "temperature", (int, float)) or 0.0,
-        timeout_seconds=_get_val(cfg, "timeout", (int, float)) or 60.0,
-        thinking_budget=_get_val(cfg, "thinking_budget", int),
-        thinking_level=_get_val(cfg, "thinking_level", str),
-        reasoning_effort=_get_val(cfg, "reasoning_effort", str),
-        include_thoughts=_get_val(cfg, "include_thoughts", bool),
-        enable_grounding=_get_val(cfg, "enable_grounding", bool) or False,
-    )
+    candidates = _endpoint_candidates(ctx, name, is_utils=is_utils)
+    start = 1 if use_fallback else 0
+    if start >= len(candidates):
+        raise ValueError(f"LLM configuration for '{name}' has no fallback!")
+    return _pick_healthy(candidates, start=start, role=name)
 
 
 def _get_llm(

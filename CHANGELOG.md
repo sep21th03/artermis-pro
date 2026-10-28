@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Xoay model khi cạn quota — "model này hết thì dùng model khác", ưu tiên provider Google.**
+  Đo trên máy thật 28/10/2026: bốn vai trò (`planner`/`operator`/`explorer`/`checker`) cùng trỏ
+  `google:gemini-3.5-flash-lite`; quota Free Tier của Google là **500 request/ngày/mỗi model**,
+  cạn trong một buổi chạy — và vì mỗi vai trò chỉ có **một** model nên mọi lượt sau đều 429 cho
+  tới khi hết ngày (`retryDelay` 14269s ≈ 4 giờ). ARTEMIS đứng hẳn: task báo "initializing" rồi
+  thoát, không chạy được bước nào.
+
+  - `artemis/llm/reliability.py`: `parse_retry_delay` (đọc `"retryDelay": "14269s"`, câu
+    *"Please retry in 3h57m49s"*, header `retry-after`), `is_daily_quota`, và `quota_cooldown`
+    — **quota ngày ≠ rate limit theo phút**: cái trước phải *đổi model*, cái sau chỉ cần chờ.
+    `CircuitBreaker.record_failure(..., open_for=…)` mở mạch **ngay** bằng thời gian nhà cung cấp
+    nói, không đợi đủ `threshold` lần (đếm đủ 3 lần là tiêu thêm 2 request vào đúng quota vừa cạn).
+  - `artemis/services/llm.py`: chuỗi ứng viên cho mỗi vai trò — model trong config, rồi
+    `ARTEMIS_LLM_CHAIN_<VAI TRÒ>` trong `.env`, rồi `fallback` của config (tương thích cách khai
+    cũ). `_pick_healthy` bỏ qua model đang nghỉ và dùng model kế; hết ứng viên khoẻ mạnh thì chọn
+    cái sớm hồi nhất **và ghi cảnh báo kèm thời gian hồi**, không chặn tác vụ (chặn cứng biến một
+    rate limit 60 giây thành một tác vụ chết). Mục trong chuỗi không ghi `provider:` thì giữ
+    provider của vai trò, nên `_PROVIDER=google` là **cả chuỗi chạy trên Google** — đúng "ưu tiên
+    Google", không phải lặp lại ở từng mục; muốn một mục đi đường gateway thì ghi
+    `openai:ts/gemini-3.5-flash-lite`.
+  - Đường xoay **trong cùng một lượt gọi** dùng lại cơ chế `with_fallback` sẵn có: khi model chính
+    vừa 429, `_resolve_endpoint(use_fallback=True)` trả ứng viên khoẻ kế tiếp, nên lượt đang chạy
+    không hỏng.
+  - `.env` + `.env.example`: khai chuỗi cho 4 vai trò, Google trước
+    (`ARTEMIS_LLM_CHAIN_OPERATOR=gemini-2.5-flash,gemini-3.1-flash-lite,gemini-3.5-flash`…).
+    `object_detector` **cố ý không** khai chuỗi: định vị toạ độ chỉ model ER làm được, đổi sang
+    model thường là trả toạ độ sai — thà báo hết quota còn hơn bấm sai chỗ.
+
+  Kiểm chứng: 16 test mới; tắt phần chọn ứng viên ⇒ **đúng 2 test xoay model fail** như mong đợi.
+  Chạy thật với config + `.env` thật: chuỗi đọc đúng thứ tự, và khi
+  `google:gemini-3.5-flash-lite` bị cho nghỉ 14269s thì lượt sau tự dùng
+  `google:gemini-2.5-flash`; nghỉ tiếp 2.5-flash ⇒ `gemini-3.1-flash-lite` ⇒ `gemini-3.5-flash`
+  ⇒ cuối cùng mới sang `openai:ts/gemini-3.5-flash-lite`.
+
 ### Fixed
 
 - **Prompt bỏ qua việc đăng nhập dù tester yêu cầu đăng nhập bằng một tài khoản cụ thể.**

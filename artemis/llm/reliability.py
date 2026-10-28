@@ -30,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 import random
+import re
 import threading
 import time
 from typing import Any
@@ -80,6 +81,77 @@ _AUTH_MARKERS = ("unauthorized", "forbidden", "api key", "credential")
 # "deadline exceeded"/"deadline_exceeded" cover google-genai SDK timeouts that
 # surface without an HTTP status code attached.
 _TIMEOUT_MARKERS = ("timed out", "timeout", "deadline exceeded", "deadline_exceeded")
+
+#: Dấu hiệu quota đã cạn theo **ngày** (không phải theo phút).  Nhà cung cấp nói rõ trong
+#: thân lỗi: Google ghi ``free_tier_requests`` / ``GenerateRequestsPerDayPerProjectPerModel``
+#: và "requests per day limit exceeded".  Phân biệt được hai loại này là điều kiện để chờ
+#: đúng: rate limit theo phút thì chờ vài chục giây, quota ngày thì **đổi model**.
+_DAILY_QUOTA_MARKERS = (
+    "per day",
+    "perday",
+    "free_tier",
+    "daily",
+    "requests per day",
+)
+
+#: Trần thời gian chờ suy ra từ lỗi.  Quá trần thì coi như model chết hẳn cho phiên này —
+#: chờ dài hơn chỉ làm agent treo mà không cứu được lượt gọi nào.
+MAX_QUOTA_COOLDOWN_S = 6 * 60 * 60.0
+
+#: Không đọc được thời gian nhà cung cấp nói: quota ngày thì nghỉ một giờ, còn lại một phút.
+DEFAULT_DAILY_COOLDOWN_S = 60 * 60.0
+DEFAULT_RATE_LIMIT_COOLDOWN_S = 60.0
+
+#: ``retryDelay": "14269s"`` (Google), ``retry after 30`` (chung).
+_RETRY_DELAY_RE = re.compile(r"retrydelay\"?\s*[:=]\s*\"?(\d+(?:\.\d+)?)s?", re.IGNORECASE)
+_RETRY_AFTER_RE = re.compile(r"retry[- ]after\"?\s*[:=]\s*\"?(\d+(?:\.\d+)?)", re.IGNORECASE)
+#: "Please retry in 3h57m49.580814965s" (Google).
+_RETRY_IN_RE = re.compile(
+    r"retry in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+(?:\.\d+)?)\s*s)?",
+    re.IGNORECASE,
+)
+
+
+def parse_retry_delay(error: BaseException | str) -> float | None:
+    """Số giây nhà cung cấp nói phải chờ, hoặc ``None`` nếu lỗi không nói.
+
+    Đọc cả ba dạng đã gặp thật: ``"retryDelay": "14269s"`` (trường JSON của Google),
+    ``retry in 3h57m49.58s`` (câu văn trong thân lỗi), và header kiểu ``retry-after: 30``.
+    Không suy diễn: không đọc được thì trả ``None`` để bên gọi dùng mặc định.
+    """
+    text = error if isinstance(error, str) else str(error)
+    match = _RETRY_DELAY_RE.search(text) or _RETRY_AFTER_RE.search(text)
+    if match:
+        return max(0.0, float(match.group(1)))
+    match = _RETRY_IN_RE.search(text)
+    if match and any(match.groups()):
+        hours, minutes, seconds = (float(part or 0) for part in match.groups())
+        total = hours * 3600 + minutes * 60 + seconds
+        return total if total > 0 else None
+    return None
+
+
+def is_daily_quota(error: BaseException | str) -> bool:
+    """Lỗi này là *cạn quota theo ngày* (khác rate limit theo phút) hay không."""
+    text = (error if isinstance(error, str) else str(error)).lower()
+    return any(marker in text for marker in _DAILY_QUOTA_MARKERS)
+
+
+def quota_cooldown(error: BaseException | str) -> float | None:
+    """Thời gian nên **bỏ qua** một model sau lỗi này, hoặc ``None`` nếu không phải lỗi quota.
+
+    Đây là thứ biến một lần 429 thành quyết định *xoay model*: quota ngày của Google là 500
+    request/ngày/mỗi model, nên chờ tại chỗ là vô nghĩa — phải dùng model khác, và model vừa
+    cạn phải được ghi nhớ là đang nghỉ tới lúc nhà cung cấp nói nó hồi.
+    """
+    failure = classify_failure(error if isinstance(error, BaseException) else Exception(str(error)))
+    if failure.category is not FailureCategory.RATE_LIMIT:
+        return None
+    daily = is_daily_quota(error)
+    reported = parse_retry_delay(error)
+    if reported is not None:
+        return min(reported, MAX_QUOTA_COOLDOWN_S)
+    return DEFAULT_DAILY_COOLDOWN_S if daily else DEFAULT_RATE_LIMIT_COOLDOWN_S
 
 
 def classify_failure(error: BaseException) -> Failure:
@@ -239,7 +311,21 @@ class CircuitBreaker:
         with self._lock:
             self._states.pop(key, None)
 
-    def record_failure(self, key: str, failure: Any, *, now: float | None = None) -> None:
+    def record_failure(
+        self,
+        key: str,
+        failure: Any,
+        *,
+        now: float | None = None,
+        open_for: float | None = None,
+    ) -> None:
+        """Record a failure; ``open_for`` mở mạch ngay với thời gian cho trước.
+
+        ``open_for`` dành cho lỗi mà **thời gian hồi đã biết**: nhà cung cấp nói quota cạn tới
+        khi nào (``retryDelay``).  Với loại đó, đếm đủ ``threshold`` lần mới mở mạch là sai —
+        nó tiêu thêm hai request vào đúng cái quota vừa cạn, và trong lúc đó bên gọi vẫn tưởng
+        model còn dùng được nên không xoay sang model khác.
+        """
         category = str(getattr(failure, "category", ""))
         if category not in TRANSIENT_CATEGORIES:
             with self._lock:
@@ -252,7 +338,9 @@ class CircuitBreaker:
             state = self._states.setdefault(key, _CircuitState())
             state.half_open_in_flight = False
             state.consecutive_failures += 1
-            if state.consecutive_failures >= self.threshold:
+            if open_for is not None and open_for > 0:
+                state.open_until = max(state.open_until, current + float(open_for))
+            elif state.consecutive_failures >= self.threshold:
                 state.open_until = current + self.cooldown_seconds
 
     def snapshot(self) -> dict[str, dict[str, Any]]:
