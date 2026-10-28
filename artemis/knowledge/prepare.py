@@ -76,6 +76,7 @@ from artemis.knowledge.intent import (
     has_hard_ui,
     is_navigation_workflow,
     one_line,
+    violated_precondition,
     plan_queries,
     sanitize_ui_instructions,
     workflow_warnings,
@@ -1303,11 +1304,15 @@ def prepare_prompt(
         options,
         metrics,
     )
+    # 3c. Chốt tất định cuối: hạ cách làm chính nếu điều kiện trước của nó bị câu tester phủ định
+    # — áp cho *cả* đường model chọn và đường phân loại theo từ (khi model trả JSON hỏng).
+    violation_notes = _demote_violating_primaries(entries, original)
     matched, excluded, hits_by_id = _matched_workflows(entries)
     gaps = _knowledge_gaps(entries)
     warnings = _collect_warnings(entries)
-    if selection_note:
-        warnings.append(selection_note)
+    for note in (selection_note, *violation_notes):
+        if note:
+            warnings.append(note)
     metrics["primary"] = sum(1 for row in matched if row["role"] == ROLE_PRIMARY)
     metrics["supporting"] = sum(1 for row in matched if row["role"] == ROLE_SUPPORTING)
     metrics["excluded"] = len(excluded)
@@ -1439,6 +1444,82 @@ def _set_role(
     )
 
 
+def _promote_without_violation(
+    entry: TaskKnowledge,
+    original: str,
+    rejected_id: str,
+) -> WorkflowHit | None:
+    """Ứng viên thay thế khi cách làm được chọn vi phạm điều kiện trước của chính nó.
+
+    Thước đo là độ phủ tên workflow với việc — cùng thước đo mà tầng phân loại theo từ dùng —
+    và chỉ xét ứng viên có điều kiện trước **không** bị vi phạm.  Không có ứng viên nào thì trả
+    ``None`` để việc đó thành "KB thiếu" (agent quan sát UI) thay vì làm theo cách sai.
+    """
+    task_tokens = set(content_tokens(f"{entry.task.action} {entry.task.target}"))
+    candidates = [
+        hit
+        for hit in [*entry.primary, *entry.supporting, *entry.irrelevant]
+        if hit.workflow.id != rejected_id
+        and violated_precondition(hit.workflow, original) is None
+    ]
+    if not candidates:
+        return None
+
+    def name_coverage(hit: WorkflowHit) -> float:
+        name_tokens = set(content_tokens(hit.workflow.name))
+        if not name_tokens:
+            return 0.0
+        return len(task_tokens & name_tokens) / len(name_tokens)
+
+    return max(candidates, key=name_coverage)
+
+
+def _demote_violating_primaries(entries: list[TaskKnowledge], original: str) -> list[str]:
+    """Chốt tất định cuối cùng: cách làm chính không được vi phạm điều kiện trước của chính nó.
+
+    **Vì sao là bước riêng, không nằm trong nhánh chọn của model.**  Cách làm chính có thể đến
+    từ hai đường: model đọc mô tả KB (không ổn định giữa các lần chạy) **hoặc** tầng phân loại
+    theo từ khi model trả JSON hỏng.  Đo thật: câu
+    ``đăng nhập tài khoản 0972842548 mật khẩu (Hoa21092003) …`` có lần chọn đúng
+    ``auth.login_password``, có lần model hỏng nên tầng theo từ chọn ``auth.switch_account`` —
+    vốn ghi rõ điều kiện *"promt chỉ ghi mỗi tài khoản không ghi mật khẩu"* trong khi câu tester
+    có mật khẩu.  Kiểm ở *cuối* thì cả hai đường đều bị chốt như nhau.
+    """
+    notes: list[str] = []
+    for entry in entries:
+        violating = [hit for hit in entry.primary if violated_precondition(hit.workflow, original)]
+        if not violating:
+            continue
+        by_id = {
+            hit.workflow.id: hit
+            for hit in [*entry.primary, *entry.supporting, *entry.irrelevant]
+        }
+        for hit in violating:
+            violated = violated_precondition(hit.workflow, original)
+            _set_role(
+                entry,
+                by_id,
+                hit.workflow.id,
+                ROLE_SUPPORTING,
+                f"bị hạ: điều kiện trước của KB ({violated!r}) không đúng với câu tester",
+            )
+            replacement = _promote_without_violation(entry, original, hit.workflow.id)
+            if replacement is None:
+                notes.append(
+                    f"{hit.workflow.id} bị loại vì điều kiện trước {violated!r} không đúng với "
+                    "câu tester, và KB không có cách làm nào khác cho việc này."
+                )
+                continue
+            _set_role(
+                entry,
+                by_id,
+                replacement.workflow.id,
+                ROLE_PRIMARY,
+                "thay thế: điều kiện trước khớp câu tester",
+            )
+    return notes
+
+
 def _apply_kb_selection(
     entries: list[TaskKnowledge],
     original: str,
@@ -1511,6 +1592,9 @@ def _apply_kb_selection(
             WorkflowHit(workflow=workflow, score=0.0, channels={"navigation": 1}, trusted=True),
         )
 
+    # Chốt "điều kiện trước bị vi phạm" KHÔNG nằm ở đây: nó là bước cuối riêng
+    # (``_demote_violating_primaries``) để áp cho *cả* đường phân loại theo từ khi model trả
+    # JSON hỏng, không chỉ cho lựa chọn của model.
     for entry in entries:
         chosen = selection.for_index(entry.index + 1)
         if chosen is None:

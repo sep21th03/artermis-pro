@@ -4,6 +4,33 @@
 
 ### Fixed
 
+- **Prompt mang mật khẩu mà vẫn đi theo luồng "tài khoản đã lưu" (`auth.switch_account`).**
+  Câu tester `đăng nhập tài khoản 0972842548 mật khẩu (Hoa21092003) chuyển nhà sang nhà Dled`
+  có mật khẩu, nên cách làm đúng là `auth.login_password`; nhưng prompt sinh ra lại hướng dẫn
+  agent *mở danh sách tài khoản đã lưu rồi chạm đúng dòng* — và **in kèm chính điều kiện trước
+  của `switch_account`**: "Promt chỉ ghi mỗi tài khoản không ghi mật khẩu". Prompt vì thế vừa
+  mang mật khẩu vừa nói "prompt không có mật khẩu": tự mâu thuẫn, và agent bị đẩy vào nhánh
+  sai. Đo được **hai đường cùng dẫn tới lỗi**: lượt chọn cách làm do model đọc mô tả KB thì
+  **không ổn định** (cùng câu, lần chọn đúng `login_password`, lần chọn `switch_account`), còn
+  khi lượt đó trả JSON hỏng thì prepare rơi về **phân loại theo từ**, ở đó hai workflow hoà nhau
+  và **thứ tự truy hồi** quyết định (`switch_account` truy hồi trước ⇒ nó thành cách làm chính).
+
+  - `artemis/knowledge/intent.py`: `violated_precondition(workflow, prompt)` — điều kiện trước
+    nói *không* cần thứ mà câu tester lại nêu thì workflow đó không thể là cách làm. Luật
+    **không có danh sách từ khoá nghiệp vụ**: lấy cụm từ ngay sau một từ phủ định trong điều
+    kiện trước ("… không ghi **mật khẩu**") rồi đối chiếu với câu tester.
+  - `artemis/knowledge/prepare.py`: `_demote_violating_primaries` — chốt **tất định ở bước
+    cuối**, áp cho *cả* đường model chọn và đường phân loại theo từ; cách làm chính vi phạm bị
+    hạ xuống bối cảnh kèm lý do, và `_promote_without_violation` nâng ứng viên có điều kiện
+    trước không vi phạm (không có ứng viên nào thì để thành "KB thiếu" cho agent quan sát UI,
+    thay vì làm theo cách sai).
+  - Kiểm chứng trên KB thật (61 workflow): câu có mật khẩu ⇒ **đúng 1** workflow bị chặn
+    (`auth.switch_account`), `auth.login_password` thành cách làm chính; câu **không** mật khẩu
+    ⇒ **0** bị chặn (luồng "tài khoản đã lưu" vẫn dùng được); các câu khác (bật công tắc, thêm
+    thiết bị) ⇒ 0. Chạy console 3 lần liên tiếp: cả 3 đều `login_password` là chính, và điều
+    kiện trước bị vi phạm không còn trong prompt. 4 test mới (2 ở `test_knowledge_intent.py`,
+    2 ở `test_knowledge_prepare.py`); đã kiểm test có "răng" bằng cách tắt chốt — cả 2 test ở
+    prepare fail đúng như mong đợi.
 - **`apps/test_console/run.sh` bị lặp hai bản — nửa sau là code chết.** File chứa hai bản script
   nối nhau, bản đầu `exec … server.py` ở dòng 58 nên **mọi thứ sau đó không bao giờ chạy**: khối
   `LOCAL_LLM=1` và khối tunnel KB mới thêm đều vô hiệu (đo bằng `sh -x`: không có dòng nào của

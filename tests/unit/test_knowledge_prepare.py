@@ -663,7 +663,11 @@ LOGIN_BY_SAVED = workflow(
     "Mở danh sách tài khoản đã từng đăng nhập trên máy này rồi chọn một tài khoản để đăng "
     "nhập. DÙNG KHI prompt chỉ nêu tên/số tài khoản mà KHÔNG có mật khẩu.",
     aliases=["đăng nhập", "chuyển tài khoản"],
-    preconditions=["App đang ở màn hình Đăng nhập", "Tài khoản đã từng đăng nhập trên máy này"],
+    preconditions=[
+        "App đang ở màn hình Đăng nhập",
+        "Tài khoản đã từng đăng nhập trên máy này",
+        "Promt chỉ ghi mỗi tài khoản không ghi mật khẩu",
+    ],
     steps=[
         "Mũi tên trỏ xuống (caret-down) màu xanh ở CUỐI ô nhập số điện thoại",
         "Đúng dòng số điện thoại cần đăng nhập",
@@ -680,10 +684,107 @@ NAVIGATION_MENU = workflow(
 )
 
 
-def prepare_login(service, synth=None, **kwargs):
+def prepare_login(service, synth=None, prompt=LOGIN_PROMPT, **kwargs):
     kwargs.setdefault("options", OPTS)
     kwargs.setdefault("cache", PrepareCache())
     kwargs.setdefault("app_package", "com.iot.hunonic")
-    return prepare_prompt(LOGIN_PROMPT, service=service, synthesizer=synth, **kwargs)
+    return prepare_prompt(prompt, service=service, synthesizer=synth, **kwargs)
+
+
+#: Câu tester thật có mật khẩu (đúng ca đã hỏng: prompt mang mật khẩu mà vẫn đi theo luồng
+#: "tài khoản đã lưu", vốn ghi rõ điều kiện "promt chỉ ghi mỗi tài khoản không ghi mật khẩu").
+WITH_PASSWORD = "đăng nhập tài khoản 0972842548 mật khẩu (Hoa21092003)"
+
+#: Hai ứng viên dựng theo đúng hình dạng KB thật: tên/alias hoà nhau về mọi kênh trùng từ, nên
+#: **thứ tự truy hồi** là thứ duy nhất còn quyết định — đúng cách lần chạy thật đã chọn sai.
+LEXICAL_SWITCH = workflow(
+    "auth.switch_account",
+    "Đăng nhập tài khoản",
+    "Mở danh sách tài khoản đã lưu rồi chọn một tài khoản. DÙNG KHI prompt chỉ nêu tài khoản mà "
+    "KHÔNG có mật khẩu.",
+    aliases=["đăng nhập"],
+    preconditions=[
+        "App đang ở màn hình Đăng nhập",
+        "Tài khoản cần đăng nhập đã từng đăng nhập trên máy này",
+        "Promt chỉ ghi mỗi tài khoản không ghi mật khẩu",
+    ],
+    steps=[
+        "Mũi tên trỏ xuống ở cuối ô nhập số điện thoại",
+        "Dòng số điện thoại trong sheet Chuyển tài khoản",
+        "Nút Đăng nhập",
+    ],
+)
+LEXICAL_PASSWORD = workflow(
+    "auth.login_password",
+    "Đăng nhập tài khoản bằng mật khẩu",
+    "Đăng nhập bằng số điện thoại hoặc email và mật khẩu do tester cung cấp.",
+    aliases=["đăng nhập"],
+    preconditions=[
+        "Ứng dụng đang ở màn hình Đăng nhập",
+        "Tester đã cung cấp tài khoản và mật khẩu hợp lệ",
+    ],
+    steps=["Ô Số điện thoại hoặc Email", "Ô Mật khẩu", "Nút Đăng nhập"],
+)
+LEXICAL_PLAN = {
+    "tasks": [{"action": "đăng nhập tài khoản", "target": "0972842548", "required": True}],
+    "final_goal": {"type": "tài khoản đăng nhập", "expected_value": "0972842548"},
+}
+
+
+def _login_roles(outcome) -> dict:
+    return {row["workflow_id"]: row for row in outcome.matched_workflows}
+
+
+def test_a_choice_that_violates_its_own_precondition_is_replaced():
+    """Model đọc mô tả KB mà chọn sai thì chốt tất định phải hạ nó và nâng ứng viên hợp lệ."""
+    service = FakeService([LOGIN_BY_PASSWORD, LOGIN_BY_SAVED])
+
+    outcome = prepare_login(
+        service,
+        synthesizer(
+            LOGIN_PLAN,
+            selection={
+                "tasks": [
+                    {
+                        "index": 1,
+                        "primary": "auth.switch_account",
+                        "supporting": [],
+                        "rejected": [],
+                        "reason": "model chọn sai: prompt có mật khẩu",
+                    }
+                ],
+                "navigation": {},
+            },
+        ),
+        prompt=WITH_PASSWORD,
+    )
+
+    roles = _login_roles(outcome)
+    assert roles["auth.login_password"]["role"] == "primary"
+    assert roles["auth.switch_account"]["role"] == "supporting"
+    assert "điều kiện trước" in roles["auth.switch_account"]["role_reason"]
+    # Điều kiện trước bị vi phạm không được xuất hiện như điều phải kiểm tra trên UI.
+    assert "Promt chỉ ghi mỗi tài khoản không ghi mật khẩu" not in outcome.enhanced_prompt
+    assert "auth.login_password" in outcome.enhanced_prompt
+
+
+def test_the_lexical_path_is_guarded_too():
+    """Lượt chọn cách làm hỏng ⇒ prepare rơi về phân loại theo từ.  Chốt phải áp *cả* đường này,
+    vì đây chính là đường đã tạo ra prompt sai trên máy thật.
+
+    Hai ứng viên ở đây dựng đúng như KB thật: tên và alias hoà nhau tới mức chỉ còn **thứ tự
+    truy hồi** quyết định ai là cách làm chính (``switch_account`` được truy hồi trước, y như
+    lần chạy thật), nên nếu thiếu chốt thì ``switch_account`` sẽ làm cách làm chính.
+    """
+    service = FakeService([LEXICAL_SWITCH, LEXICAL_PASSWORD])
+
+    outcome = prepare_login(service, synthesizer(LEXICAL_PLAN), prompt=WITH_PASSWORD)
+
+    roles = _login_roles(outcome)
+    assert roles["auth.switch_account"]["role"] == "supporting"
+    assert "điều kiện trước" in roles["auth.switch_account"]["role_reason"]
+    assert roles["auth.login_password"]["role"] == "primary"
+    assert "auth.login_password" in outcome.enhanced_prompt
+    assert "Promt chỉ ghi mỗi tài khoản không ghi mật khẩu" not in outcome.enhanced_prompt
 
 

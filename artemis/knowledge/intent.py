@@ -271,6 +271,46 @@ def _clean_field(value: object) -> str:
     return text[:MAX_FIELD_CHARS].strip()
 
 
+#: Từ phủ định trong điều kiện trước.  Điều kiện trước của KB hay nói *không* cần thứ gì đó
+#: ("Promt chỉ ghi mỗi tài khoản **không ghi mật khẩu**") — và khi câu tester lại có đúng thứ
+#: đó thì điều kiện đã bị vi phạm, workflow không thể là cách làm.
+_NEGATION_TOKENS = ("khong", "chua", "chang", "khong ghi", "khong co", "khong can")
+
+
+def violated_precondition(workflow: Workflow, prompt: str) -> str | None:
+    """Điều kiện trước nói *không* cần một thứ mà câu tester lại nêu, hoặc ``None``.
+
+    **Vì sao cần chốt tất định này.**  Việc chọn cách làm do model đọc mô tả KB quyết định, và
+    nó **không ổn định giữa các lần chạy**: cùng câu
+    ``đăng nhập tài khoản 0972842548 mật khẩu (Hoa21092003) chuyển nhà sang nhà Dled``, có lần
+    chọn đúng ``auth.login_password``, có lần chọn ``auth.switch_account`` — vốn ghi rõ điều
+    kiện trước là *"Promt chỉ ghi mỗi tài khoản không ghi mật khẩu"*.  Prompt khi đó vừa mang
+    mật khẩu vừa hướng dẫn luồng "tài khoản đã lưu": mâu thuẫn ngay trong chính prompt.
+
+    Luật ở đây không có danh sách từ khoá nghiệp vụ: tìm **cụm từ ngay sau một từ phủ định**
+    trong điều kiện trước, và nếu cụm đó xuất hiện trong câu tester thì điều kiện bị vi phạm.
+    Ví dụ: điều kiện "… không ghi mật khẩu" ⇒ cụm "mật khẩu" ⇒ câu tester có "mật khẩu" ⇒ vi
+    phạm.  Câu không có mật khẩu thì không vi phạm, nên luồng "tài khoản đã lưu" vẫn dùng được.
+    """
+    prompt_tokens = content_tokens(prompt)
+    prompt_bigrams = {
+        (prompt_tokens[index], prompt_tokens[index + 1])
+        for index in range(len(prompt_tokens) - 1)
+    }
+    for precondition in workflow.preconditions:
+        tokens = content_tokens(precondition)
+        for index, token in enumerate(tokens):
+            if token not in _NEGATION_TOKENS:
+                continue
+            # Cửa sổ ba token sau từ phủ định, xét mọi cặp liền nhau: cụm bị cấm có thể bắt đầu
+            # ngay sau từ phủ định ("không ghi mật khẩu") hoặc sau một động từ đệm.
+            window = tokens[index + 1 : index + 4]
+            for position in range(len(window) - 1):
+                if (window[position], window[position + 1]) in prompt_bigrams:
+                    return precondition
+    return None
+
+
 def _drop_contained_tasks(tasks: Sequence[TaskSpec]) -> list[TaskSpec]:
     """Bỏ task mà nội dung đã nằm trong một task khác (task ngắn hơn bị task đầy đủ bao trùm).
 

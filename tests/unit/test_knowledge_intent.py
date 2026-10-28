@@ -55,6 +55,7 @@ from artemis.knowledge.intent import (
     is_rule,
     plan_queries,
     render_navigation_knowledge,
+    violated_precondition,
 )
 from artemis.knowledge.models import Workflow, WorkflowHit
 
@@ -608,4 +609,42 @@ def test_two_different_tasks_are_both_kept():
     ]
 
     assert len(_drop_contained_tasks(tasks)) == 2
+
+
+# ── Chốt tất định: điều kiện trước tự phủ định thứ có trong câu tester ──────
+SAVED_ACCOUNT = workflow(
+    "auth.switch_account",
+    "Đăng nhập bằng tài khoản đã lưu (Chuyển tài khoản)",
+    "Mở danh sách tài khoản đã từng đăng nhập rồi chọn một tài khoản.",
+    preconditions=[
+        "App đang ở màn hình Đăng nhập",
+        "Tài khoản cần đăng nhập đã từng đăng nhập trên máy này",
+        "Promt chỉ ghi mỗi tài khoản không ghi mật khẩu",
+    ],
+)
+BY_PASSWORD = workflow(
+    "auth.login_password",
+    "Đăng nhập bằng tài khoản và mật khẩu",
+    "Đăng nhập bằng số điện thoại hoặc email và mật khẩu do tester cung cấp.",
+    preconditions=[
+        "Ứng dụng đang ở màn hình Đăng nhập",
+        "Tester đã cung cấp tài khoản và mật khẩu hợp lệ; không ghi thông tin bí mật vào KB",
+    ],
+)
+
+WITH_PASSWORD = "đăng nhập tài khoản 0972842548 mật khẩu (Hoa21092003) chuyển nhà sang nhà Dled"
+WITHOUT_PASSWORD = "đăng xuất và đăng nhập tài khoản 0972842548"
+
+
+def test_a_precondition_forbidding_what_the_prompt_has_is_violated():
+    """Lỗi đã gặp: prompt mang mật khẩu mà vẫn đi theo luồng "tài khoản đã lưu", vốn ghi rõ
+    điều kiện "promt chỉ ghi mỗi tài khoản không ghi mật khẩu"."""
+    assert violated_precondition(SAVED_ACCOUNT, WITH_PASSWORD) is not None
+    assert violated_precondition(BY_PASSWORD, WITH_PASSWORD) is None
+
+
+def test_the_guard_stays_quiet_when_the_prompt_lacks_that_thing():
+    """Không có mật khẩu trong câu thì luồng "tài khoản đã lưu" vẫn dùng được."""
+    assert violated_precondition(SAVED_ACCOUNT, WITHOUT_PASSWORD) is None
+    assert violated_precondition(BY_PASSWORD, WITHOUT_PASSWORD) is None
 
