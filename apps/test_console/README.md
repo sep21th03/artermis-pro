@@ -51,9 +51,63 @@ sh apps/test_console/run.sh          # tự mở http://127.0.0.1:8787
 
 Console chỉ gọi `artemis run` nên **không cần source app**.
 
+## Chạy kèm Knowledge base (KB)
+
+KB là **PostgreSQL + pgvector** chứa các Workflow của app. Console dùng nó cho tab **Knowledge**
+(chuẩn bị prompt bằng RAG) và để ghép kiến thức vào prompt trước mỗi lần chạy. KB **không bắt buộc**:
+không có KB thì task vẫn chạy, chỉ là prompt không có kiến thức — y hệt một lần chạy không có gì để chèn.
+
+### Chọn đúng một trong ba cách
+
+| Cách | Khi nào dùng | Cần gì |
+| --- | --- | --- |
+| **KB local qua SSH tunnel** | Máy dev: muốn tab Knowledge + tra KB ngay trên máy | khoá SSH tới VPS, `uv sync --extra knowledge` |
+| **KB trên VPS qua HTTPS** | Máy tester / máy chỉ cắm điện thoại | 2 biến `ARTEMIS_KB_API` + `ARTEMIS_KB_API_KEY` (xem mục **B**) |
+| **Không dùng KB** | Chạy nhanh, hoặc máy chạy vai `server` (VPS nối PostgreSQL trực tiếp) | `KB_TUNNEL=0 sh apps/test_console/run.sh` |
+
+### Cách 1 — KB local qua tunnel (3 bước)
+
+```bash
+# 1) Cài phần KB của runtime: psycopg + pgvector (thiếu 2 gói này ⇒ KB báo "chưa sẵn sàng")
+uv sync --extra knowledge
+
+# 2) Khai báo KB trong .env (thêm vào .env đang dùng, KHÔNG commit)
+#    ARTEMIS_KB_DSN=postgresql://artemis:<mat-khau>@127.0.0.1:5433/artemis_kb   ← bắt buộc để có KB
+#    ARTEMIS_KB_EMBEDDING_MODEL=gemini-embedding-2   # tuỳ chọn (mặc định đã là gemini-embedding-2)
+#    ARTEMIS_KB_TOP_K=3                              # tuỳ chọn (mặc định 3 workflow vào prompt)
+
+# 3) Mở tunnel rồi chạy console — run.sh tự gọi `ensure` nên thường không phải làm gì
+sh apps/test_console/run.sh
+#   Knowledge base: tunnel sẵn sàng (127.0.0.1:5433).   ← dấu hiệu KB dùng được
+```
+
+Tunnel đi qua SSH nên **cần khoá** `~/.ssh/greencloud` (hoặc `KB_VPS_KEY`); đổi host/user/cổng bằng
+`KB_VPS_HOST`, `KB_VPS_USER`, `KB_LOCAL_PORT`. Nếu máy không có khoá, `run.sh` chỉ **cảnh báo** rồi
+vẫn chạy console (tab Knowledge sẽ báo KB không dùng được) — hoặc đặt `KB_TUNNEL=0` để bỏ hẳn bước này.
+
+**Kiểm tra:**
+
+```bash
+sh scripts/kb_tunnel.sh status         # Tunnel đang chạy (pid …): 127.0.0.1:5433 -> <vps>:5432
+curl -s http://127.0.0.1:8787/api/kb/status | python3 -m json.tool
+#   "available": true, "database": "artemis@127.0.0.1:5433/artemis_kb", "workflow_count": 89, …
+```
+
+| Triệu chứng | Cách xử lý |
+| --- | --- |
+| `CẢNH BÁO: chưa mở được tunnel tới Knowledge base` | Xem `sh scripts/kb_tunnel.sh status`; thiếu khoá SSH hoặc VPS không tới được |
+| Tab Knowledge: `degraded_reason` chứa `Không kết nối được PostgreSQL` | Tunnel chưa mở → `sh scripts/kb_tunnel.sh ensure` |
+| `available: false`, `degraded_reason: "Chưa cấu hình ARTEMIS_KB_DSN"` | Chưa thêm `ARTEMIS_KB_DSN` vào `.env` |
+| `available: false` vì thiếu module | `degraded_reason` ghi `Knowledge base không dùng được: No module named 'psycopg'` → chạy `uv sync --extra knowledge` rồi khởi động lại console |
+| `status` báo "đang chạy" mà KB vẫn lỗi | Kết nối SSH nửa chết (pid còn, cổng đóng) → `sh scripts/kb_tunnel.sh restart` |
+| RAG lỗi khi chuẩn bị prompt | Thiếu/sai `GEMINI_API_KEY` (embedding chỉ chạy trên máy chạy console) |
+
+Chi tiết tunnel (đổi cổng, chạy tay, các lỗi SSH thường gặp) nằm ở README gốc của repo, mục
+*Knowledge base & SSH tunnel*.
+
 ## Cài trên máy khác
 
-Chọn đúng một trong hai tình huống:
+Chọn đúng một trong ba tình huống:
 
 ### A. Máy đó chạy console luôn (cắm điện thoại vào chính máy đó)
 
@@ -78,6 +132,8 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/llm/v1
 ARTEMIS_UPSTREAM_BASE_URL=https://api.vilao.ai/v1
 CONSOLE_ACCESS_KEY=21092003
 EOF
+# Muốn dùng KB (tab Knowledge + ghép kiến thức): thêm `uv sync --extra knowledge` và
+# `ARTEMIS_KB_DSN` — xem mục "Chạy kèm Knowledge base (KB)" ở trên.
 
 # 5) Cắm điện thoại, bật USB debugging, bấm Allow trên máy
 export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH"
@@ -293,7 +349,8 @@ curl -s http://127.0.0.1:8787/api/packages | head -c 200      # danh sách app �
 | `401 invalid_api_key` khi chạy task | `OPENAI_API_KEY` phải là **khoá truy cập** (`21092003`), không phải key thật |
 | Không mở được `http://<ip>:8787` từ máy khác | console chưa đặt `ARTEMIS_WEB_HOST=0.0.0.0`, hoặc firewall chặn |
 | App không mở | xem *Cài app lên điện thoại* + *Task chạy nhưng app không mở* |
-| Log có `Failed to start scrcpy recording` | vô hại; muốn ghi video thì `brew install scrcpy` |
+| `Failed to start scrcpy recording` | vô hại; muốn ghi video thì `brew install scrcpy` |
+| `available: false` ở `/api/kb/status` | KB không bật — xem *Chạy kèm Knowledge base (KB)* |
 
 ### Tuỳ chọn
 
