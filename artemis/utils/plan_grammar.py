@@ -237,6 +237,30 @@ class PlanSnapshot:
         return self.check_items
 
 
+def _checkbox_base_indent(content: str) -> int:
+    """Thụt lề chung của các dòng checkbox — dùng để chuẩn hoá trước khi xác định top-level.
+
+    **Vì sao cần.** ``PlanItem.is_top_level`` là ``indent == 0``. Model hay viết **cả** kế hoạch
+    trong một khối thụt lề (dòng đầu đã có 2 space), và khi đó *không dòng nào* là top-level:
+    ``convergence_gate`` thấy ``has_top_level == False`` ⇒ kết thúc run sau bước đầu, còn
+    ``ExecutionState``/``KbFocusPromptComponent`` không có công đoạn nào để bám vào.
+
+    Đo trên máy thật 29/10/2026 (task ``task_2910_1428``): plan thụt 2 space ⇒ 0/3 milestone ⇒
+    gate kết thúc run ngay sau khi agent mở bảng chọn thiết bị, final check chốt ``blocked`` dù
+    ngữ cảnh còn chưa được lưu. 3/8 plan gần nhất ở ``traces/*/notes/task_plan.md`` ở tình trạng
+    này, nên đây là lỗi hệ thống chứ không phải ca cá biệt.
+
+    Chỉ tính trên **dòng checkbox**: file thật có thể có ``- assert@end:`` ở cột 0 trong khi mọi
+    checkbox thụt lề; lấy min của cả hai loại sẽ ra 0 và không chuẩn hoá được gì.
+    """
+    indents = [
+        len(match.group("indent"))
+        for match in (CHECKBOX_LINE_RE.match(line) for line in (content or "").splitlines())
+        if match
+    ]
+    return min(indents) if indents else 0
+
+
 def parse_plan(content: str | None) -> PlanSnapshot:
     """Parses plan markdown into its machine channel. Non-checkbox lines are ignored.
 
@@ -244,16 +268,22 @@ def parse_plan(content: str | None) -> PlanSnapshot:
     :class:`CheckItem` entries; they never contribute to the checkbox item list
     and therefore never influence milestone hashing, drift detection, or
     completion triggers.
+
+    Thụt lề được **chuẩn hoá theo mức nhỏ nhất của các dòng checkbox** trước khi xác định
+    top-level, nên một kế hoạch bị thụt lề đồng loạt vẫn giữ đúng quan hệ cha/con và độ sâu
+    tương đối, chỉ khác là dòng ngoài cùng trở thành top-level đúng như ý định của người viết.
+    Nội dung và trạng thái ``[ ]/[x]/[/]`` không bị đổi.
     """
     items: list[PlanItem] = []
     checks: list[CheckItem] = []
     current_top: PlanItem | None = None
+    base_indent = _checkbox_base_indent(content or "")
     if content:
         for line_no, line in enumerate(content.splitlines()):
             match = CHECKBOX_LINE_RE.match(line)
             if match:
                 item = PlanItem(
-                    indent=len(match.group("indent")),
+                    indent=max(0, len(match.group("indent")) - base_indent),
                     status=match.group("status"),
                     text=match.group("text").strip(),
                     line_no=line_no,
@@ -264,7 +294,9 @@ def parse_plan(content: str | None) -> PlanSnapshot:
                 continue
             check_match = CHECK_LINE_RE.match(line)
             if check_match:
-                indented = bool(check_match.group("indent"))
+                # Cùng phép chuẩn hoá cho dòng kiểm: một dòng nằm sâu hơn dòng checkbox ngoài cùng
+                # là dòng con; dòng ngang hoặc trên mức đó là dòng kiểm chung của cả kế hoạch.
+                indented = max(0, len(check_match.group("indent")) - base_indent) > 0
                 at_end = bool(check_match.group("at_end"))
                 parent_key = current_top.key if (indented and current_top) else None
                 checks.append(
@@ -319,7 +351,9 @@ def settle_completed_milestones(content: str | None) -> tuple[str, tuple[str, ..
         if not match:
             continue
         start, end = match.span("status")
-        lines[milestone.line_no] = lines[milestone.line_no][:start] + STATUS_DONE + lines[milestone.line_no][end:]
+        lines[milestone.line_no] = (
+            lines[milestone.line_no][:start] + STATUS_DONE + lines[milestone.line_no][end:]
+        )
         settled.append(milestone.text)
     if not settled:
         return text, ()
@@ -350,7 +384,11 @@ def render_plan_progress(content: str | None) -> str:
         if current.is_active and children and all(child.is_done for child in children):
             parts.append("mọi việc con của nó đã [x] ⇒ chốt nó và đi tiếp, KHÔNG làm lại")
     upcoming = next(
-        (item for item in milestones if not item.is_done and item.key != (current.key if current else None)),
+        (
+            item
+            for item in milestones
+            if not item.is_done and item.key != (current.key if current else None)
+        ),
         None,
     )
     if upcoming is not None:

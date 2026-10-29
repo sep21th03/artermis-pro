@@ -4,6 +4,18 @@
 
 ### Added
 
+- **KB theo công đoạn: tra đúng 1–2 mục của bước đang làm (`artemis/knowledge/subtask_kb.py`).**
+  Đo trên KB thật 29/10/2026: 26 mục `device_action.*` (luật chọn thiết bị/hành động khi tạo ngữ
+  cảnh, hẹn giờ) **có** trong KB nhưng câu task đầy đủ không kéo về mục nào — và nâng
+  `ARTEMIS_KB_TOP_K` 3→12 **cũng không đổi** (vẫn đúng 4 hit `scene.*`). Truy vấn đúng *đoạn đang
+  làm* ("chọn công tắc") thì `device_action.switch` xếp hạng 1 ⇒ vấn đề là **phạm vi truy vấn**.
+  `SubtaskKbPromptComponent` lấy công đoạn từ `ExecutionState` (không thêm nguồn sự thật thứ hai),
+  tra theo **exact id** qua `lookup_knowledge` (0 embedding), cache theo `subtask_id + device_type`
+  ⇒ **6 lượt Operator cùng một công đoạn = 1 lượt tra**. Loại thiết bị lấy từ công đoạn trước rồi
+  mới tới màn hình (màn danh sách có thể chứa nhiều thiết bị), khớp **theo từ** để "rem" không
+  khớp trong "remote" và "công tắc" không khớp sang luật cổng; không có bằng chứng thì im lặng.
+  21 test.
+
 - **Tải "các bước" của một lần chạy kèm ảnh (tab Các bước).** Nút `⤓ Tải các bước (kèm ảnh)`
   tạo một gói `.zip` gồm `steps.json` (mọi bước: số bước, nhãn hành động, lý do agent chọn, kết
   quả, số token; kèm `summary`, `activity`, `missing_images`), ảnh **Trước/Sau của từng bước** và
@@ -133,6 +145,27 @@
   chắn phải chạy lại).
 
 ### Fixed
+
+- **Kế hoạch bị thụt lề làm `convergence_gate` kết thúc run giữa đường (B1+B2).** Ca thật
+  `task_2910_1428` (29/10/2026): model viết **cả** `task_plan` trong một khối thụt 2 space ⇒
+  `PlanItem.is_top_level` (`indent == 0`) không thấy milestone nào ⇒ cổng kết thúc run **ngay sau**
+  khi agent mở bảng chọn thiết bị, final check chốt `blocked` dù ngữ cảnh còn chưa được lưu —
+  không phải hết token (23 call · 303.316 prompt token; 429 chỉ là quota theo phút với `retryDelay`
+  36–40s và đã retry thành công). 3/8 plan gần nhất ở `traces/*/notes/task_plan.md` ở tình trạng
+  này nên đây là lỗi hệ thống, không phải ca cá biệt.
+
+  - `plan_grammar.parse_plan`: chuẩn hoá thụt lề theo **mức nhỏ nhất của các dòng checkbox** trước
+    khi xác định top-level (giữ nguyên quan hệ cha/con, độ sâu tương đối, nội dung và trạng thái
+    `[ ]/[x]/[/]`; dòng `- assert:@end` ở cột 0 vẫn là dòng kiểm chung). Sửa ở parser chung nên cứu
+    **cả** `convergence_gate`, `ExecutionState`, `KbFocusPromptComponent` và
+    `settle_completed_milestones`. Plan của `task_2910_1428` sau khi sửa cho đúng **3 milestone**;
+    3 plan từng có 0 milestone nay có 3/7/2.
+  - `convergence_gate`: phân biệt **plan rỗng thật** (đi settlement), **plan có item nhưng không có
+    top-level mà còn việc** (log WARNING kèm số item + `continue`, không kết thúc nhầm) và **mọi item
+    đã xong** (đi settlement). Không mở vòng lặp mới: mỗi `continue` vẫn qua một lượt Operator và
+    chịu mọi chốt dừng hiện có (`assert_halt`, `user_stop_requested`, trần thời gian, trần tool).
+  - Nhân đây sửa `logger.warning`: `ArtemisLogger` chỉ nhận **một** tham số, nên gọi kiểu
+    `"…%d…", n` sẽ ném `TypeError` **đúng tại nhánh phòng thủ**.
 
 - **Xoay model khi cạn quota — "model này hết thì dùng model khác", ưu tiên provider Google.**
   Đo trên máy thật 28/10/2026: bốn vai trò (`planner`/`operator`/`explorer`/`checker`) cùng trỏ

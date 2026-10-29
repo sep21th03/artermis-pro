@@ -57,6 +57,9 @@ class SubtaskState:
 
     id: str
     text: str
+    #: Văn bản các công đoạn con. Cần cho người đọc công đoạn (ví dụ truy xuất KB theo công đoạn):
+    #: "Thêm hành động cho ngữ cảnh" nằm ở dòng con, không nằm ở dòng milestone.
+    children: list[str] = field(default_factory=list)
     status: str = STATUS_PENDING
     target_values: list[str] = field(default_factory=list)
     constraints: list[str] = field(default_factory=list)
@@ -197,6 +200,7 @@ def build_execution_state(
             SubtaskState(
                 id=item.key,
                 text=text,
+                children=[child.text for child in snapshot.children_of(item)],
                 status=status,
                 target_values=[value for _label, value in requirements],
                 constraints=_constraints_of(snapshot, active_text, goal_text),

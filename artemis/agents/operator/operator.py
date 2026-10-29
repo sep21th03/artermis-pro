@@ -101,6 +101,7 @@ from artemis.agents.operator.prompts import (
     KbFocusPromptComponent,
     StateEvidencePromptComponent,
     ExecutionStatePromptComponent,
+    SubtaskKbPromptComponent,
     ReasoningReminderPromptComponent,
     unwritten_action_streak,
     ToolLimitWarningPromptComponent,
@@ -299,6 +300,7 @@ class OperatorNode:
                 (ReasoningReminderPromptComponent(), {}),
                 (StateEvidencePromptComponent(), {}),
                 (ExecutionStatePromptComponent(), {}),
+                (SubtaskKbPromptComponent(), {}),
                 (KbFocusPromptComponent(), {}),
                 (ToolLimitWarningPromptComponent(), {}),
             ]
@@ -307,6 +309,7 @@ class OperatorNode:
                 (ReasoningReminderPromptComponent(), {}),
                 (StateEvidencePromptComponent(), {}),
                 (ExecutionStatePromptComponent(), {}),
+                (SubtaskKbPromptComponent(), {}),
                 (KbFocusPromptComponent(), {}),
                 (ToolLimitWarningPromptComponent(), {}),
             ]

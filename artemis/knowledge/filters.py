@@ -67,7 +67,7 @@ def _as_tuple(value: object, *, limit: int = MAX_FILTER_ITEMS) -> tuple[str, ...
 
 def _as_namespace(value: object) -> tuple[str, ...]:
     """Namespace bỏ dấu chấm cuối: ``"navigation."`` và ``"navigation"`` là một."""
-    return tuple(item.rstrip(".") for item in _as_tuple(value))
+    return tuple(item.rstrip(".") for item in   _as_tuple(value))
 
 
 @dataclass(frozen=True)

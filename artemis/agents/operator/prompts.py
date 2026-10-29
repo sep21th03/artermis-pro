@@ -1403,3 +1403,53 @@ class ExecutionStatePromptComponent(PromptComponent):
             # Câu chặn đi kèm mã NOT_VERIFIED — cùng mã mà composer dùng cho "chưa kiểm tra hết".
             block = f"{block}\n- {reason}"
         builder.add_human_content(f"{EXECUTION_STATE_MARKER}\n{block}", ephemeral=True)
+
+
+SUBTASK_KB_MARKER = "[KB theo công đoạn]"
+
+
+class SubtaskKbPromptComponent(PromptComponent):
+    """Đưa KB của **đúng công đoạn đang làm** vào lượt hiện tại — 1–2 mục, không cả KB.
+
+    **Vì sao cần, và vì sao không phải là truy hồi theo câu task.** Đo trên KB thật 29/10/2026:
+    26 mục ``device_action.*`` (luật chọn thiết bị/hành động khi tạo ngữ cảnh, hẹn giờ) có trong
+    KB, nhưng câu task đầy đủ không kéo được mục nào trong số đó về — và nâng ``TOP_K`` 3→12 cũng
+    không đổi. Truy vấn đúng *đoạn đang làm* ("chọn công tắc") thì ``device_action.switch`` xếp
+    hạng 1. Nên nguồn truy vấn là **công đoạn**, không phải cả câu task.
+
+    Công đoạn lấy từ :func:`artemis.utils.execution_state.build_execution_state` — cùng nguồn với
+    :class:`ExecutionStatePromptComponent`, không thêm nguồn sự thật thứ hai. Loại thiết bị lấy từ
+    **màn hình đang thấy** trước, rồi mới tới công đoạn; không có bằng chứng thì không tra (im
+    lặng) — thà thiếu hướng dẫn còn hơn dạy sai luật thiết bị.
+
+    Mỗi công đoạn chỉ tra **một lần** (cache theo ``subtask_id + device_type`` trên ``ctx``), nên
+    nhiều lượt Operator trong cùng một công đoạn không sinh thêm lần tra nào.
+    """
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        from artemis.knowledge.subtask_kb import get_cache, subtask_kb_block
+        from artemis.utils.execution_state import build_execution_state
+
+        task_plan = kwargs.get("task_plan") or ""
+        goal_text = getattr(state, "initial_goal", "") or ""
+        observed = kwargs.get("observed_identifiers") or set()
+        # Văn bản màn hình đang thấy: bằng chứng cho loại thiết bị ("Công tắc 10").
+        observed_text = kwargs.get("minimal_list") or ""
+        exec_state = build_execution_state(task_plan, goal_text, " ".join(sorted(observed)))
+
+        app_package = ""
+        setup = getattr(ctx, "execution_setup", None)
+        if setup is not None and hasattr(setup, "get_locked_app_package"):
+            try:
+                app_package = setup.get_locked_app_package() or ""
+            except Exception:  # noqa: BLE001 - thiếu package chỉ làm truy vấn hẹp hơn
+                app_package = ""
+
+        block = subtask_kb_block(
+            exec_state,
+            observed_text,
+            app_package=app_package,
+            cache=get_cache(ctx),
+        )
+        if block:
+            builder.add_human_content(block, ephemeral=True)

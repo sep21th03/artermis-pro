@@ -938,9 +938,34 @@ def convergence_gate(
     snapshot = parse_plan(task_plan_content)
 
     if not snapshot.has_top_level:
-        # An empty plan does not bypass an enabled final review: the review
-        # object is the user's original goal, not the plan.
-        logger.info("No subgoals found in file, ending")
+        # Ba tình huống rất khác nhau, phải phân biệt. Đo trên máy thật 29/10/2026
+        # (task ``task_2910_1428``): plan bị thụt lề đồng loạt ⇒ ``has_top_level == False`` ⇒ cổng
+        # này kết thúc run ngay sau khi agent mở bảng chọn thiết bị, final check chốt ``blocked``
+        # dù ngữ cảnh còn chưa được lưu — tức là **kết thúc nhầm**, không phải "đã xong".
+        #
+        # Không continue vô hạn: mỗi lần ``continue`` vẫn phải qua một lượt Operator đầy đủ (LLM +
+        # thiết bị), và các chốt dừng hiện có vẫn nguyên hiệu lực — ``assert_halt`` (đã xét ở trên),
+        # ``user_stop_requested``, trần thời gian của task (console watchdog / CLI), trần tool mỗi
+        # lượt. Cổng này không tự thêm vòng lặp mới, chỉ thôi *kết thúc sai*.
+        if not snapshot.items:
+            logger.info(
+                "Task plan has no checkbox item at all (truly empty); routing to settlement."
+            )
+            return _terminal_route()
+        unfinished = [item for item in snapshot.items if not item.is_done]
+        if unfinished:
+            logger.warning(
+                "Task plan has "
+                f"{len(snapshot.items)} checkbox item(s) but NO top-level milestone "
+                "(malformed indentation or malformed plan) and "
+                f"{len(unfinished)} item(s) still unfinished;"
+                " continuing instead of ending the run."
+            )
+            return "continue"
+        logger.info(
+            f"Task plan has {len(snapshot.items)} checkbox item(s), none top-level, all marked"
+            " done; routing to settlement."
+        )
         return _terminal_route()
 
     if snapshot.all_top_level_done:
