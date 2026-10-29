@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from artemis.knowledge.filters import KnowledgeFilter
 from artemis.knowledge.models import Workflow
 
 
@@ -60,6 +61,9 @@ class RetrievalLogEntry:
     context_sent: str = ""
     timings_ms: dict[str, float] = field(default_factory=dict)
     degraded: bool = False
+    #: Bộ lọc metadata đã dùng (rỗng khi truy hồi theo câu hỏi như cũ). Ghi lại để trả lời được
+    #: "agent đã hỏi gì" — không có nó thì không phân biệt được "KB không có" với "lọc sai".
+    filters: dict[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -102,21 +106,55 @@ class KnowledgeStore(Protocol):
     def revisions(self, workflow_id: str) -> list[dict]: ...
 
     # ── Retrieval channels (each returns workflow ids best-first) ─────────
+    #
+    # ``filters`` (tùy chọn) là điều kiện metadata: khi có, **mọi** kênh phải tôn trọng nó, để
+    # truy hồi ngữ nghĩa chỉ chạy *bên trong* tập đã lọc (lọc trước, xếp hạng sau). Không truyền
+    # gì ⇒ hành vi cũ nguyên vẹn.
     def search_exact(
-        self, query: str, app_id: str, version_id: str | None, limit: int
+        self,
+        query: str,
+        app_id: str,
+        version_id: str | None,
+        limit: int,
+        filters: KnowledgeFilter | None = None,
     ) -> list[str]: ...
 
     def search_keyword(
-        self, query: str, app_id: str, version_id: str | None, limit: int
+        self,
+        query: str,
+        app_id: str,
+        version_id: str | None,
+        limit: int,
+        filters: KnowledgeFilter | None = None,
     ) -> list[tuple[str, float]]:
         """``(workflow_id, coverage)`` best-first.  Coverage is the share of the
         query's content tokens present in the document, and is what the caller
         uses to decide whether a keyword hit is trustworthy."""
 
     def search_vector(
-        self, vector: list[float], model: str, app_id: str, version_id: str | None, limit: int
+        self,
+        vector: list[float],
+        model: str,
+        app_id: str,
+        version_id: str | None,
+        limit: int,
+        filters: KnowledgeFilter | None = None,
     ) -> list[tuple[str, float]]:
         """``(workflow_id, similarity)`` best-first; similarity is 1 - cosine distance."""
+
+    def search_filtered(
+        self,
+        filters: KnowledgeFilter,
+        app_id: str,
+        version_id: str | None,
+        limit: int,
+    ) -> list[str]:
+        """Ids khớp bộ lọc metadata, **không cần câu truy vấn**.
+
+        Đây là kênh cho câu hỏi có cấu trúc ("modal nào của màn hình `home`?") — câu hỏi mà truy
+        hồi ngữ nghĩa trả lời sai vì không có văn bản nào để so. Trả về best-first theo độ tin cậy
+        ghi trong metadata (``metadata.confidence``) rồi theo id, để kết quả ổn định.
+        """
 
     # ── Embeddings ───────────────────────────────────────────────────────
     def load_embeddings(

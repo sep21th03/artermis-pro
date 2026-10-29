@@ -128,6 +128,9 @@ BACKEND_INDEPENDENT_TOOLS: frozenset[str] = frozenset(
         "replay_steps",
         "get_step_screenshot",
         "report_task_status",
+        # Tra cứu knowledge base theo yêu cầu: đọc dữ liệu KB, không chạm thiết bị, nên không phụ
+        # thuộc backend actuation (giống ``ask_explorer``/``search_history``).
+        "kb_lookup",
     }
 )
 

@@ -154,6 +154,17 @@ def quota_cooldown(error: BaseException | str) -> float | None:
     return DEFAULT_DAILY_COOLDOWN_S if daily else DEFAULT_RATE_LIMIT_COOLDOWN_S
 
 
+#: Thời gian hồi mà nhà cung cấp nói, coi là "model đã cạn hẳn cho phiên này": chờ dài hơn
+#: ngưỡng này thì **xoay model ngay** thay vì retry tại chỗ.  Google trả ``retryDelay`` tới vài
+#: giờ khi cạn quota ngày, còn rate limit theo phút chỉ vài chục giây.
+LONG_QUOTA_WAIT_S = 120.0
+
+
+def _long_quota_wait(error: BaseException) -> bool:
+    reported = parse_retry_delay(error)
+    return reported is not None and reported >= LONG_QUOTA_WAIT_S
+
+
 def classify_failure(error: BaseException) -> Failure:
     """Convert a provider/transport exception into explicit recovery decisions."""
     if isinstance(error, KeyboardInterrupt) or type(error).__name__ == "CancelledError":
@@ -163,6 +174,13 @@ def classify_failure(error: BaseException) -> Failure:
     message = str(error).lower()
 
     if code == 429 or any(marker in message for marker in _RATE_LIMIT_MARKERS):
+        # Quota **theo ngày** (hoặc thời gian hồi dài) thì chờ tại chỗ là vô nghĩa: mỗi lần thử
+        # lại tiêu thêm một request vào đúng cái quota vừa cạn, và bên gọi vẫn tưởng model còn
+        # dùng được nên không xoay sang model khác.  Đo trên máy thật 29/10/2026: 4 lượt retry
+        # (10+20+40+60s) rồi mới xoay — "Lập kế hoạch" mất hơn một phút và task hết giờ trước khi
+        # bắt đầu.  ``retryable=False`` + ``should_fallback=True`` = chuyển model ngay lượt này.
+        if is_daily_quota(error) or _long_quota_wait(error):
+            return Failure(FailureCategory.RATE_LIMIT, False, True)
         return Failure(FailureCategory.RATE_LIMIT, True, True)
     if code in {500, 502, 503, 504} or any(marker in message for marker in _UNAVAILABLE_MARKERS):
         return Failure(FailureCategory.PROVIDER_UNAVAILABLE, True, True)

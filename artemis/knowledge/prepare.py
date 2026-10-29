@@ -84,6 +84,12 @@ from artemis.knowledge.intent import (
 from artemis.knowledge.composer import (
     CODE_NOT_FOUND,
     CODE_NOT_VERIFIED,
+    SECTION_NOTES,
+    SECTION_STATE,
+    SECTION_STEPS,
+    SECTION_STOP,
+    SECTION_TASK,
+    SECTION_VERIFY,
     StateDimension,
     compose_prompt,
     is_search_step,
@@ -115,6 +121,11 @@ STATUS_DEGRADED = "degraded"
 #: Nhãn nguồn cho UI/log: bản này do LLM tổng hợp hay do luật dựng ra.
 SOURCE_LLM = "llm"
 SOURCE_DETERMINISTIC = "deterministic"
+
+#: Phiên bản **cách dựng prompt** (composer + brief + guard trạng thái). Tăng số này mỗi khi đổi
+#: cách dựng: cache chỉ kiểm phiên bản KB chứ không kiểm phiên bản code, nên không tăng thì tester
+#: vẫn nhận prompt cũ và mọi bản sửa prompt coi như không có tác dụng.
+PROMPT_BUILDER_VERSION = "2026-10-29.2"
 
 _FENCE = re.compile(r"^\s*```[a-zA-Z]*\s*|\s*```\s*$")
 #: Token trông như id workflow (``auth.logout``) — dùng để phát hiện kiến thức bịa.
@@ -259,9 +270,9 @@ def knowledge_index(
     (hai KB khác nhau, hoặc hai test khác nhau) đọc nhầm chỉ mục của nhau.
     """
     now = time.monotonic()
-    cache: dict[str, tuple[float, list[Workflow], list[StateDimension]]] = getattr(
-        service, "_knowledge_index_cache", None
-    ) or {}
+    cache: dict[str, tuple[float, list[Workflow], list[StateDimension]]] = (
+        getattr(service, "_knowledge_index_cache", None) or {}
+    )
     cached = cache.get(app_id)
     if cached and now - cached[0] < _INDEX_TTL_S:
         return cached[1], cached[2]
@@ -456,6 +467,13 @@ def _covers(task: Any, enhanced: str, floor: float) -> bool:
 
 #: Nhãn UI trong ngoặc kép — đơn vị *hành động được* của một workflow
 #: (``nút 'Huỷ'``, ``chọn 'Xác Nhận'``).  Đây là thứ nguy hiểm khi lọt vào prompt.
+#: Nhãn UI được trích dẫn trong prompt ghép.
+#:
+#: **Giới hạn đã biết (đo 29/10/2026).** Mẫu này cố ý *không* gồm « »: composer dùng « » cho **cả**
+#: mô tả việc/điều kiện của tester lẫn nhãn UI, nên quét « » sẽ biến "«đăng nhập — chỉ khi chưa đăng
+#: nhập»" thành một nhãn UI và chốt sẽ từ chối những dòng đúng (đã thử: 5 dòng điều kiện hợp lệ bị
+#: coi là bịa). Muốn quét được « » thì composer phải phát **provenance theo mục** (nhãn nào sinh ra
+#: từ workflow/step nào) — việc đó để ở giai đoạn sau, không hack bằng cách nới mẫu.
 _QUOTED_LABEL = re.compile(r"[\"'“”‘’]([^\"'“”‘’\n]{2,40})[\"'“”‘’]")
 
 
@@ -530,6 +548,169 @@ def _ensure_sections(knowledge: str, brief: str, entries: Sequence[TaskKnowledge
     return "\n\n".join(part for part in parts if part)
 
 
+def _workflow_vocabulary(workflow: Workflow) -> str:
+    """Toàn bộ chữ một workflow đóng góp cho vocabulary của chốt "nhãn UI phải có trong KB"."""
+    return " ".join(
+        [
+            workflow.id,
+            workflow.name,
+            workflow.description,
+            *workflow.aliases,
+            *workflow.preconditions,
+            *workflow.success_criteria,
+            *workflow_warnings(workflow),
+            *[f"{step.target} {step.expected_state}" for step in workflow.steps],
+        ]
+    )
+
+
+def composed_label_vocabulary(
+    original_prompt: str,
+    entries: Sequence[TaskKnowledge],
+    *,
+    extra_workflows: Iterable[Workflow] = (),
+    vocabulary_workflows: Iterable[Workflow] = (),
+    dimensions: Sequence[Any] = (),
+    final_goal: dict | None = None,
+) -> str:
+    """Toàn bộ chữ mà prompt ghép **được phép** trích dẫn, kèm nguồn gốc.
+
+    **Vì sao phải có nguồn gốc rõ ràng.** Bản cũ chỉ lấy chữ của những workflow *được truy hồi*
+    (cộng vài workflow guard), nên một nhãn **có thật trong KB** vẫn bị coi là bịa nếu nó đến từ
+    mục KB không nằm trong tập truy hồi — ví dụ mục ``navigation.*``/``modal.*`` do Navigation
+    Graph sinh ra, hoặc workflow mà composer in ra để giải thích điều kiện. Hậu quả không nhỏ: chốt
+    này fail ⇒ :func:`fallback` thay **cả** prompt ⇒ tester mất toàn bộ hướng dẫn KB (đúng hiện
+    tượng "prompt quá dài rồi LLM quên ràng buộc" đo trên máy thật 29/10/2026).
+
+    Nguồn ở đây đều là chữ **có thật** trong KB hoặc trong câu của tester, nên không nới lỏng tiêu
+    chuẩn: nhãn vẫn phải xuất xứ từ đâu đó, chỉ khác là không còn bị bó vào tập truy hồi.
+
+    * ``tester`` — câu gốc (dữ liệu như "Ổ cắm 12", "Mesh Tạo 2" là hợp lệ, không phải bịa).
+    * ``retrieved`` — workflow được truy hồi cho câu này.
+    * ``guard`` — workflow mà guard trạng thái in thẳng bước (quan sát/đổi giá trị).
+    * ``index`` — phần còn lại của KB của app: composer có thể nhắc tới khi giải thích điều kiện
+      hoặc khi chỉ đường, và mọi chữ ở đó vẫn là chữ của KB.
+    * ``dimensions``/``final_goal`` — nhãn trạng thái và giá trị đích do code sinh.
+    """
+    parts: list[str] = [normalize(original_prompt)]
+    parts.extend(
+        _workflow_vocabulary(hit.workflow)
+        for entry in entries
+        for hit in [*entry.primary, *entry.supporting]
+    )
+    parts.extend(_workflow_vocabulary(workflow) for workflow in extra_workflows)
+    parts.extend(_workflow_vocabulary(workflow) for workflow in vocabulary_workflows)
+    for dimension in dimensions:
+        parts.append(
+            " ".join(
+                str(item or "")
+                for item in (
+                    getattr(dimension, "label", ""),
+                    getattr(dimension, "observe", ""),
+                    getattr(dimension, "clear_workflow", ""),
+                    " ".join(getattr(dimension, "set_workflows", ()) or ()),
+                )
+            )
+        )
+    if final_goal:
+        parts.append(" ".join(str(value or "") for value in final_goal.values()))
+    return normalize(" ".join(parts))
+
+
+def ungrounded_labels(composed: str, vocabulary: str) -> list[str]:
+    """Nhãn được trích dẫn trong prompt mà **không** có trong vocabulary.
+
+    Chỉ đọc, không sửa: nhờ vậy chốt kiểm tra vẫn là hàm thuần và test được với đúng một chuỗi.
+    """
+    out: list[str] = []
+    for label in _QUOTED_LABEL.findall(composed or ""):
+        cleaned = normalize(label)
+        if cleaned and cleaned not in vocabulary and label not in out:
+            out.append(label)
+    return out
+
+
+#: Mục mà vi phạm **không** được sửa cục bộ: ``CÁC BƯỚC THỰC HIỆN`` và ``XÁC MINH KẾT QUẢ`` là
+#: phần agent dùng để hành động. Bỏ một dòng ở đó là bỏ một bước, nên vi phạm ở đây vẫn phải
+#: quyết định ở mức cả prompt (fallback) — đúng yêu cầu "không làm yếu validation".
+FATAL_LABEL_SECTIONS: frozenset[str] = frozenset({SECTION_STEPS, SECTION_VERIFY})
+
+#: Các mục **thật sự có trong prompt do ``composer`` ghép**.
+#:
+#: Khác ``SECTIONS`` ở module này: tên đó (nhập từ :mod:`artemis.knowledge.intent`) là bộ mục của
+#: *bản dự phòng cũ* (KẾ HOẠCH / KIẾN THỨC ỨNG DỤNG / …). Theo dõi nhầm bộ ⇒ mọi dòng đều bị coi là
+#: "không thuộc mục nào" ⇒ mục không được sửa cục bộ cũng bị sửa. Đây là lỗi đã bắt được bằng test
+#: (``test_a_violation_inside_the_steps_is_not_strippable``) chứ không phải suy đoán.
+COMPOSED_SECTIONS: frozenset[str] = frozenset(
+    {SECTION_TASK, SECTION_STATE, SECTION_STEPS, SECTION_STOP, SECTION_NOTES, SECTION_VERIFY}
+)
+
+
+def strip_ungrounded_labels(
+    composed: str, labels: Iterable[str]
+) -> tuple[str, list[str], list[str]]:
+    """Bỏ **cục bộ** những dòng chứa nhãn bịa. Trả ``(prompt, dòng đã bỏ, dòng không sửa được)``.
+
+    **Vì sao không fallback cả prompt.** Một nhãn lệch trong mục LƯU Ý chỉ làm hỏng đúng dòng đó;
+    thay cả prompt bằng bản dự phòng là hình phạt sai mức — tester mất hết hướng dẫn vì một dòng
+    phụ. Ngược lại, một dòng trong CÁC BƯỚC hoặc XÁC MINH thì không được phép bỏ, nên nó vào
+    ``blocked`` để nơi gọi quyết định ở mức prompt.
+    """
+    targets = {normalize(label) for label in labels if normalize(label)}
+    if not targets:
+        return composed, [], []
+
+    kept: list[str] = []
+    removed: list[str] = []
+    blocked: list[str] = []
+    current = ""
+    for line in (composed or "").splitlines():
+        header = line.strip()
+        if header in COMPOSED_SECTIONS:
+            current = header
+            kept.append(line)
+            continue
+        hit = [label for label in _QUOTED_LABEL.findall(line) if normalize(label) in targets]
+        if not hit:
+            kept.append(line)
+            continue
+        if current in FATAL_LABEL_SECTIONS:
+            blocked.append(line.strip())
+            kept.append(line)
+            continue
+        removed.append(line.strip())
+    text = "\n".join(kept)
+    # Dòng bị bỏ có thể để lại mục rỗng: giữ lại thì prompt có tiêu đề mà không có nội dung.
+    return _drop_empty_sections(text), removed, blocked
+
+
+def _composed_blocks(text: str) -> dict[str, list[str]]:
+    """``{mục: [dòng]}`` theo **mục của prompt ghép** (khác ``_split_sections`` của bản dự phòng)."""
+    blocks: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in (text or "").splitlines():
+        header = line.strip()
+        if header in COMPOSED_SECTIONS:
+            current = header
+            blocks.setdefault(current, [])
+            continue
+        if current is not None and line.strip():
+            blocks[current].append(line)
+    return blocks
+
+
+def _drop_empty_sections(text: str) -> str:
+    """Bỏ tiêu đề mục không còn dòng nội dung nào (kết quả của việc bỏ dòng cục bộ)."""
+    blocks = _composed_blocks(text)
+    lines: list[str] = []
+    for line in text.splitlines():
+        header = line.strip()
+        if header in COMPOSED_SECTIONS and not blocks.get(header):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def validate_composed(
     original_prompt: str,
     composed: str,
@@ -537,6 +718,10 @@ def validate_composed(
     *,
     max_chars: int,
     known_extra: Iterable[str] = (),
+    extra_workflows: Iterable[Workflow] = (),
+    vocabulary_workflows: Iterable[Workflow] = (),
+    dimensions: Sequence[Any] = (),
+    final_goal: dict | None = None,
 ) -> list[Check]:
     """Kiểm tra prompt do :mod:`artemis.knowledge.composer` ghép (đường tất định).
 
@@ -549,6 +734,11 @@ def validate_composed(
     câu tester (ví dụ ``auth.logout`` — workflow *đạt được* một điều kiện trước, hoặc
     ``auth.current_account`` — workflow *quan sát* một trạng thái).  Không có nó thì đúng chốt
     "nhắc workflow không có trong KB" sẽ chặn nhầm chính lời khuyên đúng.
+
+    ``extra_workflows`` là các workflow **có thật nhưng không được truy hồi** mà composer vẫn
+    in chữ ra (hiện là workflow quan sát của guard trạng thái, xem ``StateDimension``).  Chúng
+    phải vào vocabulary nhãn UI, nếu không thì bước quan sát đúng của KB bị chốt
+    ``labels_grounded`` coi là nhãn bịa và cả prompt ghép bị thay bằng bản dự phòng.
     """
     checks: list[Check] = []
     original = (original_prompt or "").strip()
@@ -593,34 +783,27 @@ def validate_composed(
     # Nhãn UI được trích dẫn phải có trong KB **hoặc** trong câu của tester.  Chốt chặn cho lỗi
     # "tự bịa thao tác" (Planner từng sinh 'Tap the profile/account icon in the top right' từ
     # một khoảng trống KB) — nhưng dữ liệu của tester ("Ổ cắm 12") là hợp lệ, không phải bịa.
-    vocabulary = normalize(original) + " " + normalize(
-        " ".join(
-            " ".join(
-                [
-                    hit.workflow.id,
-                    hit.workflow.name,
-                    hit.workflow.description,
-                    *hit.workflow.aliases,
-                    *hit.workflow.preconditions,
-                    *hit.workflow.success_criteria,
-                    *workflow_warnings(hit.workflow),
-                    *[f"{step.target} {step.expected_state}" for step in hit.workflow.steps],
-                ]
-            )
-            for entry in entries
-            for hit in [*entry.primary, *entry.supporting]
-        )
+    #
+    # Vocabulary lấy từ :func:`composed_label_vocabulary` — mọi nguồn đều là chữ **có thật** trong
+    # KB hoặc câu tester, gồm cả những mục KB không nằm trong tập truy hồi (``vocabulary_workflows``)
+    # và nhãn do code sinh (dimensions, final_goal).  Trước đây thiếu hai nguồn cuối, nên nhãn có
+    # thật vẫn bị coi là bịa ⇒ cả prompt bị thay bằng bản dự phòng.
+    vocabulary = composed_label_vocabulary(
+        original,
+        entries,
+        extra_workflows=extra_workflows,
+        vocabulary_workflows=vocabulary_workflows,
+        dimensions=dimensions,
+        final_goal=final_goal,
     )
-    ungrounded = [
-        label
-        for label in _QUOTED_LABEL.findall(enhanced)
-        if normalize(label) and normalize(label) not in vocabulary
-    ]
+    ungrounded = ungrounded_labels(enhanced, vocabulary)
     checks.append(
         Check(
             "labels_grounded",
             not ungrounded,
-            "" if not ungrounded else "Nhãn UI không có trong KB: " + ", ".join(ungrounded[:3]),
+            ""
+            if not ungrounded
+            else f"Nhãn UI không có trong KB ({len(ungrounded)}): " + ", ".join(ungrounded[:3]),
         )
     )
 
@@ -915,11 +1098,14 @@ class PrepareOptions:
 
 
 class PrepareCache:
-    """Cache theo **phiên bản knowledge base**, không chỉ theo câu hỏi.
+    """Cache theo **phiên bản knowledge base** và **phiên bản cách dựng prompt**.
 
     Khoá gồm fingerprint của đúng những workflow đã dùng, nên sửa một workflow là
     mọi bản cache liên quan tự vô hiệu — tester không bao giờ nhận một prompt được
     tổng hợp từ kiến thức đã cũ.
+
+    Khoá cũng gồm :data:`PROMPT_BUILDER_VERSION`: sửa *cách dựng prompt* mà không tăng số
+    này thì bản cache cũ vẫn được trả về và mọi thay đổi coi như không có tác dụng.
     """
 
     def __init__(self, ttl: float = 600.0, max_entries: int = 256) -> None:
@@ -932,14 +1118,14 @@ class PrepareCache:
 
     @staticmethod
     def key(*, app_id: str | None, profile: str, prompt: str) -> str:
-        """Khoá cache: câu hỏi + app + profile.  Phiên bản KB kiểm tra riêng.
+        """Khoá cache: phiên bản cách dựng + câu hỏi + app + profile.  Phiên bản KB kiểm riêng.
 
         Không đưa phiên bản KB vào khoá vì lúc tra cứu chưa biết workflow nào sẽ khớp
         (biết được thì đã phải truy xuất rồi).  Thay vào đó bản cache ghi lại các
         workflow đã dùng, và lúc tra cứu fingerprint của chúng được tính lại từ
         database — nhờ vậy một lần lặp lại **không** tốn embedding và **không** tốn LLM.
         """
-        raw = f"{app_id or ''}|{profile}|{normalize(prompt)}"
+        raw = f"{PROMPT_BUILDER_VERSION}|{app_id or ''}|{profile}|{normalize(prompt)}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def get(self, key: str) -> PrepareOutcome | None:
@@ -1394,7 +1580,14 @@ def prepare_prompt(
         tester vào bản suy giảm suốt TTL của cache.
         """
         enhanced = build_deterministic_prompt(
-            original, entries, plan.final_goal, max_chars=options.max_knowledge_chars
+            original,
+            entries,
+            plan.final_goal,
+            max_chars=options.max_knowledge_chars,
+            # Mục trạng thái (giá trị tester nêu + cách quan sát + bước đổi) phải có cả ở đường
+            # dự phòng: đây chính là đường đã sinh ra prompt thiếu cổng điều kiện trên máy thật.
+            dimensions=knowledge_index(service, resolved_app)[1],
+            index=knowledge_index(service, resolved_app)[0],
         )
         if len(enhanced) > options.max_enhanced_chars:
             enhanced = enhanced[: options.max_enhanced_chars].rstrip()
@@ -1442,14 +1635,68 @@ def prepare_prompt(
         [entry.task.action for entry in entries if entry.gap],
     )
     logger.debug("Prompt ghép cho %r:\n%s", original[:60], enhanced)
-    checks = validate_composed(
+    # Guard trạng thái in thẳng bước của workflow *quan sát* và workflow *đổi giá trị* (chúng
+    # không nằm trong tập truy hồi), nên chữ của chúng phải vào vocabulary nhãn UI — nếu không,
+    # chốt ``labels_grounded`` từ chối cả prompt ghép và tester nhận bản dự phòng (đúng lỗi đã
+    # làm prompt của máy thật rơi về dạng KẾ HOẠCH suốt 29/10/2026).
+    guard_workflow_ids = {
+        *{dimension.observe for dimension in dimensions},
+        *{dimension.clear_workflow for dimension in dimensions},
+        *{item for dimension in dimensions for item in dimension.set_workflows},
+    }
+    guard_workflows = [
+        workflow for workflow in index_workflows if workflow.id in guard_workflow_ids
+    ]
+    vocabulary = composed_label_vocabulary(
         original,
-        enhanced,
         entries,
-        max_chars=options.max_enhanced_chars,
-        known_extra={workflow.id for workflow in index_workflows},
+        extra_workflows=guard_workflows,
+        # Cả KB của app là nguồn hợp lệ cho nhãn: composer nhắc tới mục không nằm trong tập truy
+        # hồi (điều kiện, đường đi, màn hình) và chữ của chúng vẫn là chữ của KB — chứ không phải
+        # nhãn bịa. Đây là phần sửa đúng nguyên nhân của lỗi ``labels_grounded``.
+        vocabulary_workflows=index_workflows,
+        dimensions=dimensions,
+        final_goal=plan.final_goal,
     )
+
+    def _revalidate(text: str) -> list[Check]:
+        """Kiểm lại một bản prompt với **đúng** ngữ cảnh đã dùng để ghép nó."""
+        return validate_composed(
+            original,
+            text,
+            entries,
+            max_chars=options.max_enhanced_chars,
+            known_extra={workflow.id for workflow in index_workflows},
+            extra_workflows=guard_workflows,
+            vocabulary_workflows=index_workflows,
+            dimensions=dimensions,
+            final_goal=plan.final_goal,
+        )
+
+    checks = _revalidate(enhanced)
     failures = failed_checks(checks)
+    if failures and [check.name for check in failures] == ["labels_grounded"]:
+        # Sửa **cục bộ** thay vì bỏ cả prompt: một nhãn lệch ở mục LƯU Ý chỉ làm hỏng dòng đó, còn
+        # bản dự phòng làm tester mất hết hướng dẫn KB. Vi phạm trong CÁC BƯỚC / XÁC MINH KẾT QUẢ
+        # vẫn là lỗi ở mức prompt (không được bỏ một bước) nên ``strip`` trả lại phần ``blocked``.
+        cleaned, removed, blocked = strip_ungrounded_labels(
+            enhanced, ungrounded_labels(enhanced, vocabulary)
+        )
+        if removed and not blocked:
+            rechecked = _revalidate(cleaned)
+            if not failed_checks(rechecked):
+                logger.warning(
+                    "Prepare: bỏ %d dòng có nhãn UI không có trong KB (giữ nguyên prompt ghép): %s",
+                    len(removed),
+                    "; ".join(removed[:3]),
+                )
+                enhanced = cleaned
+                checks = rechecked
+                warnings.append(
+                    f"Đã bỏ {len(removed)} dòng có nhãn UI không có trong KB; phần còn lại giữ nguyên."
+                )
+                failures = []
+
     if failures:
         reason = "Bản ghép không đạt kiểm tra: " + "; ".join(
             f"{check.name} ({check.detail})" for check in failures
@@ -1473,7 +1720,12 @@ def prepare_prompt(
         source={**source, "synthesis": SOURCE_DETERMINISTIC, "model": model},
         checks=checks,
     )
-    if store is not None:
+    if store is not None and (plan.source == "llm" or synthesizer is None):
+        # Chỉ cache kết quả **đã tách việc bằng LLM** (hoặc khi không có LLM để gọi).  Lỗi LLM
+        # thoáng qua mà vẫn cache thì tester bị ghim vào bản một-task suốt TTL: đo trên máy thật
+        # 29/10/2026, một lần tách việc hỏng (khoá LLM sai) đã làm prompt chọn `auth.login_password`
+        # làm bối cảnh và bỏ hẳn `auth.switch_account` — agent không còn cách "chọn tài khoản đã
+        # lưu" nên tự gõ tay số điện thoại.
         store.put(cache_key, outcome)
     return finish(outcome)
 
@@ -1518,8 +1770,7 @@ def _promote_without_violation(
     candidates = [
         hit
         for hit in [*entry.primary, *entry.supporting, *entry.irrelevant]
-        if hit.workflow.id != rejected_id
-        and violated_precondition(hit.workflow, original) is None
+        if hit.workflow.id != rejected_id and violated_precondition(hit.workflow, original) is None
     ]
     if not candidates:
         return None
@@ -1550,8 +1801,7 @@ def _demote_violating_primaries(entries: list[TaskKnowledge], original: str) -> 
         if not violating:
             continue
         by_id = {
-            hit.workflow.id: hit
-            for hit in [*entry.primary, *entry.supporting, *entry.irrelevant]
+            hit.workflow.id: hit for hit in [*entry.primary, *entry.supporting, *entry.irrelevant]
         }
         for hit in violating:
             violated = violated_precondition(hit.workflow, original)

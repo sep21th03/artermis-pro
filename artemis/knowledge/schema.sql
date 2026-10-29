@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS kb_workflow (
 
 CREATE INDEX IF NOT EXISTS kb_workflow_app_idx ON kb_workflow (app_id);
 CREATE INDEX IF NOT EXISTS kb_workflow_status_idx ON kb_workflow (status);
+-- Bộ lọc truy hồi đọc metadata (`type`, `screen`): không có index thì mỗi lần agent hỏi KB theo
+-- màn hình là một lần quét toàn bảng.
+CREATE INDEX IF NOT EXISTS kb_workflow_metadata_idx
+    ON kb_workflow USING GIN (metadata jsonb_path_ops);
 CREATE INDEX IF NOT EXISTS kb_workflow_search_idx
     ON kb_workflow USING GIN (to_tsvector('simple', search_text));
 -- Trigram index makes the alias/exact fallback cheap on large catalogues.
@@ -168,6 +172,9 @@ CREATE TABLE IF NOT EXISTS kb_retrieval_log (
 -- Idempotent upgrade for installs created before outcome tracking existed.
 ALTER TABLE kb_retrieval_log ADD COLUMN IF NOT EXISTS outcome JSONB;
 ALTER TABLE kb_retrieval_log ADD COLUMN IF NOT EXISTS outcome_recorded_at TIMESTAMPTZ;
+-- Bộ lọc metadata của lần truy hồi (rỗng với truy hồi theo câu hỏi như cũ). Additive: bản cũ
+-- chạy được ngay, và store còn một đường INSERT dự phòng cho KB chưa migrate.
+ALTER TABLE kb_retrieval_log ADD COLUMN IF NOT EXISTS filters JSONB NOT NULL DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS kb_retrieval_log_run_idx ON kb_retrieval_log (run_id);
 CREATE INDEX IF NOT EXISTS kb_retrieval_log_time_idx ON kb_retrieval_log (created_at DESC);
 

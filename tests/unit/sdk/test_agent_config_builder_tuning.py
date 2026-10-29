@@ -83,8 +83,11 @@ def test_with_pro_config_carries_both_knobs():
     assert cfg.disable_checker is False
     assert cfg.disable_midway_checks is False
     assert cfg.explorer.pro_mode == "ultra"
-    # Flash-profile perception is untouched by the Pro knob.
-    assert cfg.explorer.flash_mode == "flash"
+    # Flash-profile perception is untouched by the Pro knob. So với giá trị kế thừa từ
+    # ``config/artemis.jsonc`` (hiện là "pro") thay vì hard-code "flash": test kiểm *quan hệ*
+    # giữa hai knob, không kiểm giá trị cấu hình đang dùng.
+    inherited_flash_mode = AgentConfigBuilder().build().explorer.flash_mode
+    assert cfg.explorer.flash_mode == inherited_flash_mode
 
 
 def test_with_pro_config_checker_switch_wins_over_verification_level():
@@ -108,8 +111,10 @@ def test_with_flash_config_explorer_mode_is_the_flash_profile_knob(monkeypatch):
     assert cfg.flash.explorer_mode == "pro"
     assert cfg.explorer.flash_mode == "pro"
     assert cfg.get_explorer_version(agent_name="flash") == "pro"
-    # Pro-profile perception is untouched by the Flash knob.
-    assert cfg.get_explorer_version(agent_name="operator") == "flash"
+    # Pro-profile perception is untouched by the Flash knob — so với giá trị kế thừa từ config,
+    # không hard-code (xem test trên).
+    inherited_pro_mode = AgentConfigBuilder().build().explorer.pro_mode
+    assert cfg.get_explorer_version(agent_name="operator") == inherited_pro_mode
 
 
 def test_with_explorer_versions_is_an_advanced_per_agent_override(monkeypatch):

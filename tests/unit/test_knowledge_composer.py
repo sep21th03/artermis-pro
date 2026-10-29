@@ -913,3 +913,140 @@ def test_the_achiever_is_not_offered_when_no_value_was_named():
     )
 
     assert lines == []
+# ── 11. Cách quan sát phải là *bước*, không chỉ là id workflow ─────────────
+#: Workflow *quan sát* như KB thật khai: nó khai ``metadata.state_dimension`` và các bước đọc
+#: giá trị nằm trong chính nó.
+CURRENT_ACCOUNT = Workflow(
+    id="auth.current_account",
+    app_id="demo",
+    name="Xem tài khoản đang đăng nhập",
+    description="Đọc số điện thoại/email của tài khoản đang đăng nhập.",
+    steps=[
+        {
+            "action": "tap",
+            "target": "Tab Menu ở ngoài cùng bên phải của thanh điều hướng dưới cùng",
+            "expected_state": "Màn hình Menu hiện ra, khối tài khoản ở trên cùng",
+        },
+        {
+            "action": "assert",
+            "target": "Số điện thoại hoặc email ở khối tài khoản trên cùng màn Menu",
+            "expected_state": "Đọc được đúng số điện thoại/email của tài khoản đang đăng nhập",
+        },
+    ],
+    metadata={
+        "state_dimension": {
+            "id": "account",
+            "label": "tài khoản đang đăng nhập",
+            "value_hint": "tài khoản",
+            "set_workflows": ["auth.switch_account"],
+            "clear_workflow": "auth.logout",
+        }
+    },
+    revision_no=1,
+    updated_at="2026-10-28T10:00:00",
+)
+
+
+def test_the_observation_method_reaches_the_prompt_as_steps():
+    """Guard trạng thái in thẳng bước của workflow *quan sát*, không chỉ id của nó.
+
+    Ca thật (28/10/2026): prompt chỉ có dòng *"Cách quan sát tài khoản đang đăng nhập: theo KB
+    auth.current_account"*, mà agent chỉ đọc prompt chứ không đọc KB — nó tap mò "profile icon
+    top right" ba lần rồi tự kết luận *"we have already verified the account"* và bỏ qua bước
+    đăng nhập.  KB đã ghi rõ cách đọc (mở tab Menu → đọc số ở khối tài khoản), nhưng chữ đó
+    không vào prompt thì agent không có đường nào để làm đúng.
+    """
+    dimensions = state_dimensions([CURRENT_ACCOUNT])
+
+    assert [dimension.observe for dimension in dimensions] == ["auth.current_account"]
+    assert dimensions[0].observe_steps[0] == (
+        "tap: Tab Menu ở ngoài cùng bên phải của thanh điều hướng dưới cùng"
+        " → Màn hình Menu hiện ra, khối tài khoản ở trên cùng"
+    )
+
+    login = workflow(
+        "auth.switch_account",
+        "Đăng nhập bằng tài khoản đã lưu",
+        steps=["Mũi tên caret-down cuối ô số điện thoại"],
+    )
+    lines = render_state_guards(
+        [
+            entry(
+                "đăng nhập tài khoản",
+                primary=login,
+                target="0999",
+                condition="chỉ khi chưa đăng nhập",
+            )
+        ],
+        dimensions,
+        {},
+    )
+
+    text = "\n".join(lines)
+    # Id vẫn còn (truy vết, và chốt ``workflow_ids_grounded`` đọc id) nhưng giờ đi kèm bước.
+    assert "Cách quan sát tài khoản đang đăng nhập (theo KB auth.current_account)" in text
+    assert "- Bước 1: tap: Tab Menu ở ngoài cùng bên phải" in text
+    assert "- Bước 2: assert: Số điện thoại hoặc email ở khối tài khoản trên cùng màn Menu" in text
+    assert "Đọc được đúng số điện thoại/email của tài khoản đang đăng nhập" in text
+
+
+def test_the_guard_keeps_the_id_only_when_the_kb_has_no_observation_steps():
+    """KB chưa ghi bước quan sát ⇒ giữ đúng dòng cũ (chỉ id), không bịa thao tác."""
+    scene = workflow(
+        "scene.create_press",
+        "Tạo ngữ cảnh chạy khi nhấn",
+        preconditions=["Đã chọn đúng nhà"],
+        steps=["Mục thêm hành động"],
+    )
+
+    lines = render_state_guards(
+        [entry("chạy khi ấn tạo ngữ cảnh", primary=scene)],
+        [HOUSE_DIMENSION],
+        {"type": "nhà hiện tại", "expected_value": "nhà Dled"},
+    )
+
+    assert "- Cách quan sát nhà đang chọn: theo KB home.current_house." in lines
+# ── 12. Hướng vuốt: chữ "cuộn xuống" của KB phải kèm hướng đúng cho công cụ ──
+def test_a_scroll_step_carries_the_correct_swipe_direction():
+    """`direction` của công cụ là hướng NGÓN TAY, còn KB nói "cuộn xuống" (ý: xem mục ở dưới).
+
+    Đo trên máy thật 29/10/2026: agent đọc "cuộn xuống" rồi gọi ``swipe direction='down'`` — mà
+    'down' là vuốt xuống, tức lộ nội dung BÊN TRÊN — nên hai lượt vuốt liên tiếp trên màn Menu
+    không đổi gì và mục 'Đăng xuất' không bao giờ hiện.
+    """
+    logout = workflow(
+        "auth.logout",
+        "Đăng xuất tài khoản",
+        steps=[
+            "Mục 'Đăng xuất' ở CUỐI danh sách Menu. Nếu nó đã hiện trên màn hình thì tap NGAY,"
+            " KHÔNG cuộn trước. Chỉ cuộn xuống nếu nó thật sự chưa hiện.",
+        ],
+    )
+
+    lines = render_steps([entry("đăng xuất", primary=logout)])
+
+    text = "\n".join(lines)
+    assert "cuộn xuống" in text
+    assert "direction='up'" in text
+
+
+def test_scrolling_up_gets_the_mirror_hint():
+    home = workflow(
+        "home.scroll_top",
+        "Lên đầu danh sách",
+        steps=["cuộn lên để thấy khối tài khoản"],
+    )
+
+    text = "\n".join(render_steps([entry("lên đầu danh sách", primary=home)]))
+
+    assert "direction='down'" in text
+
+
+def test_steps_without_scrolling_carry_no_hint():
+    login = workflow("auth.login_password", "Đăng nhập", steps=["Nút Đăng nhập"])
+
+    text = "\n".join(render_steps([entry("đăng nhập", primary=login)]))
+
+    assert "direction=" not in text
+
+

@@ -63,6 +63,34 @@ class FakeStore:
         self._guard()
         return list(self.workflows.values())
 
+    def find_app_by_package(self, package_name):
+        return getattr(self, "package_map", {}).get(package_name)
+
+    def search_filtered(self, filters, app_id, version_id, limit=50):
+        """Cùng luật với store thật: giao nhau theo metadata, ``deprecated`` bị loại."""
+        self._guard()
+        out: list[str] = []
+        for workflow in self.workflows.values():
+            if filters.exclude_deprecated and workflow.status == "deprecated":
+                continue
+            metadata = workflow.metadata or {}
+            if filters.ids and workflow.id not in filters.ids:
+                continue
+            if filters.namespaces and not any(
+                workflow.id.startswith(f"{namespace}.") for namespace in filters.namespaces
+            ):
+                continue
+            if filters.types and str(metadata.get("type") or "") not in filters.types:
+                continue
+            if filters.screens and str(metadata.get("screen") or "") not in filters.screens:
+                continue
+            if filters.tags and not (set(filters.tags) & set(workflow.tags or [])):
+                continue
+            if filters.statuses and workflow.status not in filters.statuses:
+                continue
+            out.append(workflow.id)
+        return out[:limit]
+
     def get_workflow(self, workflow_id):
         self._guard()
         return self.workflows.get(workflow_id)
@@ -94,24 +122,28 @@ class FakeStore:
 
     def upsert_version(self, app_id, version_label, version_id=None, notes=""):
         self._guard()
-        return {"id": version_id or f"{app_id}@{version_label}", "app_id": app_id,
-                "version_label": version_label, "notes": notes}
+        return {
+            "id": version_id or f"{app_id}@{version_label}",
+            "app_id": app_id,
+            "version_label": version_label,
+            "notes": notes,
+        }
 
     def list_retrieval_logs(self, run_id=None, limit=50):
         self._guard()
         return [{"id": 1, "run_id": run_id, "query": "q"}]
 
-    def search_exact(self, query, app_id, version_id, limit=50):
+    def search_exact(self, query, app_id, version_id, limit=50, filters=None):
         self._guard()
         # Empty by default: a fake that always matched would mask exactly the
         # decision under test (a lexical match is evidence, a guess is not).
         return list(self.exact)
 
-    def search_keyword(self, query, app_id, version_id, limit=50):
+    def search_keyword(self, query, app_id, version_id, limit=50, filters=None):
         self._guard()
         return [(workflow.id, self.coverage) for workflow in self.workflows.values()]
 
-    def search_vector(self, vector, model, app_id, version_id, limit=50):
+    def search_vector(self, vector, model, app_id, version_id, limit=50, filters=None):
         self._guard()
         return []
 
@@ -145,9 +177,7 @@ class FakeEmbedder:
 @pytest.fixture
 def client(monkeypatch):
     def _client(store, **service_kwargs):
-        service = KnowledgeService(
-            store=store, embedder=FakeEmbedder(), **service_kwargs
-        )
+        service = KnowledgeService(store=store, embedder=FakeEmbedder(), **service_kwargs)
         monkeypatch.setattr(api, "get_service", lambda: service)
         app = FastAPI()
         app.include_router(api.router)
@@ -222,9 +252,7 @@ def test_an_invalid_step_action_is_422_with_a_reason(client):
 
 def test_a_malformed_workflow_id_is_422(client):
     http, _ = client(FakeStore([]))
-    response = http.put(
-        "/api/kb/workflows/Auth%20Logout", json={"app_id": "hunonic", "name": "X"}
-    )
+    response = http.put("/api/kb/workflows/Auth%20Logout", json={"app_id": "hunonic", "name": "X"})
     assert response.status_code == 422
 
 
@@ -306,3 +334,77 @@ def test_a_disabled_knowledge_base_answers_503_with_the_reason(client, monkeypat
     response = TestClient(_app()).get("/api/kb/workflows")
     assert response.status_code == 503
     assert response.json()["detail"]["degraded"] is True
+
+
+def test_retrieve_accepts_metadata_filters(client):
+    """Câu hỏi có cấu trúc: ``screen``/``type`` đi thẳng vào bộ lọc, kết quả là tin cậy."""
+    workflow = _workflow(
+        "modal.home.switch_house",
+        status="draft",
+        metadata={"type": "modal", "screen": "home"},
+    )
+    http, _ = client(FakeStore([workflow]))
+    body = http.post(
+        "/api/kb/retrieve",
+        json={"app_id": "hunonic", "screen": "home", "type": "modal"},
+    ).json()
+
+    assert body["found"] is True
+    assert [hit["workflow_id"] for hit in body["hits"]] == ["modal.home.switch_house"]
+    assert body["hits"][0]["channels"]["filtered"] == 1
+    assert body["filters"]["screens"] == ["home"]
+    assert body["filters"]["types"] == ["modal"]
+
+
+def test_a_filter_that_matches_nothing_says_which_filter(client):
+    http, _ = client(FakeStore([_workflow()]))
+    body = http.post(
+        "/api/kb/retrieve", json={"app_id": "hunonic", "screen": "khong_ton_tai"}
+    ).json()
+
+    assert body["found"] is False
+    assert "khong_ton_tai" in body["reason"]
+
+
+def test_retrieve_requires_an_app_or_a_package(client):
+    """Không truy hồi mù: thiếu app_id **và** app_package là lỗi người gọi, không phải lỗi KB."""
+    http, _ = client(FakeStore([_workflow()]))
+    response = http.post("/api/kb/retrieve", json={"query": "đăng xuất"})
+
+    assert response.status_code == 400
+    assert "app_id" in response.json()["detail"]
+
+
+def test_retrieve_resolves_the_app_from_the_package(client):
+    """Máy tester chỉ biết package của app đang test — console phải tự tra ra app_id."""
+    http, store = client(FakeStore([_workflow()]))
+    store.package_map = {"com.hunonic.app": "hunonic"}
+    body = http.post(
+        "/api/kb/retrieve",
+        json={"query": "đăng xuất", "app_package": "com.hunonic.app"},
+    ).json()
+
+    assert body["app_id"] == "hunonic"
+
+
+def test_retrieve_hits_carry_scope_and_steps_for_remote_callers(client):
+    """Nơi gọi ở xa phải trả lời được "modal này thuộc màn hình nào" — không chỉ id."""
+    workflow = _workflow(
+        "modal.home.switch_house",
+        status="draft",
+        metadata={
+            "type": "modal",
+            "screen": "home",
+            "nav_edge": {"verified": False, "guards": [{"text": "isLoggedIn"}]},
+        },
+    )
+    http, _ = client(FakeStore([workflow]))
+    hit = http.post("/api/kb/retrieve", json={"query": "chuyển nhà", "app_id": "hunonic"}).json()[
+        "hits"
+    ][0]
+
+    assert hit["type"] == "modal"
+    assert hit["screen"] == "home"
+    assert hit["guards"] == ["isLoggedIn"]
+    assert hit["verified"] is False
+    assert hit["steps"][0]["target"] == "Tab cuối cùng"

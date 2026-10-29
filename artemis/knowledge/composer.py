@@ -378,6 +378,29 @@ class WorkflowShape:
     verification: tuple[str, ...] = ()
 
 
+#: Hướng vuốt của công cụ là hướng **ngón tay**, không phải hướng danh sách chạy.  Chỗ này từng
+#: làm agent kẹt: KB ghi "cuộn xuống" (ý là xem mục ở dưới) nên nó chọn ``direction='down'`` — mà
+#: ``'down'`` là vuốt xuống, tức lộ nội dung **bên trên**.  Đo 29/10/2026: hai lượt "Vuốt" liên
+#: tiếp trên màn Menu, màn hình không đổi, mục 'Đăng xuất' không bao giờ hiện.
+_SCROLL_DOWN_WORDS = ("cuon xuong", "scroll down", "vuot xuong", "keo xuong", "swipe down")
+_SCROLL_UP_WORDS = ("cuon len", "scroll up", "vuot len", "keo len", "swipe up")
+SWIPE_DOWN_HINT = "(muốn lộ nội dung BÊN DƯỚI thì vuốt LÊN: direction='up')"
+SWIPE_UP_HINT = "(muốn lộ nội dung BÊN TRÊN thì vuốt XUỐNG: direction='down')"
+
+
+def _swipe_direction_hint(text: str) -> str:
+    """Nhắc hướng vuốt đúng khi chữ của bước nói tới việc cuộn.
+
+    So trên dạng đã bỏ dấu, nên khớp cả khi KB viết hoa/thường hoặc không dấu.
+    """
+    lowered = normalize(text)
+    if any(normalize(word) in lowered for word in _SCROLL_DOWN_WORDS):
+        return SWIPE_DOWN_HINT
+    if any(normalize(word) in lowered for word in _SCROLL_UP_WORDS):
+        return SWIPE_UP_HINT
+    return ""
+
+
 def _step_action_text(step: Any) -> str:
     """Dòng thao tác của một bước, gồm cả tham số KB khai (``value``, ``until``).
 
@@ -385,6 +408,9 @@ def _step_action_text(step: Any) -> str:
     ``value`` (giá trị cần nhập) và 13 bước khai ``until`` ("cuộn cho tới khi X xuất hiện").
     Bỏ ``value`` là agent phải tự đoán giá trị; bỏ ``until`` là mất điều kiện dừng của vòng
     lặp — đúng loại điều kiện mà prompt cần nêu.
+
+    Bước nào nói tới việc cuộn thì kèm luôn hướng vuốt đúng cho công cụ (xem
+    :func:`_swipe_direction_hint`).
     """
     target = sanitize_ui_instructions(one_line(step.target))
     text = one_line(step.action)
@@ -398,6 +424,9 @@ def _step_action_text(step: Any) -> str:
         text += f" (lặp cho tới khi: {until})"
     if step.optional:
         text += " (chỉ khi cần)"
+    hint = _swipe_direction_hint(f"{text} {target} {until}")
+    if hint:
+        text += f" {hint}"
     return text
 
 
@@ -500,8 +529,43 @@ class StateDimension:
     label: str
     value_hint: str = ""
     observe: str = ""
+    #: Các bước của chính workflow *quan sát* (``observe``), dạng ``thao tác → kết quả mong đợi``.
+    #: Chỉ nêu id là không đủ: agent không đọc được KB, nên "theo KB auth.current_account" không
+    #: cho nó biết phải chạm vào đâu — đo trên máy thật, nó tap mò "profile icon top right" ba
+    #: lần rồi kết luận đã đăng nhập.  Guard in thẳng các bước này để có đường quan sát tường minh.
+    observe_steps: tuple[str, ...] = ()
     set_workflows: tuple[str, ...] = ()
     clear_workflow: str = ""
+    #: Bước của các workflow *đổi* giá trị (``clear_workflow`` + ``set_workflows``), theo thứ tự
+    #: ``(id, tên, các bước)``.  Guard chỉ nêu id thì agent không biết phải chạm vào đâu — đo trên
+    #: máy thật 29/10/2026: phát hiện đang đăng nhập sai tài khoản nhưng prompt không có bước đăng
+    #: xuất, nên agent đi tiếp sang màn của tài khoản sai thay vì đăng xuất rồi đăng nhập lại.
+    change_steps: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+
+
+def _observe_step_lines(workflow: Workflow) -> tuple[str, ...]:
+    """Các bước *quan sát* của workflow khai ``state_dimension``, dạng ``thao tác → kết quả``.
+
+    Guard trạng thái phải trả lời được câu "làm sao biết đang là giá trị nào".  Nêu id workflow
+    là chưa đủ vì agent chỉ thấy prompt, không đọc KB: đo trên máy thật với câu *"đăng nhập tài
+    khoản 0999 rồi vào màn ngữ cảnh chạy khi ấn…"*, agent tap mò "profile icon top right" ba lần
+    rồi tự kết luận "we have already verified the account" và bỏ qua bước đăng nhập — trong khi
+    KB đã ghi rõ cách đọc: mở **tab Menu** rồi đọc số ở khối tài khoản trên cùng.
+
+    Dùng đúng cách render của :func:`render_steps` (``action → expected_state``, kèm guard tìm
+    kiếm) để mục 2 và mục 3 của prompt đọc giống nhau; không bịa thêm chữ nào ngoài KB.
+    """
+    shape = normalize_workflow(workflow)
+    lines: list[str] = []
+    for index, action in enumerate(shape.actions):
+        text = action
+        state = shape.expected_results[index]
+        if state:
+            text += f" → {state}"
+        if index < len(workflow.steps) and is_search_step(workflow.steps[index]):
+            text += f" {SEARCH_GUARD}"
+        lines.append(text)
+    return tuple(dedupe_sentences(lines, mark_conflicts=False, merge_rules=False))
 
 
 def state_dimensions(workflows: Iterable[Workflow]) -> list[StateDimension]:
@@ -532,15 +596,52 @@ def state_dimensions(workflows: Iterable[Workflow]) -> list[StateDimension]:
                 label=label,
                 value_hint=one_line(spec.get("value_hint")),
                 observe=workflow.id,
+                observe_steps=_observe_step_lines(workflow),
                 set_workflows=tuple(
                     item
                     for item in (one_line(value) for value in setters)
                     if item and item in known
                 ),
                 clear_workflow=clear if clear in known else "",
+                change_steps=_change_step_lines(
+                    [
+                        clear if clear in known else "",
+                        *(
+                            item
+                            for item in (one_line(value) for value in setters)
+                            if item in known
+                        ),
+                    ],
+                    {workflow.id: workflow for workflow in workflows},
+                ),
             )
         )
     return out
+
+
+def _change_step_lines(
+    workflow_ids: Sequence[str],
+    by_id: dict[str, Workflow],
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """Bước của các workflow đổi giá trị, đúng thứ tự ``clear_workflow`` rồi tới ``set_workflows``.
+
+    Thứ tự này là *trình tự thật* khi đổi tài khoản: đăng xuất trước (đưa app về màn Đăng nhập),
+    rồi mới đăng nhập bằng tài khoản đích.
+    """
+    out: list[tuple[str, str, tuple[str, ...]]] = []
+    seen: set[str] = set()
+    for workflow_id in workflow_ids:
+        if not workflow_id or workflow_id in seen:
+            continue
+        workflow = by_id.get(workflow_id)
+        if workflow is None:
+            continue
+        steps = _observe_step_lines(workflow)
+        if not steps:
+            continue
+        seen.add(workflow_id)
+        out.append((workflow_id, one_line(workflow.name), steps))
+    return tuple(out)
 
 
 def _dimension_value(entry: TaskKnowledge, dimension: StateDimension, goal_value: str) -> str:
@@ -592,7 +693,20 @@ def _guard_lines(
         f"trước khi bỏ qua việc này."
     ]
     if dimension.observe:
-        lines.append(f"- Cách quan sát {dimension.label}: theo KB {dimension.observe}.")
+        if dimension.observe_steps:
+            # Mỗi dòng tự định danh ("Bước N") thay vì dựa vào thụt lề: mục 2 đi qua
+            # ``dedupe_sentences`` (mục 3 thì không), và bước dedupe chuẩn hoá mỗi dòng nên
+            # thụt lề bị mất — số thứ tự trơ ra ở cột 0 thì đọc như mục con của NHIỆM VỤ.
+            lines.append(
+                f"- Cách quan sát {dimension.label} (theo KB {dimension.observe})"
+                f" — làm lần lượt {len(dimension.observe_steps)} bước:"
+            )
+            lines.extend(
+                f"- Bước {index}: {text}"
+                for index, text in enumerate(dimension.observe_steps, 1)
+            )
+        else:
+            lines.append(f"- Cách quan sát {dimension.label}: theo KB {dimension.observe}.")
     setters = list(dimension.set_workflows)
     if dimension.clear_workflow and setters:
         lines.append(
@@ -605,6 +719,26 @@ def _guard_lines(
         lines.append(
             f"- Nếu phải đặt {dimension.label}: làm theo KB " + ", ".join(setters) + "."
         )
+    if dimension.change_steps:
+        # Bước cụ thể của các workflow đổi giá trị: guard chỉ nêu id thì agent phải tự tìm mục
+        # Đăng xuất/chuyển tài khoản trên màn hình, và đo trên máy thật nó đã bỏ qua luôn việc đổi.
+        # Chỉ in workflow **chưa có trong prompt** (bước của cách làm chính đã nằm ở mục kiến thức),
+        # và tối đa hai workflow — mỗi workflow 4 bước, in hết cả ba là ăn hết hạn mức của brief.
+        covered = {hit.workflow.id for hit in [*entry.primary, *entry.supporting]}
+        missing = [item for item in dimension.change_steps if item[0] not in covered]
+        # Ưu tiên bước "xoá giá trị" (đăng xuất) — đó là phần luôn thiếu khi agent phát hiện sai
+        # tài khoản; các cách *đặt* giá trị thường đã là cách làm chính nên bước của chúng đã có
+        # trong prompt.  Tối đa một workflow: bốn bước kèm điều kiện dừng đã ~1.100 ký tự.
+        picks = [
+            item for item in missing if item[0] == dimension.clear_workflow
+        ][:1] or missing[:1]
+        if picks:
+            lines.append(f"- Bước để đổi {dimension.label} (theo KB, làm lần lượt):")
+            for workflow_id, name, steps in picks:
+                lines.append(f"- «{workflow_id}» — {name}:")
+                lines.extend(
+                    f"- Bước {index}: {text}" for index, text in enumerate(steps, 1)
+                )
     lines.append(
         f"- Không quan sát được {dimension.label} ⇒ DỪNG, báo {CODE_NOT_VERIFIED}; KHÔNG được "
         f"coi là đã đúng."

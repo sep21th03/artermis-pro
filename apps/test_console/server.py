@@ -833,6 +833,13 @@ class Runner:
         # hoàn chỉnh trong tab Knowledge — lúc đó dùng bản đã sửa và báo ARTEMIS
         # đừng ghép kiến thức lần nữa (xem ARTEMIS_KB_PRESUPPLIED).
         override = req.prompt_override.strip()
+        if not override:
+            # Không có prompt đã chuẩn bị ⇒ chuẩn bị ngay tại đây. Chạy bằng câu trần thì agent
+            # không có kiến thức nào và tự nghĩ ra cách làm: đo trên máy thật 29/10/2026, nó xoá số
+            # điện thoại cũ rồi gõ `0999` vào ô tài khoản đã lưu và bấm Đăng nhập → "Tài khoản hoặc
+            # mật khẩu không đúng!", trong khi KB ghi rõ phải chọn tài khoản từ danh sách đã lưu
+            # (auth.switch_account) khi tester không nêu mật khẩu.
+            override = prepare_prompt_for_run(goal, package=package, profile=req.profile)
         goal_sent = override or goal
 
         with self._lock:
@@ -2137,15 +2144,21 @@ def console_llm_chat(messages: list[dict], *, max_tokens: int, timeout: float) -
 
     Không tạo client LLM thứ hai: console này vốn là proxy (nó giữ key thật và
     chuyển tiếp ``/llm/v1/chat/completions``), nên bước chuẩn bị dùng chính
-    ``upstream_base()`` + key trong ``.env``.  Nhờ vậy máy tester không cần key LLM,
-    và chỉ có một nơi cấu hình model.
+    ``upstream_base()`` + khoá khớp upstream (``upstream_key()``).  Nhờ vậy máy tester
+    không cần key LLM, và chỉ có một nơi cấu hình model.
     """
-    env = read_env_file(ARTEMIS_ENV)
-    key = (env.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
     local = is_local_llm()
+    # Khoá phải khớp **upstream**, không theo tên biến: endpoint tương thích OpenAI của
+    # Google chỉ nhận GEMINI_API_KEY. Gửi OPENAI_API_KEY (khoá truy cập console) thì
+    # Google trả 400 "Please pass a valid API key" và mọi lần chuẩn bị prompt (KB
+    # ingestion / viết workflow) âm thầm rơi về fallback mà không ai thấy lỗi.
+    key = upstream_key()
     if not local and not key:
-        raise RuntimeError("Thiếu OPENAI_API_KEY trong Artemis .env")
-    model = LOCAL_MODEL if local else resolve_model_name(llm_summary().get("model") or "")
+        missing = "GEMINI_API_KEY" if upstream_is_google() else "OPENAI_API_KEY"
+        raise RuntimeError(f"Thiếu {missing} trong Artemis .env")
+    model = LOCAL_MODEL if local else normalize_upstream_model(
+        resolve_model_name(llm_summary().get("model") or "")
+    )
     if not model:
         raise RuntimeError("Chưa xác định được model trong config/artemis.jsonc")
     body = {
@@ -2180,6 +2193,51 @@ def console_llm_chat(messages: list[dict], *, max_tokens: int, timeout: float) -
     if isinstance(content, list):  # một số gateway trả content dạng mảng part
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     return content if isinstance(content, str) else ""
+
+
+def prepare_prompt_for_run(goal: str, *, package: str, profile: str) -> str:
+    """Chuẩn bị prompt (KB + composer) cho một lần chạy **không** có prompt tester đã sửa.
+
+    Vì sao bắt buộc: chạy bằng câu trần thì agent không có kiến thức nào — đo trên máy thật
+    29/10/2026, nó tự nghĩ ra cách "xoá số điện thoại cũ rồi gõ `0999` vào ô tài khoản đã lưu"
+    và bấm Đăng nhập → *"Tài khoản hoặc mật khẩu không đúng!"*, trong khi KB đã ghi rõ: chọn tài
+    khoản từ danh sách đã lưu (``auth.switch_account``) khi tester không nêu mật khẩu.
+
+    Không bao giờ raise và không bao giờ chặn tester: KB/LLM hỏng thì trả ``""`` và lần chạy đi
+    bằng câu gốc như trước.
+    """
+    try:
+        from artemis.knowledge.prepare import (
+            STATUS_LLM,
+            STATUS_NO_KNOWLEDGE,
+            prepare_prompt,
+        )
+
+        prepare_enabled = True
+        try:
+            from artemis.config.settings import settings as artemis_settings
+
+            prepare_enabled = bool(getattr(artemis_settings, "ARTEMIS_PREPARE_ENABLED", True))
+        except Exception:  # noqa: BLE001 - thiếu config thì coi như bật
+            pass
+
+        outcome = prepare_prompt(
+            goal,
+            app_package=package or None,
+            profile=profile,
+            synthesizer=console_llm_chat if prepare_enabled else None,
+            model=resolve_model_name(llm_summary().get("model") or ""),
+        )
+    except Exception as exc:  # noqa: BLE001 - KB là phụ trợ, không được chặn tester
+        print(f"⚠ Không chuẩn bị được prompt từ KB, chạy bằng câu gốc: {exc}")
+        return ""
+    if outcome.status == STATUS_NO_KNOWLEDGE:
+        print("⚠ KB không có workflow nào cho việc này — chạy bằng câu gốc.")
+        return ""
+    if outcome.status != STATUS_LLM:
+        print(f"⚠ Prompt tự chuẩn bị ở mức {outcome.status}: {outcome.fallback_reason or ''}")
+    return outcome.enhanced_prompt or ""
+
 
 
 @shared_route("post", "/api/knowledge/prepare")
@@ -2317,6 +2375,91 @@ def normalize_upstream_model(model: str) -> str:
 
 
 
+# ---------------------------------------------------------------------------
+# Chữ ký suy nghĩ (thought signature) của Gemini 3
+# ---------------------------------------------------------------------------
+# Gemini 3 gắn một ``thought_signature`` vào **từng functionCall part** và bắt buộc client
+# gửi lại chữ ký đó khi replay lượt có tool call. Thiếu chữ ký thì upstream trả 400
+# INVALID_ARGUMENT ("Function call is missing a thought_signature ... position N") và
+# ARTEMIS xếp 400 vào nhóm ``bad_request`` — lỗi vĩnh viễn, không retry — nên task chết
+# ngay ở lượt thứ hai: Planner gọi ``save_note`` xong là dừng, UI chỉ hiện "Agent báo
+# task thất bại, không có mô tả chi tiết".
+#
+# Gateway OpenAI-compatible trả chữ ký ở ``tool_calls[].extra_content.google.thought_signature``
+# (đúng chuẩn Google), nhưng ``langchain_openai`` và SDK ``openai`` không biết trường
+# ``extra_content`` nên nó rơi mất ngay khi parse response. Proxy này nhìn thấy cả hai
+# chiều traffic, nên nhớ chữ ký theo ``tool_call.id`` rồi gắn lại vào request sau —
+# phía agent (ARTEMIS core) không phải đổi gì.
+_THOUGHT_SIGNATURES: dict[str, str] = {}
+#: Trần số chữ ký giữ trong RAM: một task dài sinh hàng nghìn tool call, giữ vừa đủ cho
+#: các lượt gần nhất để console chạy nhiều ngày không phình bộ nhớ.
+_THOUGHT_SIGNATURE_LIMIT = 4000
+
+
+def remember_thought_signatures(payload: object) -> int:
+    """Ghi nhớ chữ ký Gemini 3 có trong một response hoặc một SSE event.
+
+    Đi đệ quy vì chữ ký nằm trong ``tool_calls`` của message đầy đủ
+    (``choices[].message``) lẫn trong delta streaming (``choices[].delta.tool_calls``).
+    Trả về số chữ ký vừa ghi nhớ.
+    """
+    remembered = 0
+
+    def walk(node: object) -> None:
+        nonlocal remembered
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+        extra = node.get("extra_content")
+        signature = None
+        if isinstance(extra, dict):
+            google = extra.get("google")
+            if isinstance(google, dict):
+                signature = google.get("thought_signature")
+        call_id = node.get("id")
+        if isinstance(signature, str) and signature and isinstance(call_id, str) and call_id:
+            if _THOUGHT_SIGNATURES.get(call_id) != signature:
+                _THOUGHT_SIGNATURES[call_id] = signature
+                remembered += 1
+                while len(_THOUGHT_SIGNATURES) > _THOUGHT_SIGNATURE_LIMIT:
+                    _THOUGHT_SIGNATURES.pop(next(iter(_THOUGHT_SIGNATURES)))
+        for value in node.values():
+            walk(value)
+
+    walk(payload)
+    return remembered
+
+
+def attach_thought_signatures(body: dict) -> int:
+    """Gắn lại chữ ký đã nhớ vào các assistant message có ``tool_calls`` (sửa tại chỗ).
+
+    Trả về số tool call được gắn. Chỉ chạm vào tool call còn thiếu ``extra_content``,
+    nên request không có tool call — hoặc chữ ký chưa từng thấy — đi nguyên vẹn.
+    """
+    attached = 0
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for call in tool_calls:
+            if not isinstance(call, dict) or call.get("extra_content"):
+                continue
+            signature = _THOUGHT_SIGNATURES.get(call.get("id"))
+            if signature:
+                call["extra_content"] = {"google": {"thought_signature": signature}}
+                attached += 1
+    return attached
+
+
+
 LOCAL_MODEL = os.getenv("ARTEMIS_LOCAL_MODEL", "artemis-local")
 
 
@@ -2416,6 +2559,10 @@ async def llm_proxy(path: str, request: Request) -> Response:
         body = budget.clamp_output(body)
         if isinstance(body.get("model"), str):
             body["model"] = normalize_upstream_model(body["model"])
+        # Gemini 3 đòi chữ ký ở mọi functionCall part được replay; xem ghi chú ở
+        # remember_thought_signatures(). Không có chữ ký thì lượt gọi tool thứ hai
+        # của Planner nhận 400 và cả task dừng.
+        attach_thought_signatures(body)
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
 
     headers = {
@@ -2483,6 +2630,7 @@ async def llm_proxy(path: str, request: Request) -> Response:
                             event = json.loads(payload)
                         except ValueError:
                             continue
+                        remember_thought_signatures(event)
                         if event.get("usage"):
                             usage = event["usage"]
             finally:
@@ -2501,6 +2649,7 @@ async def llm_proxy(path: str, request: Request) -> Response:
     if body is not None and upstream.status_code == 200:
         try:
             data = json.loads(content)
+            remember_thought_signatures(data)
             usage = data.get("usage") or {}
             budget.record(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
         except ValueError:

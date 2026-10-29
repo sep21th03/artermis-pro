@@ -714,7 +714,18 @@ SECTION_KNOWLEDGE = "KIẾN THỨC ỨNG DỤNG:"
 SECTION_CONTEXT = "BỐI CẢNH / CẢNH BÁO:"
 SECTION_GAP = "KB CHƯA CÓ HƯỚNG DẪN:"
 SECTION_CRITERIA = "TIÊU CHÍ XÁC MINH:"
-SECTIONS = (SECTION_PLAN, SECTION_KNOWLEDGE, SECTION_CONTEXT, SECTION_GAP, SECTION_CRITERIA)
+#: Trạng thái phải đạt *kèm giá trị cụ thể*, cách quan sát và bước để đổi (xem
+#: :func:`build_knowledge_brief`).  Không có mục này thì "chỉ khi chưa đăng nhập bằng tài khoản
+#: X" chỉ là phép kiểm nhị phân: đang đăng nhập bằng tài khoản nào cũng tính là đã đúng.
+SECTION_STATE = "TRẠNG THÁI PHẢI ĐẠT (xác minh trên UI, KHÔNG mặc định là đúng):"
+SECTIONS = (
+    SECTION_PLAN,
+    SECTION_STATE,
+    SECTION_KNOWLEDGE,
+    SECTION_CONTEXT,
+    SECTION_GAP,
+    SECTION_CRITERIA,
+)
 
 #: Câu bắt buộc phải có khi KB thiếu workflow cho một task.
 GAP_ADVICE = (
@@ -958,11 +969,33 @@ def render_criteria(entries: Sequence[TaskKnowledge], final_goal: dict) -> list[
     return lines
 
 
+def _state_lines(
+    entries: Sequence[TaskKnowledge],
+    dimensions: Sequence[Any],
+    index: Sequence[Workflow],
+    final_goal: dict,
+) -> list[str]:
+    """Mục trạng thái: so giá trị + cách quan sát + bước để đổi — dựng bằng **cùng** hàm của
+    composer (:func:`artemis.knowledge.composer.render_state_guards`) để hai đường prompt không
+    lệch nhau.  Import trong hàm vì ``composer`` nhập ngược lại module này.
+    """
+    if not dimensions:
+        return []
+    try:
+        from artemis.knowledge.composer import render_state_guards
+    except Exception as exc:  # noqa: BLE001 - thiếu composer thì brief vẫn phải dựng được
+        logger.warning("Không dựng được mục trạng thái cho brief: %s", exc)
+        return []
+    return list(render_state_guards(entries, dimensions, final_goal))
+
+
 def build_knowledge_brief(
     entries: Sequence[TaskKnowledge],
     final_goal: dict,
     *,
     max_chars: int,
+    dimensions: Sequence[Any] = (),
+    index: Sequence[Workflow] = (),
 ) -> str:
     """Phần kiến thức đã phân loại, dạng có mục — đầu vào cho LLM tổng hợp.
 
@@ -970,7 +1003,13 @@ def build_knowledge_brief(
     mất chúng thì prompt mất mục tiêu hoặc mất cảnh báo thiếu kiến thức, nên chúng
     luôn được giữ trước.  Kiến thức chi tiết và bối cảnh là phần bị cắt khi hạn mức
     chật — thà thiếu một dòng mô tả còn hơn mất tiêu chí xác minh.
+
+    ``dimensions`` là các trạng thái có giá trị mà KB khai (tài khoản đang đăng nhập, nhà đang
+    chọn…).  Có nó thì brief mang thêm mục :data:`SECTION_STATE`: *so giá trị*, *cách quan sát*
+    và **bước cụ thể để đổi** — đo trên máy thật 29/10/2026, prompt không có mục này nên agent
+    phát hiện sai tài khoản mà vẫn đi tiếp sang màn của tài khoản cũ thay vì đăng xuất/đăng nhập.
     """
+    state_lines = _state_lines(entries, dimensions, index, final_goal)
     primary: list[WorkflowHit] = []
     seen: set[str] = set()
     for entry in entries:
@@ -1001,10 +1040,14 @@ def build_knowledge_brief(
         [CONTEXT_DISCLAIMER, *render_supporting_context(context_hits)] if context_hits else []
     )
 
-    # Ưu tiên: kế hoạch → khoảng trống → tiêu chí → kiến thức → bối cảnh.
+    # Ưu tiên: kế hoạch → trạng thái phải đạt → khoảng trống → tiêu chí → kiến thức → bối cảnh.
+    # Trạng thái đứng ngay sau kế hoạch vì nó là **cổng điều kiện**: sai tài khoản/nhà thì mọi
+    # bước sau đều làm trên dữ liệu sai, và vì ở vị trí này nó không bị cắt khi hạn mức chật.
     # Khoảng trống đứng trước tiêu chí vì "KB không có hướng dẫn" là thứ ngăn agent tự
     # bịa quy trình — thiếu nó nguy hiểm hơn thiếu một dòng tiêu chí.
     ordered: list[tuple[str, list[str]]] = [(SECTION_PLAN, plan_lines)]
+    if state_lines:
+        ordered.append((SECTION_STATE, state_lines))
     if gap_lines:
         ordered.append((SECTION_GAP, gap_lines))
     ordered.append((SECTION_CRITERIA, criteria_lines))
@@ -1042,14 +1085,22 @@ def build_deterministic_prompt(
     final_goal: dict,
     *,
     max_chars: int,
+    dimensions: Sequence[Any] = (),
+    index: Sequence[Workflow] = (),
 ) -> str:
     """Enhanced Prompt dựng bằng luật, không cần LLM — dùng cho đường dự phòng.
 
     Cùng năm mục như bản LLM, cùng tầng phân loại vai trò, nên khi LLM hỏng tester
     vẫn nhận được một prompt có mục tiêu, có điều kiện, có khoảng trống được báo và
     có tiêu chí xác minh.
+
+    ``dimensions``/``index`` (tuỳ chọn) thêm mục trạng thái phải đạt — kèm giá trị tester nêu,
+    cách quan sát và **bước để đổi** (đăng xuất → đăng nhập lại).  Không truyền thì bản dựng
+    giữ nguyên như trước.
     """
-    brief = build_knowledge_brief(entries, final_goal, max_chars=max_chars)
+    brief = build_knowledge_brief(
+        entries, final_goal, max_chars=max_chars, dimensions=dimensions, index=index
+    )
     goal = (original_prompt or "").strip()
     if not brief:
         return goal

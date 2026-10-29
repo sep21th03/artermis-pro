@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from artemis.knowledge.filters import KnowledgeFilter
 from artemis.knowledge.models import Workflow
 from artemis.knowledge.stores.base import (
     EmbeddingRow,
@@ -444,6 +445,55 @@ class PostgresKnowledgeStore:
         "AND w.status <> 'deprecated'"
     )
 
+    def _scope_clause(self, filters: KnowledgeFilter | None) -> str:
+        """``_SCOPE`` + điều kiện metadata của lần truy hồi này.
+
+        Dựng mệnh đề ở một chỗ duy nhất để **mọi** kênh (exact, keyword, vector, filtered) lọc
+        giống nhau — nếu mỗi kênh tự lọc thì sớm muộn cũng có kênh quên, và kết quả là truy hồi
+        trả về mục ngoài phạm vi mà người gọi tưởng đã bị loại.
+        """
+        parts = [
+            "w.app_id = %(app)s",
+            "(w.version_id IS NULL OR w.version_id = %(ver)s)",
+        ]
+        if filters is None or filters.exclude_deprecated:
+            parts.append("w.status <> 'deprecated'")
+        if filters is None:
+            return " AND ".join(parts)
+        if filters.ids:
+            parts.append("w.id = ANY(%(f_ids)s)")
+        if filters.namespaces:
+            parts.append("w.id LIKE ANY(%(f_namespaces)s)")
+        if filters.types:
+            parts.append("w.metadata->>'type' = ANY(%(f_types)s)")
+        if filters.screens:
+            parts.append("w.metadata->>'screen' = ANY(%(f_screens)s)")
+        if filters.tags:
+            parts.append("w.tags && %(f_tags)s::text[]")
+        if filters.statuses:
+            parts.append("w.status = ANY(%(f_statuses)s)")
+        return " AND ".join(parts)
+
+    @staticmethod
+    def _filter_params(filters: KnowledgeFilter | None) -> dict[str, Any]:
+        """Tham số bổ sung tương ứng ``_scope_clause`` (rỗng khi không lọc)."""
+        if filters is None:
+            return {}
+        params: dict[str, Any] = {}
+        if filters.ids:
+            params["f_ids"] = list(filters.ids)
+        if filters.namespaces:
+            params["f_namespaces"] = list(filters.namespace_patterns())
+        if filters.types:
+            params["f_types"] = list(filters.types)
+        if filters.screens:
+            params["f_screens"] = list(filters.screens)
+        if filters.tags:
+            params["f_tags"] = list(filters.tags)
+        if filters.statuses:
+            params["f_statuses"] = list(filters.statuses)
+        return params
+
     _RANK_CASE = """
         CASE
             WHEN lower(w.id) = %(q)s THEN 1
@@ -456,7 +506,12 @@ class PostgresKnowledgeStore:
     """
 
     def search_exact(
-        self, query: str, app_id: str, version_id: str | None, limit: int = DEFAULT_CHANNEL_LIMIT
+        self,
+        query: str,
+        app_id: str,
+        version_id: str | None,
+        limit: int = DEFAULT_CHANNEL_LIMIT,
+        filters: KnowledgeFilter | None = None,
     ) -> list[str]:
         """Workflow id and alias matches, strongest first.
 
@@ -473,18 +528,29 @@ class PostgresKnowledgeStore:
                 SELECT w.id, MIN({self._RANK_CASE}) AS rank
                 FROM kb_workflow w
                 LEFT JOIN kb_workflow_alias a ON a.workflow_id = w.id
-                WHERE {self._SCOPE}
+                WHERE {self._scope_clause(filters)}
                 GROUP BY w.id
                 HAVING MIN({self._RANK_CASE}) < 99
                 ORDER BY rank, w.id
                 LIMIT %(limit)s
                 """,
-                {"q": normalised, "app": app_id, "ver": version_id, "limit": limit},
+                {
+                    "q": normalised,
+                    "app": app_id,
+                    "ver": version_id,
+                    "limit": limit,
+                    **self._filter_params(filters),
+                },
             )
             return [row[0] for row in cur.fetchall()]
 
     def search_keyword(
-        self, query: str, app_id: str, version_id: str | None, limit: int = DEFAULT_CHANNEL_LIMIT
+        self,
+        query: str,
+        app_id: str,
+        version_id: str | None,
+        limit: int = DEFAULT_CHANNEL_LIMIT,
+        filters: KnowledgeFilter | None = None,
     ) -> list[tuple[str, float]]:
         """Full-text search over the normalised projection.
 
@@ -507,7 +573,7 @@ class PostgresKnowledgeStore:
                        (SELECT count(*) FROM unnest(%(tokens)s::text[]) AS t
                          WHERE w.search_text ~ ('\\m' || t || '\\M')) AS matched
                 FROM kb_workflow w
-                WHERE {self._SCOPE}
+                WHERE {self._scope_clause(filters)}
                   AND to_tsvector('simple', w.search_text)
                       @@ to_tsquery('simple', %(tsq)s)
                 ORDER BY rank DESC, w.id
@@ -518,6 +584,7 @@ class PostgresKnowledgeStore:
                     "tokens": tokens,
                     "app": app_id,
                     "ver": version_id,
+                    **self._filter_params(filters),
                     "limit": limit,
                 },
             )
@@ -531,6 +598,7 @@ class PostgresKnowledgeStore:
         app_id: str,
         version_id: str | None,
         limit: int = DEFAULT_CHANNEL_LIMIT,
+        filters: KnowledgeFilter | None = None,
     ) -> list[tuple[str, float]]:
         """Cosine nearest neighbours for ``model``, best first."""
         if not vector:
@@ -541,7 +609,7 @@ class PostgresKnowledgeStore:
                 SELECT w.id, 1 - (e.embedding <=> %(vec)s::vector) AS similarity
                 FROM kb_workflow_embedding e
                 JOIN kb_workflow w ON w.id = e.workflow_id
-                WHERE e.model = %(model)s AND {self._SCOPE}
+                WHERE e.model = %(model)s AND {self._scope_clause(filters)}
                 ORDER BY e.embedding <=> %(vec)s::vector
                 LIMIT %(limit)s
                 """,
@@ -551,9 +619,43 @@ class PostgresKnowledgeStore:
                     "app": app_id,
                     "ver": version_id,
                     "limit": limit,
+                    **self._filter_params(filters),
                 },
             )
             return [(row[0], float(row[1])) for row in cur.fetchall()]
+
+    def search_filtered(
+        self,
+        filters: KnowledgeFilter,
+        app_id: str,
+        version_id: str | None,
+        limit: int = DEFAULT_CHANNEL_LIMIT,
+    ) -> list[str]:
+        """Ids khớp bộ lọc metadata, **không cần câu truy vấn**.
+
+        Dùng cho câu hỏi có cấu trúc ("modal nào thuộc màn hình `home`?") — câu hỏi mà truy hồi
+        ngữ nghĩa không trả lời được vì không có văn bản nào để so. Thứ tự: độ tin cậy ghi trong
+        ``metadata.confidence`` giảm dần, rồi theo id (ổn định giữa các lần chạy).
+        """
+        if filters is None or filters.is_empty:
+            return []
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT w.id
+                FROM kb_workflow w
+                WHERE {self._scope_clause(filters)}
+                ORDER BY COALESCE((w.metadata->>'confidence')::float, 0) DESC, w.id
+                LIMIT %(limit)s
+                """,
+                {
+                    "app": app_id,
+                    "ver": version_id,
+                    "limit": limit,
+                    **self._filter_params(filters),
+                },
+            )
+            return [row[0] for row in cur.fetchall()]
 
     # ── embeddings ───────────────────────────────────────────────────────
     def load_embeddings(
@@ -615,7 +717,38 @@ class PostgresKnowledgeStore:
 
     # ── observability ────────────────────────────────────────────────────
     def log_retrieval(self, entry: RetrievalLogEntry) -> None:
+        """Ghi một lần truy hồi.
+
+        Có hai câu INSERT vì ``filters`` là cột **mới**: bản tự host đã migrate thì lưu được bộ
+        lọc, còn KB từ xa chưa migrate vẫn ghi log bình thường (mất phần bộ lọc, không mất bản
+        ghi). Nếu chỉ có một câu INSERT thì mỗi lần truy hồi vào KB cũ sẽ ném lỗi cột không tồn tại.
+        """
         with self._connect() as conn, conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO kb_retrieval_log
+                        (run_id, query, app_id, version_id, retrieved, chosen_workflow_id,
+                         context_sent, timings_ms, degraded, filters)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s::jsonb)
+                    """,
+                    (
+                        entry.run_id,
+                        entry.query,
+                        entry.app_id,
+                        entry.version_id,
+                        json.dumps(entry.retrieved),
+                        entry.chosen_workflow_id,
+                        entry.context_sent,
+                        json.dumps(entry.timings_ms),
+                        entry.degraded,
+                        json.dumps(entry.filters or {}),
+                    ),
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 - cột filters có thể chưa tồn tại
+                logger.debug("kb_retrieval_log chưa có cột filters (%s); ghi bản không bộ lọc", exc)
+                conn.rollback()
             cur.execute(
                 """
                 INSERT INTO kb_retrieval_log

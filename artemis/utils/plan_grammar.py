@@ -283,6 +283,97 @@ def milestones_changed(before: PlanSnapshot, after: PlanSnapshot) -> bool:
     return before.milestone_texts != after.milestone_texts
 
 
+def settle_completed_milestones(content: str | None) -> tuple[str, tuple[str, ...]]:
+    """Chốt các công đoạn **đã xong** bằng code, và trả về tên những công đoạn vừa chốt.
+
+    **Vì sao cần.**  ``convergence_gate`` chỉ đọc ``all_top_level_done`` — nghĩa là nó *hoàn
+    toàn* tin vào việc model tự đánh dấu milestone.  Không có chỗ nào *tính* công đoạn, nên
+    không ai phát hiện "công đoạn đã xong mà chưa được chốt".  Đo trên máy thật 28/10/2026
+    (câu *"đăng nhập tài khoản 0999 chuyển nhà sang nhà 'Mesh Tạo 2' rồi vào màn ngữ cảnh…"*):
+    plan là ``[/] Switch active house to "Mesh Tạo 2"`` với **cả hai** sub-goal đã ``[x]``, nhưng
+    model không chốt milestone cũng không mở công đoạn kế tiếp — nó lặp tap/vuốt trên màn Quản
+    lý nhà (step 25–30, cùng một toạ độ) cho tới hết ngân sách.
+
+    **Quy tắc** (tất định, không suy diễn): một milestone **có** sub-goal và mọi sub-goal đã
+    ``[x]`` ⇒ milestone ``[x]``.  Milestone không có sub-goal thì để nguyên: không có bằng chứng
+    nào để chốt.  Milestone vòng lặp (``[Loop]``/``[Loop:continuous]``) không bao giờ bị chốt
+    tự động — việc giám sát chỉ kết thúc khi có tín hiệu dừng của người dùng.
+
+    Chỉ đổi đúng ký tự trạng thái trên dòng của milestone; mọi dòng khác giữ nguyên từng ký tự.
+    """
+    text = content or ""
+    snapshot = parse_plan(text)
+    if not snapshot.has_top_level:
+        return text, ()
+    lines = text.splitlines()
+    settled: list[str] = []
+    for milestone in snapshot.top_level:
+        if milestone.is_done or milestone.is_loop:
+            continue
+        children = snapshot.children_of(milestone)
+        if not children or not all(child.is_done for child in children):
+            continue
+        if milestone.line_no >= len(lines):
+            continue
+        match = CHECKBOX_LINE_RE.match(lines[milestone.line_no])
+        if not match:
+            continue
+        start, end = match.span("status")
+        lines[milestone.line_no] = lines[milestone.line_no][:start] + STATUS_DONE + lines[milestone.line_no][end:]
+        settled.append(milestone.text)
+    if not settled:
+        return text, ()
+    rewritten = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    return rewritten, tuple(settled)
+
+
+def render_plan_progress(content: str | None) -> str:
+    """Một dòng tiến độ công đoạn — **chỗ duy nhất** đếm công đoạn của cả lượt chạy.
+
+    In ra cho agent thấy nó đang ở công đoạn nào, còn mấy công đoạn, và công đoạn kế tiếp là gì.
+    Không có dòng này thì agent phải tự suy ra tiến độ từ chính plan nó vừa viết — và đo trên
+    máy thật, nó đọc sai: milestone đã xong (mọi sub-goal ``[x]``) vẫn bị coi là đang làm, nên
+    agent quay lại thao tác trên màn hình cũ thay vì đi tiếp.
+
+    Trả chuỗi rỗng khi plan chưa có milestone nào (không in dòng vô nghĩa).
+    """
+    snapshot = parse_plan(content)
+    if not snapshot.has_top_level:
+        return ""
+    milestones = snapshot.top_level
+    done = sum(1 for item in milestones if item.is_done)
+    current = snapshot.active_milestone()
+    parts = [f"Progress: {done}/{len(milestones)} công đoạn đã xong"]
+    if current is not None:
+        parts.append(f"đang làm: «{_one_line(current.text)}»")
+        children = snapshot.children_of(current)
+        if current.is_active and children and all(child.is_done for child in children):
+            parts.append("mọi việc con của nó đã [x] ⇒ chốt nó và đi tiếp, KHÔNG làm lại")
+    upcoming = next(
+        (item for item in milestones if not item.is_done and item.key != (current.key if current else None)),
+        None,
+    )
+    if upcoming is not None:
+        parts.append(f"kế tiếp: «{_one_line(upcoming.text)}»")
+    return " · ".join(parts)
+
+
+def _one_line(text: str, limit: int = 90) -> str:
+    collapsed = " ".join((text or "").split())
+    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"
+
+
+def plan_with_progress(content: str | None) -> str:
+    """Plan kèm dòng tiến độ công đoạn ở đầu — dùng ở **mọi chỗ agent đọc plan**.
+
+    Gom vào một hàm để hai đường prompt (legacy ``build_plan_and_history`` và transcript
+    ``PlanRecitationPromptComponent``) không thể lệch nhau về cách đếm công đoạn.
+    """
+    text = content or ""
+    progress = render_plan_progress(text)
+    return f"{progress}\n{text}" if progress else text
+
+
 def _check_multiset(snapshot: PlanSnapshot) -> Counter:
     return Counter((ci.kind, ci.when, ci.text, ci.parent_key) for ci in snapshot.check_items)
 

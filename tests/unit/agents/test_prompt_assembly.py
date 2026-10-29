@@ -150,7 +150,10 @@ def test_full_set_enum_slots_render_verbatim():
         "Turn-Ending Action (`click`, `swipe`, `input_text`, `long_press`,"
         " `press_key`, `manage_app`, or `wait_for_delay`)" in out
     )
-    assert "Helper/Subagent tools (`ask_explorer`, `ask_diagnoser`, `video_analyzer`)" in out
+    assert (
+        "Helper/Subagent tools (`ask_explorer`, `ask_diagnoser`, `video_analyzer`, `kb_lookup`)"
+        in out
+    )
     assert "ADB/task tools (`run_adb_command`, `manage_task`)" in out
     assert (
         "(`read_note`, `list_notes`, `search_history`, `replay_steps`, `get_step_screenshot`)"
@@ -160,6 +163,30 @@ def test_full_set_enum_slots_render_verbatim():
     # analyze_task_output is not advertised.
     assert "`save_note`, and" not in out
     assert "analyze_task_output" not in out
+
+
+def test_removed_kb_lookup_takes_its_teaching_along():
+    """Thiếu ``kb_lookup`` thì prompt không được nhắc tới nó (Pro và Flash cùng luật)."""
+    template = load_operator_prompts()["main_template"]
+    out = apply_operator_prompt_contract(
+        template, available_tools=OPERATOR_PROMPT_TOOLSET - {"kb_lookup"}
+    )
+    assert "`kb_lookup`" not in out
+    assert "Knowledge lookup" not in out
+
+    flash = _render_flash(FLASH_FULL)
+    assert "`kb_lookup`" not in flash
+    assert "Knowledge Lookup" not in flash
+
+
+def test_kb_lookup_teaching_appears_when_the_tool_is_available():
+    """Có tool thì phải có câu dạy dùng nó — nếu không model không biết khi nào gọi."""
+    out = apply_operator_prompt_contract(load_operator_prompts()["main_template"])
+    assert "Knowledge lookup" in out
+
+    flash = _render_flash(FLASH_FULL | {"kb_lookup"})
+    assert "Knowledge Lookup (`kb_lookup`)" in flash
+    assert "{%" not in flash
 
 
 # --- Flash prompt assembly -----------------------------------------------------------

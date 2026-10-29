@@ -48,7 +48,7 @@ from artemis.utils.coordinates import (
     parse_swipe_parameters,
 )
 from artemis.utils.notes import get_note_file_path
-from artemis.utils.plan_grammar import parse_plan
+from artemis.utils.plan_grammar import parse_plan, plan_with_progress, settle_completed_milestones
 from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import get_active_subgoal_hashes
 from artemis.utils.visualization import format_minimal_list_with_elements
@@ -74,6 +74,15 @@ DEFERRING_TOOLS = {
 # Bare key names press_key accepts (case-insensitive, optional KEYCODE_ prefix).
 SUPPORTED_PRESS_KEYS = ("ENTER", "BACK", "HOME", "APP_SWITCH")
 
+from artemis.agents.operator.contract import (
+    SAVED_ACCOUNT_TERMS,
+    ContractContext,
+    Violation,
+    check_actions,
+    describe,
+    is_enforced,
+    tester_supplied_password,
+)
 from artemis.agents.operator.prompts import (
     OPERATOR_MAX_TOOL_ITERATIONS,
     PromptBuilder,
@@ -87,6 +96,11 @@ from artemis.agents.operator.prompts import (
     ExecutionIncidentPromptComponent,
     BackgroundTasksPromptComponent,
     render_plan_ledger_bounce,
+    render_state_evidence_bounce,
+    observed_identifiers,
+    KbFocusPromptComponent,
+    StateEvidencePromptComponent,
+    ExecutionStatePromptComponent,
     ReasoningReminderPromptComponent,
     unwritten_action_streak,
     ToolLimitWarningPromptComponent,
@@ -140,6 +154,11 @@ class OperatorNode:
         self._transcript_turn_base: int | None = None
         self._turn_plan_baseline: str | None = None
         self._turn_ledger_streak: int = 0
+        #: Định danh (số điện thoại/email) đã **thật sự** xuất hiện trên màn hình — bằng chứng
+        #: cho các giá trị trạng thái phải xác minh (xem ``render_state_evidence_bounce``).
+        self._observed_identifiers: set[str] = set()
+        #: Giá trị trạng thái đã bị chặn một lần; không chặn lặp lại (chặn mãi là khoá lượt chạy).
+        self._evidence_bounced: set[str] = set()
         # Whether the previous turn's replies carried no visible reasoning text;
         # the next observation tail then carries a one-line reminder (no extra
         # model call). Legacy-path fallback only: with a transcript ledger the
@@ -197,8 +216,29 @@ class OperatorNode:
                     task_plan = task_plan_path.read_text(encoding="utf-8")
                 except Exception as e:
                     task_plan = f"Error reading task plan: {e}"
+                else:
+                    task_plan = self._settle_completed_milestones(task_plan, task_plan_path)
 
         return steps, task_plan
+
+    @staticmethod
+    def _settle_completed_milestones(task_plan: str, path) -> str:
+        """Chốt công đoạn đã xong bằng code rồi ghi lại plan — nguồn duy nhất đếm công đoạn.
+
+        Model không tự chốt milestone khi mọi sub-goal của nó đã ``[x]`` (xem
+        :func:`artemis.utils.plan_grammar.settle_completed_milestones`), và trước đây không ai
+        phát hiện: agent ở lại màn hình cũ, lặp lại tap/vuốt, rồi hết ngân sách.  Chốt ngay
+        trước khi dựng prompt để lượt kế tiếp của agent đọc đúng công đoạn hiện tại.
+        """
+        settled_text, settled = settle_completed_milestones(task_plan)
+        if not settled:
+            return task_plan
+        try:
+            path.write_text(settled_text, encoding="utf-8")
+        except Exception as e:  # noqa: BLE001 - plan chỉ là note; không được làm hỏng lượt chạy
+            logger.warning(f"Could not persist settled task plan: {e}")
+        logger.info("Settled completed milestone(s) by code: " + "; ".join(settled))
+        return settled_text
 
     async def _build_prompt(
         self,
@@ -213,6 +253,9 @@ class OperatorNode:
         newly_finished_tasks: list[dict] = None,
     ) -> list:
         self._transcript_turn_base = None
+        # Bằng chứng cho các giá trị trạng thái: chỉ ghi nhận định danh *nhìn thấy được* trên màn
+        # hình của lượt này (xem ``render_state_evidence_bounce``).
+        self._observed_identifiers |= observed_identifiers(minimal_list or "")
         if getattr(self._transcript_cfg, "enabled", False):
             try:
                 return await self._build_prompt_transcript(
@@ -254,11 +297,17 @@ class OperatorNode:
                 (BackgroundTasksPromptComponent(), {}),
                 (FeedbackPromptComponent(), {}),
                 (ReasoningReminderPromptComponent(), {}),
+                (StateEvidencePromptComponent(), {}),
+                (ExecutionStatePromptComponent(), {}),
+                (KbFocusPromptComponent(), {}),
                 (ToolLimitWarningPromptComponent(), {}),
             ]
         else:
             components = [(c, {}) for c in components] + [
                 (ReasoningReminderPromptComponent(), {}),
+                (StateEvidencePromptComponent(), {}),
+                (ExecutionStatePromptComponent(), {}),
+                (KbFocusPromptComponent(), {}),
                 (ToolLimitWarningPromptComponent(), {}),
             ]
 
@@ -278,6 +327,7 @@ class OperatorNode:
                 "newly_finished_tasks": newly_finished,
                 "previous_turn_silent": self._previous_turn_was_silent(),
                 "steps": steps,
+                "observed_identifiers": self._observed_identifiers,
             }
             kwargs_to_pass.update(extra_kwargs)
             await component(builder, state, self.ctx, **kwargs_to_pass)
@@ -756,9 +806,13 @@ class OperatorNode:
                     and iteration < max_iterations - 1
                     and len(action_calls) == 1
                     and not getattr(state, "open_incident", None)
-                    and self._plan_changed_this_turn() is False
                 ):
-                    bounce = self._plan_ledger_bounce_reason()
+                    if self._plan_changed_this_turn() is False:
+                        bounce = self._plan_ledger_bounce_reason()
+                    if bounce is None:
+                        # Code kiểm bằng chứng trước: một giá trị trạng thái (tài khoản/nhà…)
+                        # chỉ được coi là đã xác minh khi chuỗi đó đã từng thấy trên màn hình.
+                        bounce = self._state_evidence_bounce_reason(state)
                 if bounce:
                     plan_gate_bounced = True
                     validation_errors = True
@@ -968,8 +1022,24 @@ class OperatorNode:
         # 9. Update State
         structured_decisions = json.dumps(action_result) if action_result else None
 
+        # Trạng thái công đoạn **do code dựng** (không phải lời agent tự khai): đi vào graph state để
+        # lượt sau và các node khác (convergence gate, exit settlement) đọc được "công đoạn nào đã
+        # xác minh", thay vì phải suy lại từ plan Markdown.  Lỗi ở đây chỉ làm mất một kênh phụ.
+        try:
+            from artemis.utils.execution_state import build_execution_state
+
+            execution_state = build_execution_state(
+                task_plan,
+                getattr(state, "initial_goal", "") or "",
+                " ".join(sorted(self._observed_identifiers)),
+            ).as_dict()
+        except Exception as exc:  # noqa: BLE001 - không được làm hỏng lượt vì kênh phụ
+            logger.warning(f"Không dựng được trạng thái công đoạn: {exc}")
+            execution_state = None
+
         return {
             "structured_decisions": structured_decisions,
+            "execution_state": execution_state,
             "operator_raw_thinking": raw_thinking,
             "operator_native_thinking": native_thinking,
             "indexed_points": state.indexed_points,
@@ -1026,6 +1096,25 @@ class OperatorNode:
             current, self._turn_ledger_streak, self._plan_ledger_stale_turns()
         )
 
+    def _state_evidence_bounce_reason(self, state: State) -> str | None:
+        """Bounce khi agent chốt một giá trị trạng thái **chưa từng thấy** trên màn hình.
+
+        Code kiểm bằng chứng trước, LLM chỉ được kết luận sau đó — xem
+        :func:`artemis.agents.operator.prompts.render_state_evidence_bounce`.
+        """
+        plan_text = self._read_task_plan_text()
+        if plan_text is None:
+            return None
+        message, blocked = render_state_evidence_bounce(
+            plan_text,
+            getattr(state, "initial_goal", "") or "",
+            self._observed_identifiers,
+            self._evidence_bounced,
+        )
+        if message and blocked:
+            self._evidence_bounced.add(blocked)
+        return message
+
     def _plan_changed_this_turn(self) -> bool | None:
         """Whether ``task_plan`` differs from the turn's baseline (``None``: gate inactive)."""
         baseline = self._turn_plan_baseline
@@ -1063,7 +1152,9 @@ class OperatorNode:
         active_subgoal_hash = self._get_active_subgoal_hash()
         return build_history_for(
             "operator",
-            task_plan,
+            # Dòng tiến độ công đoạn (tính bằng code) đi kèm plan ngay trên checklist: agent phải
+            # thấy công đoạn nào đã xong và công đoạn kế tiếp là gì, thay vì tự suy từ plan.
+            plan_with_progress(task_plan),
             steps,
             active_subgoal_hash,
             last_n_detailed=self.last_n_detailed,
@@ -1078,10 +1169,65 @@ class OperatorNode:
         except Exception:
             return 4
 
+    def _contract_context(self, state: State) -> ContractContext:
+        """Dựng ngữ cảnh hợp đồng từ **dữ liệu thật** (plan, câu tester, KB) — không từ lời model.
+
+        Vì sao phải làm ở đây: nếu để model tự khai "tôi được phép đăng xuất" thì hợp đồng vô nghĩa.
+        Mọi trường dưới đây đọc từ kế hoạch đang chạy và từ câu gốc của tester.
+        """
+        goal_text = getattr(state, "initial_goal", "") or ""
+        plan_text = self._read_task_plan_text() or ""
+        subtask_text = ""
+        snapshot = parse_plan(plan_text)
+        milestone = snapshot.active_milestone()
+        if milestone is not None:
+            children = snapshot.children_of(milestone)
+            subtask_text = " ".join([milestone.text, *[child.text for child in children]])
+        combined = f"{subtask_text} {plan_text}".lower()
+        return ContractContext(
+            goal_text=goal_text,
+            subtask_text=subtask_text,
+            tester_provided_password=tester_supplied_password(goal_text),
+            saved_account_required=any(
+                term.lower() in goal_text.lower() for term in SAVED_ACCOUNT_TERMS
+            ),
+            # Overlay là *một phần* của công đoạn khi kế hoạch nói tới modal/bottomsheet/chọn nhà:
+            # đóng nó lúc đó là phá workflow, không phải dọn dẹp.
+            open_overlay_expected=any(
+                marker in combined
+                for marker in ("modal", "bottomsheet", "bottom sheet", "chuyển nhà", "chọn nhà")
+            ),
+            postcondition_verified=self._state_evidence_bounce_reason(state) is None,
+        )
+
+    def _contract_violations(self, actions: list[dict], state: State) -> list[Violation]:
+        """Chạy hợp đồng trên một lượt action: luôn ghi log, chỉ chặn khi luật được bật.
+
+        Giai đoạn log-only (mặc định): ``ARTEMIS_CONTRACT_ENFORCE`` chưa bật ⇒ vi phạm vẫn được đi
+        tiếp, nhưng có bản ghi để đếm dương tính giả trước khi bật từng luật.
+        """
+        try:
+            context = self._contract_context(state)
+            violations = check_actions(actions, context)
+        except Exception as exc:  # noqa: BLE001 - hợp đồng không được làm hỏng run
+            logger.warning(f"Hợp đồng thực thi không chạy được: {exc}")
+            return []
+        if violations:
+            logger.warning(
+                f"Hợp đồng thực thi: {len(violations)} vi phạm "
+                f"({'CHẶN' if any(is_enforced(item.rule) for item in violations) else 'chỉ ghi log'})"
+                f" · {describe(violations)}"
+            )
+        return violations
+
     def _translate_and_validate_tool(self, tc: dict, state: State) -> tuple[list[dict], str | None]:
         actions, err = self._translate_and_validate_tool_inner(tc, state)
         if err:
             return [], err
+        violations = self._contract_violations(actions, state)
+        blocking = [item for item in violations if is_enforced(item.rule)]
+        if blocking:
+            return [], "Hợp đồng thực thi chặn action: " + describe(blocking)
         return actions, None
 
     def _translate_and_validate_tool_inner(

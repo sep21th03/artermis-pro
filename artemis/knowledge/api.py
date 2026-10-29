@@ -80,11 +80,23 @@ class WorkflowRequest(BaseModel):
 
 
 class RetrieveRequest(BaseModel):
-    query: str
-    app_id: str
+    query: str = ""
+    #: ``app_id`` hoặc ``app_package`` — máy tester chỉ biết package của app đang test, nên đường
+    #: từ xa phải tự tra ra app_id (giống hệt ``retrieve_for_run`` lúc bắt đầu run).
+    app_id: str = ""
+    app_package: str | None = None
     version_id: str | None = None
     top_k: int | None = None
     run_id: str | None = None
+    # ── Bộ lọc metadata (tùy chọn) ────────────────────────────────────────
+    # Cùng bộ lọc với tool ``kb_lookup`` của agent: cho phép hỏi KB theo cấu trúc
+    # ("modal nào của màn hình `home`?") thay vì chỉ theo câu văn. Bỏ trống ⇒ hành vi cũ.
+    ids: list[str] | None = None
+    namespace: str | list[str] | None = None
+    type: str | list[str] | None = None
+    tags: str | list[str] | None = None
+    screen: str | list[str] | None = None
+    status: str | list[str] | None = None
 
 
 def _store():
@@ -232,29 +244,71 @@ def list_revisions(workflow_id: str) -> list[dict]:
 def retrieve(req: RetrieveRequest) -> dict:
     """Try a query the way a run would, so a tester can check retrieval first."""
     from artemis.knowledge.context import build_context
+    from artemis.knowledge.filters import filter_from_payload
+    from artemis.knowledge.integration import resolve_app_id
 
     service = _store()
+    app_id = (req.app_id or "").strip()
+    if not app_id and req.app_package:
+        app_id = resolve_app_id(req.app_package, service) or ""
+    if not app_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Thiếu app_id (hoặc app_package để tra ra app_id) — không truy hồi mù.",
+        )
+    filters = filter_from_payload(
+        req.model_dump(exclude={"query", "app_id", "app_package", "version_id", "top_k", "run_id"}),
+        origin="api /retrieve",
+    )
     result = service.retrieve(
-        req.query, req.app_id, version_id=req.version_id, top_k=req.top_k, run_id=req.run_id
+        req.query,
+        app_id,
+        version_id=req.version_id,
+        top_k=req.top_k,
+        run_id=req.run_id,
+        filters=filters,
     )
     return {
         "found": result.found,
         "reason": result.reason,
         "degraded": result.degraded,
         "timings_ms": result.timings_ms,
+        "filters": result.filters,
+        "app_id": app_id,
         # The exact block a run would inject -- built from this result, not by
         # retrieving a second time (which would double the embedding cost).
         "context": build_context(result, service.context_max_chars),
-        "hits": [
+        "hits": [_hit_payload(hit) for hit in result.hits],
+    }
+
+
+def _hit_payload(hit: Any) -> dict:
+    """Một mục KB kèm phạm vi/điều kiện/bước để nơi gọi **ở xa** hiển thị được như đường local.
+
+    Chỉ trả ``workflow_id``/``score`` thì console từ xa không nói được "modal này thuộc màn hình
+    nào" — mà đó chính là câu agent cần trả lời khi gặp UI ngoài dự kiến.
+    """
+    workflow = hit.workflow
+    metadata = dict(getattr(workflow, "metadata", None) or {})
+    edge = dict(metadata.get("nav_edge") or {})
+    return {
+        "workflow_id": workflow.id,
+        "name": workflow.name,
+        "status": workflow.status,
+        "score": hit.score,
+        "channels": hit.channels,
+        "trusted": hit.trusted,
+        "type": metadata.get("type"),
+        "screen": metadata.get("screen"),
+        "guards": [str(item.get("text") or "") for item in (edge.get("guards") or []) if item],
+        "verified": edge.get("verified"),
+        "steps": [
             {
-                "workflow_id": hit.workflow.id,
-                "name": hit.workflow.name,
-                "status": hit.workflow.status,
-                "score": hit.score,
-                "channels": hit.channels,
-                "trusted": hit.trusted,
+                "action": step.action,
+                "target": step.target,
+                "expected_state": step.expected_state,
             }
-            for hit in result.hits
+            for step in workflow.steps
         ],
     }
 

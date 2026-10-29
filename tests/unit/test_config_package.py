@@ -174,10 +174,15 @@ def test_agent_config_loading():
     assert isinstance(agent_cfg, AgentGlobalConfig)
     # The per-agent override ships empty so the profile knobs decide; caching
     # ships unset so each tier applies its own default (off pro, on ultra).
+    #
+    # Hai knob theo cấu hình đang dùng trong ``config/artemis.jsonc``:
+    #   flash.explorer_mode = "pro"  ⇒ explorer.flash_mode = "pro"
+    #   nodes.pro.explorer.mode = "pro" ⇒ explorer.pro_mode = "pro"
+    # (Config là nguồn sự thật; test bám theo nó, không ngược lại.)
     assert agent_cfg.explorer_versions == {}
     assert agent_cfg.explorer.default_version == "flash"
-    assert agent_cfg.explorer.flash_mode == "flash"
-    assert agent_cfg.explorer.pro_mode == "flash"
+    assert agent_cfg.explorer.flash_mode == "pro"
+    assert agent_cfg.explorer.pro_mode == "pro"
     assert agent_cfg.explorer.caching is None
     assert "explorer" in agent_cfg.denylisted_tools
     assert agent_cfg.video_analyzer.enable_ledger is True
@@ -192,9 +197,13 @@ def test_agent_config_loading():
     assert agent_cfg.checker.device_probes is True
     assert agent_cfg.outputter.enabled is True
     assert agent_cfg.outputter.force_synthesis is False
-    assert agent_cfg.flash.max_turns == 0
-    assert agent_cfg.flash.explorer_mode == "flash"
-    assert agent_cfg.pro.explorer.mode == "flash"
+    # Ba giá trị dưới đây bám theo ``config/artemis.jsonc`` đang dùng (config là nguồn sự thật):
+    #   flash.max_turns = 25 (0 = không giới hạn)
+    #   flash.explorer_mode = "pro"   ⇒ tầng perception của Flash runner
+    #   nodes.pro.explorer.mode = "pro" ⇒ tầng perception của các node Pro
+    assert agent_cfg.flash.max_turns == 25
+    assert agent_cfg.flash.explorer_mode == "pro"
+    assert agent_cfg.pro.explorer.mode == "pro"
     assert agent_cfg.pro.checker.enabled is True
     assert agent_cfg.pro.committee.enabled is False
     assert agent_cfg.pro.planner_validation.enabled is True
@@ -451,25 +460,29 @@ def test_explorer_builder_and_resolution(monkeypatch):
 
     monkeypatch.delenv("ARTEMIS_EXPLORER_VERSION", raising=False)
 
-    # Default builder inherits from artemis.jsonc (default="flash", flash_mode="flash",
-    # pro_mode="flash", caching unset, no per-agent override).
+    # Default builder inherits from artemis.jsonc (default="flash", flash_mode="pro",
+    # pro_mode="pro", caching unset, no per-agent override).
     builder = AgentConfigBuilder()
     cfg = builder.build()
     assert cfg.explorer.default_version == "flash"
-    assert cfg.explorer.flash_mode == "flash"
-    assert cfg.explorer.pro_mode == "flash"
+    assert cfg.explorer.flash_mode == "pro"
+    assert cfg.explorer.pro_mode == "pro"
     assert cfg.explorer.caching is None
     assert cfg.explorer_versions == {}
+    # Giá trị kế thừa, để các khẳng định dưới so với chính nó thay vì hard-code.
+    inherited_flash_mode = cfg.explorer.flash_mode
+    inherited_pro_mode = cfg.explorer.pro_mode
 
     # With the shipped (empty) override the profile knobs actually win: the
     # Pro agents follow pro_mode and the Flash runner follows flash_mode.
     cfg_pro_ultra = AgentConfigBuilder().with_explorer(pro_mode="ultra").build()
     assert cfg_pro_ultra.get_explorer_version(agent_name="operator") == "ultra"
     assert cfg_pro_ultra.get_explorer_version(agent_name="validator") == "ultra"
-    assert cfg_pro_ultra.get_explorer_version(agent_name="flash") == "flash"
+    # Đặt knob Pro không được đụng knob Flash: so với giá trị kế thừa từ config.
+    assert cfg_pro_ultra.get_explorer_version(agent_name="flash") == inherited_flash_mode
     cfg_flash_pro = AgentConfigBuilder().with_explorer(flash_mode="pro").build()
     assert cfg_flash_pro.get_explorer_version(agent_name="flash") == "pro"
-    assert cfg_flash_pro.get_explorer_version(agent_name="operator") == "flash"
+    assert cfg_flash_pro.get_explorer_version(agent_name="operator") == inherited_pro_mode
 
     # Fluent configuration with with_explorer
     cfg_custom = (

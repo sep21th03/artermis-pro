@@ -209,6 +209,16 @@ class FlashRunner:
         # declared from the very same args schemas the LangChain tools bind
         # (same availability gates: a DataEngine session, recall config).
         tools.extend(history_tool_declarations(self.ctx))
+        # kb_lookup: Flash không có note tool và prompt không dạy lại kiến thức giữa phiên, nên
+        # đường tra cứu theo yêu cầu càng quan trọng — nó là cách duy nhất để Flash hỏi KB khi gặp
+        # màn hình/modal ngoài dự kiến.
+        try:
+            from artemis.tools.knowledge import kb_lookup_available, kb_lookup_declaration
+
+            if kb_lookup_available(self.ctx):
+                tools.append(kb_lookup_declaration())
+        except Exception as exc:  # noqa: BLE001 - thiếu tool tra cứu chỉ mất một đường phụ
+            logger.warning(f"Không khai báo được kb_lookup cho Flash: {exc}")
         if self._video_tools_enabled():
             from artemis.tools.video_tool import VIDEO_ANALYZER_TOOL
 

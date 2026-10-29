@@ -55,7 +55,13 @@ _ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 #: Retrieval channels whose agreement counts as evidence that a workflow really
 #: is the one being asked about.  The vector channel is excluded on purpose: a
 #: nearest-neighbour query always returns rows, so it can rank but never testify.
-LEXICAL_CHANNELS = frozenset({"exact", "keyword"})
+LEXICAL_CHANNELS = frozenset({"exact", "keyword", "filtered"})
+"""Kênh chứng minh "đúng là mục này", không phải "gần nghĩa".
+
+``filtered`` nằm ở đây vì bộ lọc metadata là một phát biểu **có cấu trúc** của người gọi
+("màn hình `home`, loại `modal`"), không phải một phỏng đoán ngữ nghĩa — nếu xếp nó vào kênh ngữ
+nghĩa thì kết quả đúng bị gắn nhãn "chỉ là phỏng đoán" và bị :func:`decide_found` từ chối.
+"""
 
 
 class WorkflowStep(BaseModel):
@@ -212,3 +218,9 @@ class RetrievalResult(BaseModel):
     timings_ms: dict[str, float] = Field(default_factory=dict)
     degraded: bool = False
     """True when the knowledge base could not be consulted at all."""
+    filters: dict[str, Any] = Field(default_factory=dict)
+    """Bộ lọc metadata đã dùng cho lần truy hồi này (rỗng = truy hồi theo câu hỏi).
+
+    Đi cùng kết quả để nơi gọi (log, UI "AI đã biết gì", tool trả lời agent) trả lời được câu
+    "đã hỏi gì" — thiếu nó thì không phân biệt được "KB không có" với "lọc sai".
+    """

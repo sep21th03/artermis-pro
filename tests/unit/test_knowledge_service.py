@@ -65,15 +65,15 @@ class FakeStore:
         if self.fail:
             raise KnowledgeUnavailable("database is down")
 
-    def search_exact(self, query, app_id, version_id, limit=50):
+    def search_exact(self, query, app_id, version_id, limit=50, filters=None):
         self._guard()
         return list(self.exact)
 
-    def search_keyword(self, query, app_id, version_id, limit=50):
+    def search_keyword(self, query, app_id, version_id, limit=50, filters=None):
         self._guard()
         return list(self.keyword)
 
-    def search_vector(self, vector, model, app_id, version_id, limit=50):
+    def search_vector(self, vector, model, app_id, version_id, limit=50, filters=None):
         self._guard()
         return list(self.vector)
 
@@ -91,8 +91,11 @@ class FakeStore:
 
     def save_embedding(self, workflow_id, model, content_hash_, vector):
         self.embeddings[workflow_id] = EmbeddingRow(
-            workflow_id=workflow_id, model=model, dim=len(vector),
-            content_hash=content_hash_, vector=vector,
+            workflow_id=workflow_id,
+            model=model,
+            dim=len(vector),
+            content_hash=content_hash_,
+            vector=vector,
         )
 
     def delete_embeddings(self, model):
@@ -217,7 +220,7 @@ def test_disabled_service_reports_why():
 
 def test_vector_search_failure_does_not_lose_a_lexical_hit():
     class FlakyVectorStore(FakeStore):
-        def search_vector(self, vector, model, app_id, version_id, limit=50):
+        def search_vector(self, vector, model, app_id, version_id, limit=50, filters=None):
             raise KnowledgeUnavailable("pgvector exploded")
 
     store = FlakyVectorStore([_workflow()], exact=["auth.logout"])
@@ -238,9 +241,7 @@ def test_retrieval_is_logged_with_scores_and_timings():
 
 
 def test_logged_context_is_redacted():
-    workflow = _workflow(
-        aliases=["logout"], description="token=supersecretvalue"
-    )
+    workflow = _workflow(aliases=["logout"], description="token=supersecretvalue")
     store = FakeStore([workflow], exact=["auth.logout"])
     _service(store).retrieve("Test đăng xuất", "hunonic")
     assert "supersecretvalue" not in store.logs[0].context_sent

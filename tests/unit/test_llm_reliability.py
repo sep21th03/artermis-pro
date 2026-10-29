@@ -8,6 +8,34 @@ from artemis.llm.reliability import (
 )
 
 
+def test_a_daily_quota_429_rotates_instead_of_retrying():
+    """Quota **theo ngày** ⇒ xoay model ngay, không retry tại chỗ.
+
+    Đo trên máy thật 29/10/2026: Google trả 429 kèm ``retryDelay: '14279s'`` (≈4 giờ) cho
+    ``gemini-3.5-flash-lite``, nhưng bộ phân loại vẫn coi là retryable nên "Lập kế hoạch" chờ
+    10+20+40+60s rồi mới xoay model — planner mất hơn một phút và task hết giờ trước khi bắt đầu.
+    """
+    error = RuntimeError(
+        "429 Too Many Requests: You exceeded your current quota ... 'quotaMetric':"
+        " 'generate_content_free_tier_requests', 'retryDelay': '14279s'"
+    )
+
+    failure = classify_failure(error)
+
+    assert failure.category is FailureCategory.RATE_LIMIT
+    assert not failure.retryable
+    assert failure.should_fallback  # chuyển ngay sang model kế tiếp
+
+
+def test_a_per_minute_rate_limit_is_still_retried():
+    """Rate limit theo phút (thời gian hồi ngắn) thì chờ vài giây rồi thử lại là hợp lý."""
+    failure = classify_failure(RuntimeError("429 rate limit exceeded, retryDelay: '12s'"))
+
+    assert failure.category is FailureCategory.RATE_LIMIT
+    assert failure.retryable
+    assert failure.should_fallback
+
+
 def test_classifier_categories_and_recovery_decisions():
     rate = classify_failure(RuntimeError("429 rate limit exceeded"))
     assert rate.category is FailureCategory.RATE_LIMIT

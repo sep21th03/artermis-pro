@@ -102,6 +102,13 @@ class State(BaseModel):
 
     # ── Turn products (previous turn's decisions & results) ──────────────
     current_step_id: Annotated[str | None, "Current step ID from data engine", take_last] = None
+    execution_state: Annotated[
+        dict | None,
+        "Trạng thái công đoạn **do code dựng** (subtask nào đang làm, giá trị bắt buộc đã quan sát,"
+        " công đoạn nào NOT_VERIFIED). Không dựa vào việc LLM tự nhớ đã làm bước nào — xem"
+        " artemis.utils.execution_state.",
+        take_last,
+    ] = None
     structured_decisions: Annotated[
         str | None,
         "Structured decisions made by the operator, for the validator to follow",

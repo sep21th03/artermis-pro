@@ -30,6 +30,7 @@ from typing import Any
 
 from artemis.knowledge.context import build_context
 from artemis.knowledge.embeddings import Embedder, EmbeddingError, GeminiEmbedder
+from artemis.knowledge.filters import KnowledgeFilter
 from artemis.knowledge.models import RetrievalResult, Workflow, WorkflowHit
 from artemis.knowledge.retrieval import (
     DEFAULT_RRF_K,
@@ -230,9 +231,17 @@ class KnowledgeService:
         version_id: str | None = None,
         top_k: int | None = None,
         run_id: str | None = None,
+        filters: KnowledgeFilter | None = None,
     ) -> RetrievalResult:
-        """Hybrid retrieval for one request.  Never raises."""
+        """Hybrid retrieval for one request.  Never raises.
+
+        ``filters`` là đường truy hồi **có cấu trúc**: khi có, mọi kênh chỉ chạy trong tập đã lọc
+        (lọc trước, xếp hạng sau), và bộ lọc tự nó là một kênh ``filtered`` — nhờ vậy hỏi được
+        "modal nào của màn hình `home`" mà không cần một câu văn nào. Không truyền ``filters`` thì
+        hành vi y hệt trước đây.
+        """
         started = time.perf_counter()
+        query = (query or "").strip()
         if not self.available:
             return RetrievalResult(
                 found=False,
@@ -241,6 +250,14 @@ class KnowledgeService:
                 version_id=version_id,
                 reason=self._degraded_reason or "Knowledge base chưa sẵn sàng",
                 degraded=True,
+            )
+        if not query and (filters is None or filters.is_empty):
+            return RetrievalResult(
+                found=False,
+                query=query,
+                app_id=app_id,
+                version_id=version_id,
+                reason="Cần câu truy vấn hoặc bộ lọc (namespace/id/type/screen/tag).",
             )
 
         limit = max(1, top_k or self.top_k)
@@ -251,24 +268,45 @@ class KnowledgeService:
 
         try:
             mark = time.perf_counter()
-            exact_rows = self._store.search_exact(query, app_id, version_id)
-            channels["exact"] = list(exact_rows)
-            # An id or alias match is the strongest evidence there is: the tester
-            # named the workflow.
-            trusted_ids.update(exact_rows)
-            timings["exact_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+            # Bộ lọc là bằng chứng mạnh nhất trong đường có cấu trúc: người gọi đã nói chính xác
+            # nó muốn gì, nên các id khớp được coi là tin cậy (không phải phỏng đoán).
+            #
+            # Kênh này **best-effort** giống kênh vector: store cũ không có ``search_filtered``,
+            # hoặc câu SQL lọc hỏng, thì lần truy hồi vẫn chạy bằng các kênh còn lại — bộ lọc là
+            # phần tăng cường, không được phép biến "hỏi thêm" thành "hỏng run".
+            if filters is not None and not filters.is_empty:
+                search_filtered = getattr(self._store, "search_filtered", None)
+                if callable(search_filtered):
+                    try:
+                        filtered_rows = search_filtered(filters, app_id, version_id, limit)
+                        channels["filtered"] = list(filtered_rows)
+                        trusted_ids.update(filtered_rows)
+                    except Exception as exc:  # noqa: BLE001 - kênh phụ trợ
+                        logger.info("Bỏ kênh bộ lọc cho truy vấn này: %s", exc)
+            timings["filtered_ms"] = round((time.perf_counter() - mark) * 1000, 2)
 
-            mark = time.perf_counter()
-            keyword_rows = self._store.search_keyword(query, app_id, version_id)
-            channels["keyword"] = [workflow_id for workflow_id, _ in keyword_rows]
-            # The keyword channel ranks with an OR query, so a single common word
-            # matches; only a hit covering enough of the query counts as evidence.
-            trusted_ids.update(
-                workflow_id
-                for workflow_id, covered in keyword_rows
-                if covered >= self.keyword_min_coverage
-            )
-            timings["keyword_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+            if query:
+                mark = time.perf_counter()
+                exact_rows = self._store.search_exact(query, app_id, version_id, filters=filters)
+                channels["exact"] = list(exact_rows)
+                # An id or alias match is the strongest evidence there is: the tester
+                # named the workflow.
+                trusted_ids.update(exact_rows)
+                timings["exact_ms"] = round((time.perf_counter() - mark) * 1000, 2)
+
+                mark = time.perf_counter()
+                keyword_rows = self._store.search_keyword(
+                    query, app_id, version_id, filters=filters
+                )
+                channels["keyword"] = [workflow_id for workflow_id, _ in keyword_rows]
+                # The keyword channel ranks with an OR query, so a single common word
+                # matches; only a hit covering enough of the query counts as evidence.
+                trusted_ids.update(
+                    workflow_id
+                    for workflow_id, covered in keyword_rows
+                    if covered >= self.keyword_min_coverage
+                )
+                timings["keyword_ms"] = round((time.perf_counter() - mark) * 1000, 2)
         except KnowledgeUnavailable as exc:
             logger.warning("Truy vấn knowledge base lỗi: %s", exc)
             return RetrievalResult(
@@ -282,8 +320,9 @@ class KnowledgeService:
             )
 
         # The vector channel is best-effort: losing it costs recall, and it must
-        # never be able to fail the lookup.
-        if self._embedder is not None:
+        # never be able to fail the lookup.  Without a query there is nothing to
+        # embed, so a filter-only lookup skips it entirely (and pays no API cost).
+        if query and self._embedder is not None:
             mark = time.perf_counter()
             vector: list[float] = []
             try:
@@ -295,7 +334,11 @@ class KnowledgeService:
                 mark = time.perf_counter()
                 try:
                     rows = self._store.search_vector(
-                        vector, getattr(self._embedder, "model", ""), app_id, version_id
+                        vector,
+                        getattr(self._embedder, "model", ""),
+                        app_id,
+                        version_id,
+                        filters=filters,
                     )
                     channels["vector"] = [workflow_id for workflow_id, _ in rows]
                     similarities = {workflow_id: {"cosine": sim} for workflow_id, sim in rows}
@@ -334,6 +377,10 @@ class KnowledgeService:
                 guessed += 1
 
         found, reason = decide_found(hits)
+        if filters is not None and not filters.is_empty and not found:
+            # Nói rõ "không có mục nào khớp bộ lọc" thay vì "không tìm thấy workflow nào": hai
+            # nguyên nhân khác nhau, và cách sửa cũng khác nhau (nới bộ lọc vs thêm KB).
+            reason = f"Không có mục nào khớp bộ lọc [{filters.describe()}]."
 
         timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
         result = RetrievalResult(
@@ -344,6 +391,7 @@ class KnowledgeService:
             hits=hits,
             reason=reason,
             timings_ms=timings,
+            filters=filters.as_dict() if filters is not None else {},
         )
         self._log(result, run_id=run_id)
         return result
@@ -354,9 +402,10 @@ class KnowledgeService:
         app_id: str,
         version_id: str | None = None,
         run_id: str | None = None,
+        filters: KnowledgeFilter | None = None,
     ) -> tuple[RetrievalResult, str]:
         """Retrieve and render in one step -- what the Planner actually calls."""
-        result = self.retrieve(query, app_id, version_id=version_id, run_id=run_id)
+        result = self.retrieve(query, app_id, version_id=version_id, run_id=run_id, filters=filters)
         return result, build_context(result, self.context_max_chars)
 
     def list_workflows(self, app_id: str) -> list[Workflow]:
@@ -384,6 +433,7 @@ class KnowledgeService:
             self._store.log_retrieval(
                 RetrievalLogEntry(
                     query=result.query,
+                    filters=dict(getattr(result, "filters", None) or {}),
                     app_id=result.app_id,
                     version_id=result.version_id,
                     run_id=run_id,

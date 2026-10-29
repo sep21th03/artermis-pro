@@ -830,3 +830,73 @@ def test_the_lexical_path_is_guarded_too():
     assert "Promt chỉ ghi mỗi tài khoản không ghi mật khẩu" not in outcome.enhanced_prompt
 
 
+
+# ── Cách quan sát trạng thái: bước phải vào prompt, không chỉ id workflow ──
+ACCOUNT_PLAN = {
+    "tasks": [
+        {
+            "action": "đăng nhập tài khoản",
+            "target": "0999",
+            "condition": "chỉ khi chưa đăng nhập bằng tài khoản 0999",
+            "required": True,
+        }
+    ],
+    "final_goal": {"type": "tài khoản đang đăng nhập", "expected_value": "0999"},
+}
+
+
+def test_the_observation_steps_of_a_state_dimension_reach_the_prompt():
+    """Ca thật 28/10/2026: prompt chỉ ghi *"theo KB auth.current_account"* ⇒ agent tap mò.
+
+    Chốt ``labels_grounded`` cũng phải mở cho workflow *quan sát*: nhãn được trích dẫn trong
+    bước quan sát ('Menu') chỉ nằm trong workflow đó, mà nó không thuộc tập truy hồi — thiếu
+    ``extra_workflows`` thì cả prompt ghép bị thay bằng bản dự phòng, và guard biến mất đúng lúc
+    cần nhất.
+    """
+    from artemis.knowledge.prepare import failed_checks
+
+    observer = Workflow(
+        id="auth.current_account",
+        app_id="hunonic",
+        name="Xem tài khoản đang đăng nhập",
+        description="Đọc số điện thoại/email của tài khoản đang đăng nhập.",
+        aliases=["tài khoản đang đăng nhập"],
+        steps=[
+            {
+                "action": "tap",
+                "target": "Tab 'Menu' ở ngoài cùng bên phải của thanh điều hướng dưới cùng",
+                "expected_state": "Màn hình Menu hiện ra, khối tài khoản ở trên cùng",
+            },
+            {
+                "action": "assert",
+                "target": "Số điện thoại hoặc email ở khối tài khoản trên cùng màn Menu",
+                "expected_state": "Đọc được đúng số điện thoại/email của tài khoản đang đăng nhập",
+            },
+        ],
+        metadata={
+            "state_dimension": {
+                "id": "account",
+                "label": "tài khoản đang đăng nhập",
+                "value_hint": "tài khoản",
+                "set_workflows": ["auth.switch_account"],
+                "clear_workflow": "auth.logout",
+            }
+        },
+        revision_no=1,
+        updated_at="2026-10-28T10:00:00",
+    )
+    service = FakeService([SWITCH_ACCOUNT, observer])
+
+    outcome = prepare_login(
+        service,
+        synthesizer(ACCOUNT_PLAN),
+        prompt="đăng nhập tài khoản 0999 rồi vào màn ngữ cảnh chạy khi ấn",
+    )
+
+    prompt = outcome.enhanced_prompt
+    assert "Cách quan sát tài khoản đang đăng nhập" in prompt
+    assert "- Bước 1: tap: Tab 'Menu' ở ngoài cùng bên phải" in prompt
+    assert "Số điện thoại hoặc email ở khối tài khoản trên cùng màn Menu" in prompt
+    assert "theo KB auth.current_account" in prompt
+    assert failed_checks(outcome.checks) == []
+

@@ -633,8 +633,30 @@ def test_the_approved_prompt_tells_artemis_not_to_retrieve_again(runner_env, pro
     assert captured["env"]["ARTEMIS_KB_PRESUPPLIED"] == "1"
 
 
-def test_without_an_approved_prompt_the_agent_gets_the_original(runner_env):
+def test_without_an_approved_prompt_the_console_prepares_one(runner_env, monkeypatch):
+    """Chạy bằng câu trần vẫn phải có kiến thức ⇒ console tự chuẩn bị prompt (KB + composer).
+
+    Đo trên máy thật 29/10/2026: câu trần làm agent tự nghĩ ra cách "xoá số cũ rồi gõ 0999 vào ô
+    tài khoản đã lưu" và bấm Đăng nhập — sai mật khẩu, trong khi KB ghi rõ phải chọn tài khoản từ
+    danh sách đã lưu.  Prompt vừa chuẩn bị **đã có** khối kiến thức nên chốt ``ARTEMIS_KB_PRESUPPLIED``
+    bật, đúng như đường tester sửa prompt tay.
+    """
     runner, captured = runner_env
+    monkeypatch.setattr(console_server, "prepare_prompt_for_run", lambda *a, **kw: ENHANCED)
+    request = console_server.RunRequest(
+        goal="Test đăng xuất", profile="pro", package="com.iot.hunonic"
+    )
+
+    task = runner.start(request)
+
+    assert task.goal_sent == ENHANCED
+    assert captured["env"]["ARTEMIS_KB_PRESUPPLIED"] == "1"
+
+
+def test_when_the_kb_cannot_help_the_original_goal_is_sent(runner_env, monkeypatch):
+    """KB/LLM hỏng hoặc không có workflow nào ⇒ chạy bằng câu gốc, không chặn tester."""
+    runner, captured = runner_env
+    monkeypatch.setattr(console_server, "prepare_prompt_for_run", lambda *a, **kw: "")
     request = console_server.RunRequest(
         goal="Test đăng xuất", profile="pro", package="com.iot.hunonic"
     )

@@ -19,6 +19,10 @@ environment variable (``${env:VAR:-fallback}``) so a model can be swapped by
 editing one line of ``.env`` — no config edit, no code edit. With the variable
 unset the old hard-coded model must still apply, otherwise simply upgrading
 would change behaviour (and cost) silently.
+
+Mọi thành phần mặc định đi **Google trực tiếp** (đo 27–28/10/2026: Google 0,9–1,6s còn qua
+gateway 4,3–56,9s), nên tên model ở đây **không** có tiền tố định tuyến ``ts/`` — gửi
+``ts/...`` sang Google là 404.
 """
 
 import json
@@ -28,7 +32,10 @@ from artemis.config.core.engine import _strip_json_comments
 from artemis.config.core.interpolator import interpolate_config_value
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "artemis.jsonc"
-DEFAULT_MODEL = "ts/gemini-3.5-flash-lite"
+#: Tên model Google **không** có tiền tố định tuyến ``ts/`` (gửi ``ts/...`` sang Google là 404).
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
+#: Model ER bắt buộc cho object_detector (định vị toạ độ) — xem config/artemis.jsonc.
+OBJECT_DETECTOR_MODEL = "gemini-robotics-er-2-preview"
 
 MODEL_ENV_VARS = (
     "GEMINI35FLASHLITE_DEFAULT",
@@ -71,21 +78,23 @@ def _all_models(config):
 def test_every_model_falls_back_to_the_previous_value(monkeypatch):
     config = _resolved_config(monkeypatch)
     assert config["default"]["model"] == DEFAULT_MODEL
-    for node in ("planner", "operator", "explorer", "object_detector", "hopper", "checker"):
+    for node in ("planner", "operator", "explorer", "hopper", "checker"):
         assert config["nodes"][node]["model"] == DEFAULT_MODEL, node
+    # object_detector là ngoại lệ có chủ đích: chỉ model ER định vị được toạ độ.
+    assert config["nodes"]["object_detector"]["model"] == OBJECT_DETECTOR_MODEL
     assert config["agent"]["flash"]["step_summarizer"]["model"] == DEFAULT_MODEL
     assert config["agent"]["memory"]["chunking"]["model"] == DEFAULT_MODEL
 
 
 def test_env_swaps_only_the_named_function(monkeypatch):
     config = _resolved_config(monkeypatch, 
-        GEMINI35FLASH_OPERATOR="ts/gemini-3.5-flash",
-        GEMINI35FLASH_EXPLORER="ts/gemini-3.5-flash",
-        GEMINIER_OBJECT_DETECTOR="ts/gemini-robotics-er-2-preview",
+        GEMINI35FLASH_OPERATOR="gemini-3.5-flash",
+        GEMINI35FLASH_EXPLORER="gemini-3.5-flash",
+        GEMINIER_OBJECT_DETECTOR="gemini-robotics-er-2-preview",
     )
-    assert config["nodes"]["operator"]["model"] == "ts/gemini-3.5-flash"
-    assert config["nodes"]["explorer"]["model"] == "ts/gemini-3.5-flash"
-    assert config["nodes"]["object_detector"]["model"] == "ts/gemini-robotics-er-2-preview"
+    assert config["nodes"]["operator"]["model"] == "gemini-3.5-flash"
+    assert config["nodes"]["explorer"]["model"] == "gemini-3.5-flash"
+    assert config["nodes"]["object_detector"]["model"] == "gemini-robotics-er-2-preview"
     # Việc phụ vẫn dùng model rẻ: đổi model không được kéo theo chi phí ở đây.
     assert config["nodes"]["hopper"]["model"] == DEFAULT_MODEL
     assert config["agent"]["memory"]["chunking"]["model"] == DEFAULT_MODEL
@@ -98,8 +107,12 @@ def test_no_unresolved_placeholder_is_left_in_a_model_name(monkeypatch):
         assert "${" not in model, model
 
 
-def test_object_detector_fallback_stays_on_vilao(monkeypatch):
-    """Free tier có thể hết hạn mức: fallback phải về Vilao, không phụ thuộc Google."""
+def test_object_detector_fallback_stays_on_google(monkeypatch):
+    """Hết hạn mức free tier thì vẫn ở Google, và vẫn là model ER.
+
+    Không fallback sang gateway/model thường: định vị toạ độ chỉ model ER làm được, đổi sang
+    model thường là trả toạ độ sai — thà báo hết quota còn hơn bấm sai chỗ.
+    """
     config = _resolved_config(monkeypatch, 
         GEMINIER_OBJECT_DETECTOR_PROVIDER="google",
         GEMINIER_OBJECT_DETECTOR="gemini-robotics-er-2-preview",
@@ -107,21 +120,27 @@ def test_object_detector_fallback_stays_on_vilao(monkeypatch):
     node = config["nodes"]["object_detector"]
     assert node["provider"] == "google"
     assert node["model"] == "gemini-robotics-er-2-preview"
-    assert node["fallback"] == {"provider": "openai", "model": DEFAULT_MODEL}
+    assert node["fallback"] == {
+        "provider": "google",
+        "model": "gemini-robotics-er-2-preview",
+    }
 
 
 def test_provider_is_interpolated_per_function(monkeypatch):
     config = _resolved_config(monkeypatch, GEMINI35FLASH_OPERATOR_PROVIDER="google")
     assert config["nodes"]["operator"]["provider"] == "google"
-    # Không đụng tới chức năng khác.
-    assert config["nodes"]["explorer"]["provider"] == "openai"
-    assert config["nodes"]["hopper"]["provider"] == "openai"
+    # Không đụng tới chức năng khác — tất cả đều mặc định Google trực tiếp.
+    assert config["nodes"]["explorer"]["provider"] == "google"
+    assert config["nodes"]["hopper"]["provider"] == "google"
 
 
-def test_every_provider_defaults_to_vilao(monkeypatch):
+def test_every_provider_defaults_to_google(monkeypatch):
+    """Không còn đường nào mặc định đi qua gateway (Vilao): chậm hơn Google 10–50 lần."""
     config = _resolved_config(monkeypatch)
+    assert config["default"]["provider"] == "google"
+    assert config["default"]["fallback"]["provider"] == "google"
     for node in ("planner", "operator", "explorer", "object_detector", "hopper", "checker"):
-        assert config["nodes"][node]["provider"] == "openai", node
+        assert config["nodes"][node]["provider"] == "google", node
 
 
 # --- Loader thật phải interpolate --------------------------------------------

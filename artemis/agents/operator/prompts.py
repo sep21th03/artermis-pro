@@ -13,10 +13,12 @@
 # limitations under the License.
 
 import base64
+from collections.abc import Iterable
 from functools import lru_cache
 import io
 import json
 from pathlib import Path
+import re
 from typing import NamedTuple
 
 from jinja2 import Environment, StrictUndefined, Template
@@ -31,7 +33,7 @@ from artemis.tools.command_tool import (
     _format_long_output_response,
     _is_output_long,
 )
-from artemis.utils.plan_grammar import parse_plan, render_plan_grammar_spec
+from artemis.utils.plan_grammar import parse_plan, render_plan_grammar_spec, plan_with_progress
 from artemis.utils.task_tree import SELF_DESCRIBED_MARKER, action_intent_phrase
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -63,7 +65,7 @@ def load_operator_prompts() -> dict[str, str]:
 # tool set the rendered output is byte-identical to the pre-assembly literals. See
 # artemis/agents/prompt_assembly.py for the assembly rationale.
 
-_PRE_DECISION_HELPER_TOOLS = ("ask_explorer", "ask_diagnoser", "video_analyzer")
+_PRE_DECISION_HELPER_TOOLS = ("ask_explorer", "ask_diagnoser", "video_analyzer", "kb_lookup")
 _PRE_DECISION_ADB_TOOLS = ("run_adb_command", "manage_task")
 _PRE_DECISION_MEMORY_TOOLS = (
     "read_note",
@@ -402,7 +404,8 @@ class PlanRecitationPromptComponent(PromptComponent):
         from artemis.memory.transcript import PLAN_RECITATION_MARKER
 
         task_plan = kwargs.get("task_plan") or "No task plan yet."
-        builder.add_human_content(f"{PLAN_RECITATION_MARKER}\n{task_plan}")
+        # Cùng một cách đếm công đoạn với đường legacy (xem ``plan_with_progress``).
+        builder.add_human_content(f"{PLAN_RECITATION_MARKER}\n{plan_with_progress(task_plan)}")
 
 
 class FeedbackPromptComponent(PromptComponent):
@@ -711,6 +714,151 @@ class ReasoningReminderPromptComponent(PromptComponent):
             builder.add_human_content(REASONING_REMINDER, ephemeral=True)
 
 
+#: Khối bằng chứng trạng thái do code tính (xem :func:`render_state_evidence`).
+STATE_EVIDENCE_MARKER = "--- State Verification (code-checked) ---"
+
+
+def render_state_evidence(goal_text: str, observed: Iterable[str]) -> str:
+    """Khối nói **thật** giá trị nào đã thấy trên màn hình, và cách đạt giá trị còn thiếu.
+
+    Đây là chỗ duy nhất trả lời được câu *"xác minh tài khoản kiểu gì?"* mà không phụ thuộc vào
+    việc prompt được dựng bởi composer, bởi API RAG trên VPS hay do tester tự viết: giá trị cần
+    xác minh đọc thẳng từ câu yêu cầu, còn "đã thấy hay chưa" do **code** đối chiếu với các màn
+    hình đã quan sát.  Không hard-code tài khoản nào — đổi câu yêu cầu là đổi giá trị.
+
+    Trả ``""`` khi yêu cầu không nêu giá trị nào cần xác minh.
+    """
+    requirements = required_state_values(goal_text)
+    if not requirements:
+        return ""
+    observed_list = sorted(observed)
+    seen_text = ", ".join(observed_list[:5]) if observed_list else "chưa thấy định danh nào"
+    lines = [STATE_EVIDENCE_MARKER]
+    missing: list[str] = []
+    for label, value in requirements:
+        if value_was_observed(value, observed_list):
+            lines.append(f"- «{value}» ({label}): ĐÃ thấy trên màn hình.")
+            continue
+        missing.append(value)
+        lines.append(
+            f"- «{value}» ({label}): CHƯA thấy trên màn hình đã quan sát. Đã thấy: {seen_text}."
+            ' Kết luận "đã đúng" mà chưa thấy giá trị này là SAI; lượt chốt như vậy sẽ bị chặn.'
+        )
+    if missing:
+        lines.append(
+            "- Khi giá trị chưa khớp: đạt nó TRƯỚC khi làm việc khác — đăng xuất (KB"
+            " auth.logout) rồi đăng nhập lại bằng chính giá trị đó (KB auth.switch_account nếu"
+            " tài khoản đã lưu trên máy, hoặc auth.login_password nếu có mật khẩu). Bước chi tiết"
+            " nằm ở mục kiến thức của prompt; bước nào thiếu thì quan sát UI để tìm mục tương ứng,"
+            " KHÔNG tự suy ra vị trí nút."
+        )
+    return "\n".join(lines)
+
+
+class StateEvidencePromptComponent(PromptComponent):
+    """Renders the code-computed state-evidence block for this turn."""
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        block = render_state_evidence(
+            getattr(state, "initial_goal", "") or "",
+            kwargs.get("observed_identifiers") or (),
+        )
+        if block:
+            # Ephemeral: giá trị đã thấy/đã chưa thấy được tính lại mỗi lượt, không cần để lại
+            # trong lịch sử (plan recitation mới là thứ phải tồn tại).
+            builder.add_human_content(block, ephemeral=True)
+
+
+#: Khối trích bước KB của *công đoạn đang làm* (xem :func:`render_kb_focus`).
+KB_FOCUS_MARKER = "--- KB steps for the current sub-goal (from the prepared prompt) ---"
+#: Id workflow dạng ``auth.switch_account`` / ``navigation.open_collections``.
+_WORKFLOW_ID_RE = re.compile(r"\b([a-z][a-z0-9_]*\.[a-z0-9_]+)\b")
+_KB_SECTION_HEADERS = ("KIẾN THỨC ỨNG DỤNG:", "KIẾN THỨC:")
+
+
+def _kb_blocks(goal_text: str) -> dict[str, list[str]]:
+    """Tách mục kiến thức của prompt đã chuẩn bị thành ``{workflow_id: [dòng...]}``.
+
+    Prompt do KB chuẩn bị liệt kê từng workflow rồi tới các bước của nó; agent chỉ đọc được
+    phần này **một lần** ở đầu phiên (nó nằm cuối một prompt 4.000+ ký tự), nên bước quan trọng
+    bị "trôi" khỏi chú ý — đo trên máy thật 29/10/2026: có `auth.switch_account` trong prompt mà
+    agent vẫn xoá số cũ rồi gõ tay `0999` vào ô tài khoản.
+    """
+    text = goal_text or ""
+    start = -1
+    for header in _KB_SECTION_HEADERS:
+        found = text.find(header)
+        if found >= 0 and (start < 0 or found < start):
+            start = found
+    if start < 0:
+        return {}
+    blocks: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in text[start:].splitlines()[1:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Một dòng mở đầu workflow: "- auth.switch_account — Đăng nhập bằng tài khoản đã lưu".
+        if stripped.startswith("- ") and " — " in stripped:
+            candidate = _WORKFLOW_ID_RE.match(stripped[2:].strip())
+            if candidate:
+                current = candidate.group(1)
+                blocks.setdefault(current, [])
+                continue
+        if current is None:
+            continue
+        if stripped.endswith(":") and stripped.isupper():
+            break  # sang mục khác
+        blocks[current].append(stripped)
+    return {key: value for key, value in blocks.items() if value}
+
+
+def render_kb_focus(goal_text: str, task_plan: str, *, max_chars: int = 1400) -> str:
+    """Trích bước KB của workflow mà **công đoạn đang làm** tham chiếu, để đặt cạnh quan sát.
+
+    Không truy xuất KB lần nữa, không hard-code workflow nào: id lấy từ chính plan (dòng
+    "kiến thức: <id>" hoặc "<id>" trong tiêu đề công đoạn), còn nội dung lấy từ mục kiến thức
+    của prompt đã chuẩn bị.  Trả ``""`` khi không xác định được id hoặc không có mục kiến thức.
+    """
+    snapshot = parse_plan(task_plan or "")
+    milestone = snapshot.active_milestone()
+    if milestone is None:
+        return ""
+    text = " ".join([milestone.text] + [child.text for child in snapshot.children_of(milestone)])
+    ids: list[str] = []
+    for found in _WORKFLOW_ID_RE.findall(text):
+        if found not in ids:
+            ids.append(found)
+    if not ids:
+        return ""
+    blocks = _kb_blocks(goal_text)
+    chosen = [(workflow_id, blocks[workflow_id]) for workflow_id in ids if workflow_id in blocks]
+    if not chosen:
+        return ""
+    lines = [KB_FOCUS_MARKER, f"- Công đoạn đang làm: «{_clip(milestone.text, 120)}»"]
+    for workflow_id, body in chosen[:2]:
+        if sum(len(line) + 1 for line in lines) > max_chars:
+            break
+        lines.append(f"- «{workflow_id}» — bước theo KB:")
+        for line in body:
+            if sum(len(item) + 1 for item in lines) + len(line) > max_chars:
+                break
+            lines.append(f"  {line}")
+    return "\n".join(lines) if len(lines) > 2 else ""
+
+
+class KbFocusPromptComponent(PromptComponent):
+    """Đưa bước KB của công đoạn đang làm vào ngay lượt quan sát hiện tại."""
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        block = render_kb_focus(
+            getattr(state, "initial_goal", "") or "",
+            kwargs.get("task_plan") or "",
+        )
+        if block:
+            builder.add_human_content(block, ephemeral=True)
+
+
 def render_plan_ledger_bounce(task_plan: str, streak: int, stale_turns: int) -> str | None:
     """Return a plan-ledger validation error, if any."""
     snapshot = parse_plan(task_plan or "")
@@ -737,6 +885,164 @@ def render_plan_ledger_bounce(task_plan: str, streak: int, stale_turns: int) -> 
             " record its progress and open the next leaf" + _LEDGER_BOUNCE_TAIL
         )
     return None
+
+
+# ── Bằng chứng cho giá trị trạng thái (code trước, LLM sau) ────────────────
+#: Câu mà composer sinh ra cho mỗi trạng thái phải so giá trị. Đọc lại **chính câu đó** để biết
+#: lượt chạy này phải xác minh giá trị nào — không cần bảng cấu hình thứ hai phải đồng bộ với KB.
+_REQUIRED_VALUE_RE = re.compile(r"quan sát thấy\s+(?P<label>[^«»]+?)\s+LÀ\s+«(?P<value>[^»]+)»")
+#: Số điện thoại / email nhìn thấy được trong danh sách phần tử UI của một bước.
+_PHONE_RE = re.compile(r"\+?\d[\d\s.\-]{5,}\d")
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+#: Chuỗi số liền nhau ≥4 chữ số trong câu yêu cầu (``0999`` là tài khoản, ``12`` là tên thiết bị).
+_NUMBER_RUN_RE = re.compile(r"(?<!\d)\d{4,}(?!\d)")
+#: Nhãn dùng khi giá trị được nêu thẳng trong câu tester (prompt không có câu guard của composer).
+GENERIC_STATE_LABEL = "giá trị mà yêu cầu nêu"
+
+
+def _collapse(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def _digits(text: str) -> str:
+    return "".join(char for char in (text or "") if char.isdigit())
+
+
+def required_state_values(goal_text: str) -> tuple[tuple[str, str], ...]:
+    """Các cặp ``(nhãn trạng thái, giá trị phải thấy)`` mà yêu cầu buộc phải xác minh.
+
+    Hai đường, vì prompt có thể do **composer** ghép hoặc do **tester tự viết**:
+
+    1. Câu guard của composer (*"… chỉ được coi là ĐÃ ĐÚNG khi quan sát thấy tài khoản đang đăng
+       nhập LÀ «0999»"*) — cho nhãn đẹp, đúng ngữ cảnh trạng thái.
+    2. Định danh nêu thẳng trong câu yêu cầu (số tài khoản/điện thoại ≥4 chữ số, email) — prompt
+       tự viết kiểu *"KẾ HOẠCH: 1. đăng nhập tài khoản 0999 …"* không có câu guard nào, và nếu chỉ
+       đọc (1) thì chốt bằng chứng im lặng đúng lúc cần nhất (đo 29/10/2026).
+    """
+    text = goal_text or ""
+    out: list[tuple[str, str]] = []
+    for match in _REQUIRED_VALUE_RE.finditer(text):
+        label = _collapse(match.group("label"))
+        value = _collapse(match.group("value"))
+        if label and value and (label, value) not in out:
+            out.append((label, value))
+    known = {value for _, value in out}
+    for value in _identity_tokens_in(text):
+        if value not in known:
+            out.append((GENERIC_STATE_LABEL, value))
+            known.add(value)
+    return tuple(out)
+
+
+def _identity_tokens_in(text: str) -> list[str]:
+    """Định danh nêu trong câu yêu cầu: chuỗi ≥4 chữ số, và email.
+
+    Ngưỡng 4 chữ số để ``0999`` (tài khoản) tính là định danh còn ``12`` (tên thiết bị "Ổ cắm
+    12") thì không.
+    """
+    found: list[str] = []
+    for raw in _NUMBER_RUN_RE.findall(text or ""):
+        if len(raw) >= 4 and raw not in found:
+            found.append(raw)
+    for raw in _EMAIL_RE.findall(text or ""):
+        value = _collapse(raw)
+        if value and value not in found:
+            found.append(value)
+    return found
+
+
+def observed_identifiers(text: str) -> set[str]:
+    """Định danh (số điện thoại/email/số tài khoản) **thật sự xuất hiện** trong màn hình đã quan sát.
+
+    Đây là *bằng chứng*, không phải giá trị mong đợi: chỉ nhận chuỗi nhìn thấy được.
+
+    **Vì sao có nhánh số ngắn.** Đo 29/10/2026: phía *yêu cầu* (``required_state_values``) coi chuỗi
+    ≥4 chữ số là định danh — tài khoản ``0999`` là một giá trị bắt buộc phải xác minh — nhưng phía
+    *bằng chứng* chỉ nhận chuỗi ≥7 chữ số (dạng số điện thoại). Hai ngưỡng lệch nhau nghĩa là
+    ``0999`` **không bao giờ** quan sát được: chốt bằng chứng kêu mãi, và không run nào xác minh
+    được tài khoản. Nhánh dưới đây nhận đúng dạng mà phía yêu cầu sinh ra, nên hai phía đối xứng.
+    """
+    found = {_collapse(item) for item in _EMAIL_RE.findall(text or "")}
+    for raw in _PHONE_RE.findall(text or ""):
+        digits = _digits(raw)
+        if len(digits) >= 4:
+            found.add(digits)
+    for raw in _NUMBER_RUN_RE.findall(text or ""):
+        if 4 <= len(raw) <= 6:
+            found.add(raw)
+    return {item for item in found if item}
+
+
+def value_was_observed(value: str, observed: Iterable[str]) -> bool:
+    """True khi ``value`` (kể cả bản có mã vùng) đã từng thấy trên màn hình.
+
+    So hai chiều hậu tố vì màn hình có thể hiển thị kèm mã vùng: giá trị yêu cầu ``0999`` còn ô
+    nhập hiển thị ``+84 0999``.
+    """
+    want = _digits(value)
+    if not want:
+        return any(value == item for item in observed)
+    for item in observed:
+        seen = _digits(item)
+        if not seen:
+            if value == item:
+                return True
+            continue
+        if want == seen:
+            return True
+        if min(len(want), len(seen)) >= 4 and (seen.endswith(want) or want.endswith(seen)):
+            return True
+    return False
+
+
+def render_state_evidence_bounce(
+    task_plan: str,
+    goal_text: str,
+    observed: Iterable[str],
+    already_bounced: Iterable[str] = (),
+) -> tuple[str | None, str | None]:
+    """Chặn lượt *chốt* một giá trị trạng thái mà chưa từng thấy giá trị đó trên màn hình.
+
+    Ca thật (28/10/2026): agent mở đúng màn Menu (trong đó ghi ``Hoà RD · 0972842548``) rồi viết
+    *"We are logged in as account 0999 (verified from previous steps or profile details)"* — bịa
+    kết quả xác minh vì câu yêu cầu nói 0999, rồi đi tiếp sang Quản lý nhà của tài khoản SAI
+    thay vì đăng xuất và đăng nhập lại.  Prompt đã yêu cầu so giá trị, nhưng để LLM tự kiểm thì
+    nó "xác minh" bằng ký ức.  Ở đây code kiểm: giá trị được chốt **phải từng xuất hiện** trong
+    màn hình đã quan sát; không thì trả lời bằng chứng thật đang thấy và yêu cầu đọc lại.
+
+    Trả ``(thông báo, giá trị bị chặn)``; ``(None, None)`` khi không có gì để chặn.  Mỗi giá trị
+    chỉ bị chặn **một lần**: chặn lặp lại sẽ khoá lượt chạy thay vì sửa nó.
+    """
+    requirements = required_state_values(goal_text)
+    if not requirements:
+        return None, None
+    snapshot = parse_plan(task_plan or "")
+    if not snapshot.has_top_level:
+        return None, None
+    observed_list = list(observed)
+    bounced = set(already_bounced)
+    for label, value in requirements:
+        if not value or value in bounced:
+            continue
+        # Chỉ kiểm bằng chứng cho **định danh máy đọc được** (số điện thoại/email): code xác nhận
+        # được chuỗi đó có trên màn hình hay không. Giá trị là tên/mô tả (tên nhà, tên ngữ cảnh)
+        # thì không có cách xác nhận chắc chắn bằng code — để LLM đối chiếu như trước, thà thiếu
+        # một chốt còn hơn chặn nhầm một lượt đúng.
+        if not (len(_digits(value)) >= 4 or _EMAIL_RE.fullmatch(value)):
+            continue
+        completed = [item for item in snapshot.items if item.is_done and value in item.text]
+        if not completed or value_was_observed(value, observed_list):
+            continue
+        seen = ", ".join(sorted(observed_list)[:5]) or "chưa có định danh nào"
+        return (
+            f"Not executed: bạn chốt «{_clip(completed[0].text)}» — tức đã xác minh {label} LÀ"
+            f" «{value}» — nhưng chuỗi «{value}» CHƯA từng xuất hiện trên màn hình bạn quan sát."
+            f" Định danh thật đã thấy: {seen}. Đọc lại giá trị ngay trên màn hình (chép nguyên"
+            " văn); nếu khác thì phải đạt đúng giá trị đó trước khi làm bất kỳ việc nào khác."
+            " Không được kết luận bằng giá trị nằm trong câu yêu cầu.",
+            value,
+        )
+    return None, None
 
 
 class ToolLimitWarningPromptComponent(PromptComponent):
@@ -1062,3 +1368,38 @@ class HistoricalStateHintPromptComponent(PromptComponent):
                 " search_history / replay_steps only if its details are needed.",
                 ephemeral=True,
             )
+
+
+EXECUTION_STATE_MARKER = "[trạng thái công đoạn]"
+
+
+class ExecutionStatePromptComponent(PromptComponent):
+    """Đưa **trạng thái công đoạn do code xác định** vào lượt quan sát hiện tại.
+
+    Vì sao cần dù plan đã có trong prompt: dấu ``[x]`` trong plan là *ý định* của agent, còn khối này
+    nói điều agent không thể tự suy — công đoạn nào **chưa xác minh được** vì giá trị bắt buộc chưa
+    từng xuất hiện trên màn hình (``NOT_VERIFIED``). Đo trên máy thật 29/10/2026: agent chốt "đã đăng
+    nhập tài khoản 0999 (xác minh từ bước trước)" mà chưa từng thấy ``0999``.
+
+    Không truy xuất KB, không gọi LLM: mọi thứ lấy từ plan + câu gốc + màn hình đã quan sát.
+    """
+
+    async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
+        from artemis.utils.execution_state import (
+            advanceable,
+            build_execution_state,
+            render_execution_state,
+        )
+
+        task_plan = kwargs.get("task_plan") or ""
+        goal_text = getattr(state, "initial_goal", "") or ""
+        observed = kwargs.get("observed_identifiers") or set()
+        exec_state = build_execution_state(task_plan, goal_text, " ".join(sorted(observed)))
+        block = render_execution_state(exec_state)
+        if not block:
+            return
+        allowed, reason = advanceable(exec_state)
+        if not allowed:
+            # Câu chặn đi kèm mã NOT_VERIFIED — cùng mã mà composer dùng cho "chưa kiểm tra hết".
+            block = f"{block}\n- {reason}"
+        builder.add_human_content(f"{EXECUTION_STATE_MARKER}\n{block}", ephemeral=True)

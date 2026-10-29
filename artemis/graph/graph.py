@@ -94,6 +94,7 @@ from artemis.utils.plan_grammar import (
     parse_plan,
     render_check_line,
     restore_missing_check_items,
+    settle_completed_milestones,
     subgoal_hash,
     unintended_milestone_edits,
 )
@@ -923,6 +924,17 @@ def convergence_gate(
         logger.error(f"Failed to read task plan: {e}")
         return "continue"
 
+    # Chốt công đoạn đã xong bằng code trước khi đánh giá: nếu để nguyên, một milestone có mọi
+    # sub-goal `[x]` vẫn nằm ở `[/]` thì cổng này không bao giờ thấy "đã xong" và lượt chạy
+    # không kết thúc được dù việc đã làm xong.
+    task_plan_content, settled = settle_completed_milestones(task_plan_content)
+    if settled:
+        logger.info("Settled completed milestone(s): " + "; ".join(settled))
+        try:
+            file_path.write_text(task_plan_content, encoding="utf-8")
+        except Exception as e:  # noqa: BLE001 - không được làm hỏng vòng lặp vì lỗi ghi note
+            logger.warning(f"Could not persist settled task plan: {e}")
+
     snapshot = parse_plan(task_plan_content)
 
     if not snapshot.has_top_level:
@@ -985,6 +997,13 @@ async def get_graph(ctx: ArtemisContext) -> CompiledStateGraph:
         *HISTORY_TOOL_WRAPPERS,
     ]
     # ask_committee does not follow the Operator's pre-decision / turn-ending contract.
+
+    # kb_lookup: đường tra cứu KB **giữa lúc chạy**. Không có nó thì khối kiến thức đã ghép ở đầu
+    # phiên là tất cả những gì agent biết: gặp modal ngoài dự kiến, nó không có cách nào hỏi KB
+    # (đo trên máy thật 29/10/2026 — agent tự bấm Đăng xuất rồi bị safety net chặn 3 lần).
+    from artemis.tools.knowledge import KB_LOOKUP_WRAPPERS
+
+    operator_specialized_wrappers.extend(KB_LOOKUP_WRAPPERS)
 
     operator_specialized_tools = get_tools_from_wrappers(ctx, operator_specialized_wrappers)
 
