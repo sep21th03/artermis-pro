@@ -57,13 +57,23 @@ from artemis.memory.transcript import (
 #
 # Cập nhật 29/10/2026: thêm đoạn dạy ``kb_lookup`` (tra cứu KB giữa lúc chạy) — thay đổi có chủ ý,
 # không phải trôi byte. Hash cũ: empty=513e0341…, sentinel=012fe1b0…
-GOLDEN_EMPTY_PLAN = "f6045c7c8482964f2cfda625a861fc521ed0051335107fc1e88945b90d2dd23e"
-GOLDEN_SENTINEL_PLAN = "f15f1a0861114eef84eb25c0ec0d0240d4124817d0300e1b572f4e861815f7b2"
+#
+# Cập nhật 29/10/2026 (Phase 1 tối ưu token): system message **không còn chứa** section
+# ``## Current Plan & Execution History`` và **nhận thêm** đuôi template (phần sau mốc
+# ``# CURRENT OBSERVATION``). Hai thay đổi đều là *di chuyển khối*, không thêm/bớt quy tắc nào:
+# chỉ dẫn đứng trước thành tiền tố chung giữa các lượt (đo trên trace 5b459634: 5.311 → 7.372 token
+# tiền tố chung, tức 55% → 76% prompt có thể được cache), còn kế hoạch + lịch sử (đổi mỗi lượt)
+# xuống đầu message human. Vì thế **hai plan khác nhau giờ cho cùng một hash** — đó chính là tính
+# chất cần giữ, và test dưới đây kiểm cả hai mặt (byte-stable + độc lập với plan).
+# Hash cũ (trước khi di chuyển): empty=f6045c7c…, sentinel=f15f1a08…
+GOLDEN_EMPTY_PLAN = "67bd622735391647be9f36c8036e049a203d8185a7308953305d56bfb87c49d7"
+GOLDEN_SENTINEL_PLAN = "67bd622735391647be9f36c8036e049a203d8185a7308953305d56bfb87c49d7"
 
 SCREENSHOT_B64 = base64.b64encode(b"fake-jpeg-bytes").decode("utf-8")
 
 
-async def _render_legacy_system(plan_and_history: str) -> str:
+async def _render_legacy(plan_and_history: str) -> tuple[str, list[str]]:
+    """(system text, human text parts) của đường legacy với đầu vào cố định."""
     builder = PromptBuilder()
     component = TemplatePromptComponent()
     ctx = SimpleNamespace(execution_setup=None, actuator=None, data_engine=None)
@@ -76,7 +86,14 @@ async def _render_legacy_system(plan_and_history: str) -> str:
         template_name="main_template",
         plan_and_history=plan_and_history,
     )
-    return "".join(builder.system_parts)
+    human = [p for p in builder.human_parts if isinstance(p, str)]
+    if builder.human_footer:
+        human.append(builder.human_footer)
+    return "".join(builder.system_parts), human
+
+
+async def _render_legacy_system(plan_and_history: str) -> str:
+    return (await _render_legacy(plan_and_history))[0]
 
 
 @pytest.mark.asyncio
@@ -85,6 +102,30 @@ async def test_legacy_prompt_bytes_match_pre_split_golden():
     sentinel = await _render_legacy_system("PLAN_AND_HISTORY_SENTINEL\nline2")
     assert hashlib.sha256(empty.encode("utf-8")).hexdigest() == GOLDEN_EMPTY_PLAN
     assert hashlib.sha256(sentinel.encode("utf-8")).hexdigest() == GOLDEN_SENTINEL_PLAN
+
+
+@pytest.mark.asyncio
+async def test_legacy_system_is_plan_independent_and_the_plan_moves_to_the_human():
+    """Phase 1 tối ưu token: system message = chỉ dẫn bất biến, không phụ thuộc kế hoạch.
+
+    Kế hoạch + lịch sử (đổi mỗi lượt) nằm ở **đầu message human**; nội dung không mất chữ nào.
+    """
+    system_a, human_a = await _render_legacy("PLAN_A")
+    system_b, human_b = await _render_legacy("PLAN_B")
+
+    assert system_a == system_b  # tiền tố chung giữa hai lượt = toàn bộ system message
+    assert "PLAN_A" not in system_a and "PLAN_B" not in system_b
+    assert human_a[0].strip().endswith("PLAN_A")
+    assert human_b[0].strip().endswith("PLAN_B")
+    # Quy tắc của đuôi template vẫn còn, giờ nằm trong system (bất biến).
+    for rule in (
+        "Loop Exit Evaluation",
+        "Preserve Memory & Pre-Action Snapshotting",
+        "Phase 3: Target Selection & Physical Execution",
+        "Target Resolution & Index Safety",
+        "Action Selection",
+    ):
+        assert rule in system_a
 
 
 def test_main_template_contains_exactly_one_plan_history_section():

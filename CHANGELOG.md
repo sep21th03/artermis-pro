@@ -82,7 +82,38 @@
 
   21 test mới (7 đường vận chuyển · 14 bằng chứng + cache); suite **3353 passed, 0 failed**.
 
-- **Giới hạn thời gian chạy task: 8/10/15/20 phút** (trước là 2/5/8). Kèm hai trần phía máy chủ phải
+- **Phase 1 tối ưu token: chỉ dẫn bất biến đứng trước, kế hoạch/lịch sử về sau** (`artemis/agents/operator/prompts.py`).
+  Không đổi hành vi executor, không đổi số lượt Operator, không đụng graph/planner/convergence_gate/KB/contract.
+
+  - **Khối "nhắc lại Phase 2" trong message human: KHÔNG bỏ.** So từng quy tắc (`5b459634`) cho thấy
+    khối 4.071 ký tự này **không** trùng system prompt: 6/6 nhóm quy tắc (*Loop Exit Evaluation*,
+    *Preserve Memory & Pre-Action Snapshotting*, *Background Tasks & Instrumentation*,
+    *Phase 3: Target Selection & Physical Execution*, *Target Resolution & Index Safety*,
+    *Action Selection*) **chỉ có ở đó** — 0/31 câu trùng system (đo theo câu ≥40 ký tự). Nó là **đuôi
+    template** mà `TemplatePromptComponent` cắt ra sau mốc `# CURRENT OBSERVATION`
+    (`set_human_footer`), không phải bản sao. Bỏ đi là mất quy tắc ⇒ giữ nguyên nội dung, chỉ **đổi vị trí**.
+  - **Sắp xếp lại (thay đổi duy nhất):** system message = thân template (đã tách section kế hoạch) +
+    **đuôi template** + mốc `# CURRENT OBSERVATION [T+mm:ss]`; kế hoạch + lịch sử thực thi (phần đổi
+    mỗi lượt) xuống **đầu** message human, ảnh + danh sách UI vẫn nguyên và đứng sau. Hàm mới
+    `split_plan_section()`; công tắc `ARTEMIS_PROMPT_STABLE_PREFIX=0` để quay lại cách cũ.
+  - **Đo trên chính trace `5b459634`** (cặp lượt liên tiếp, số provider báo qua `countTokens`):
+    tiền tố chung **5.311 → 7.372 token** (55% → **76%** prompt), prompt size **không đổi**
+    (9.698 token) — tất định, không phụ thuộc cache của provider. System message nay **giống nhau
+    giữa mọi lượt** (hash SHA-256 của hai plan khác nhau bằng nhau).
+  - **Cache thật của provider: không hứa hẹn gì.** `cachedContentTokenCount` (native
+    `streamGenerateContent` — đúng đường agent dùng) dao động ngay trên cùng một request: 0 · 2.036 ·
+    10.184 ở các lần lặp khác nhau; A/B 3 lần cho thấy 8.144 (cách cũ) vs 10.184 (cách mới), nhưng
+    lần đo xen kẽ lại ra 0 cho **cả hai**. Kết luận: thứ tự mới làm tiền tố *đủ điều kiện* cache dài
+    hơn, còn việc provider có cache hay không là best-effort — **chưa có cơ sở để khẳng định tiết kiệm**.
+  - **Đo chính xác schema tool** (provider báo, `generateContent` vì `countTokens` không nhận `tools`):
+    7 device-action = **2.176 token** (311/tool), `kb_lookup` = 514, 3 note tool = 511, tổng 11 tool =
+    **3.201 token**. Bộ tool thật của một lượt Operator ≈ 22 tool ⇒ khớp với phần dư đo được từ trace
+    (5.400 ± 487 token/lượt). Đề xuất (chưa làm): rút gọn mô tả `swipe` (**1.922 ký tự** trong 2.668
+    ký tự mô tả của cả 7 tool) và/hoặc chọn tool theo công đoạn.
+  - Test: 8 test mới (`test_prompt_cache_order.py`) + 1 test khoá tính chất "system độc lập với kế
+    hoạch"; golden hash của prompt legacy được cập nhật **kèm lý do** (di chuyển khối, không mất quy
+    tắc). Suite **3369 passed, 0 failed**.
+
   nâng theo, nếu không lựa chọn trên UI là vô nghĩa:
   - `BUDGET_MAX_TASK_SECONDS` 480s → **1200s** (trần thật của một task; watchdog cắt ở
     `min(max_seconds của task, trần)`).

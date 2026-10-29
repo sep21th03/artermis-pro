@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from functools import lru_cache
 import io
 import json
+import os
 from pathlib import Path
 import re
 from typing import NamedTuple
@@ -343,6 +344,40 @@ def _legacy_elapsed_suffix(ctx: ArtemisContext | None) -> str:
     return f" [{format_session_offset(time.time() - start)}]"
 
 
+#: Sắp xếp lại prompt để **phần bất biến đứng trước** (Phase 1 tối ưu token).
+#: ``0`` ⇒ giữ nguyên cách cũ (đuôi template nằm cuối message human) để so sánh/rollback.
+STABLE_PREFIX_ENV = "ARTEMIS_PROMPT_STABLE_PREFIX"
+
+#: Tiêu đề section kế hoạch + lịch sử trong template — phần **biến động** (đổi mỗi lượt).
+PLAN_SECTION_HEADING = "## Current Plan & Execution History"
+
+
+def stable_prefix_enabled() -> bool:
+    """Có đưa phần bất biến lên trước, phần biến động về sau hay không (mặc định: có)."""
+    raw = (os.getenv(STABLE_PREFIX_ENV) or "").strip().lower()
+    if not raw:
+        return True
+    return raw not in {"0", "false", "no", "off"}
+
+
+def split_plan_section(text: str) -> tuple[str, str]:
+    """Tách section ``## Current Plan & Execution History`` khỏi phần chỉ dẫn.
+
+    Trả ``(phần còn lại, khối kế hoạch)``. Khối kế hoạch là phần **duy nhất đổi mỗi lượt** trong
+    system message (nó chứa lịch sử thực thi), nên tách ra để đẩy về cuối — nhờ vậy toàn bộ phần
+    chỉ dẫn đứng trước trở thành tiền tố chung giữa các lượt và **có thể được cache**.
+
+    Section kết thúc ở tiêu đề cấp 1 kế tiếp (``\\n# ``), đúng như cách template trình bày.
+    """
+    start = text.find(PLAN_SECTION_HEADING)
+    if start < 0:
+        return text, ""
+    rest = text[start + len(PLAN_SECTION_HEADING) :]
+    match = re.search(r"\n# ", rest)
+    end = start + len(PLAN_SECTION_HEADING) + (match.start() if match else len(rest))
+    return text[:start] + text[end:], text[start:end]
+
+
 class TemplatePromptComponent(PromptComponent):
     async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
         prompts = kwargs.get("prompts", {})
@@ -371,7 +406,20 @@ class TemplatePromptComponent(PromptComponent):
         )
 
         parts = full_prompt.split("# CURRENT OBSERVATION")
-        builder.add_system_text(parts[0] + f"# CURRENT OBSERVATION{_legacy_elapsed_suffix(ctx)}\n")
+        marker = f"# CURRENT OBSERVATION{_legacy_elapsed_suffix(ctx)}\n"
+        if len(parts) > 1 and stable_prefix_enabled():
+            # PHẦN BẤT BIẾN ĐỨNG TRƯỚC: toàn bộ chỉ dẫn (thân template + đuôi template) vào system
+            # message, kết thúc bằng mốc quan sát; phần **biến động** (kế hoạch + lịch sử thực thi)
+            # xuống đầu message human, trước ảnh/UI. Không mất quy tắc nào — chỉ đổi vị trí — nhưng
+            # tiền tố chung giữa hai lượt liên tiếp dài hơn hẳn (đo trên trace 5b459634: 5.311 →
+            # 7.372 token, tức 55% → 76% prompt có thể được cache).
+            static_body, plan_section = split_plan_section(parts[0])
+            builder.add_system_text(static_body + parts[1] + marker)
+            if plan_section:
+                builder.add_human_content(plan_section)
+            return
+
+        builder.add_system_text(parts[0] + marker)
 
         if len(parts) > 1:
             builder.set_human_footer(parts[1])
