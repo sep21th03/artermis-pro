@@ -2,7 +2,69 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Tải "các bước" của một lần chạy kèm ảnh (tab Các bước).** Nút `⤓ Tải các bước (kèm ảnh)`
+  tạo một gói `.zip` gồm `steps.json` (mọi bước: số bước, nhãn hành động, lý do agent chọn, kết
+  quả, số token; kèm `summary`, `activity`, `missing_images`), ảnh **Trước/Sau của từng bước** và
+  `final.png`, cùng `README.txt` mô tả gói.
+  - `apps/test_console/server.py`: `GET /api/tasks/{id}/steps-export` dựng ZIP **trong bộ nhớ** rồi
+    trả về dạng attachment ⇒ **file chỉ được tạo khi tester bấm**, không có thư mục/bản sao nào nằm
+    lại trên máy chủ (test khoá đúng điều này: bấm hai lần, danh sách file trên đĩa không đổi).
+  - Ảnh đọc **thẳng từ `traces/images`** trước, chỉ hỏi server khi đĩa không có ⇒ tải được cả khi
+    server ARTEMIS đã tắt (tester xem lại lần chạy cũ rồi mới tải). Thiếu ảnh thì ghi vào
+    `missing_images`, không làm hỏng gói.
+  - Đuôi file trong gói lấy theo **nội dung** (magic bytes), không theo URL: URL ảnh của tab Các
+    bước không có đuôi, nên bản đầu đóng gói JPEG dưới tên `.png` — test bắt được.
+  - Kiểm chứng trên task thật: `steps_5e20f80b_20261029_143910.zip`, 642 KB, 13 mục, 11 ảnh
+    (`step001_before.jpg`…), 10 bước, `missing_images: []`.
+
+- **Phân tích Navigation Graph từ source React Native bằng AST (`scripts/nav_analyze.mjs`).** Mượn
+  `@babel/parser` của chính project nguồn (không thêm dependency cho ARTEMIS, không cần Metro/debug
+  build); mọi node/cạnh đều kèm bằng chứng `file:line`, chỗ không phân tích được ghi vào
+  `unresolved` thay vì đoán. Kèm importer vào KB (`scripts/kb_import_nav_graph.py`: `--dry-run`,
+  chặn id trùng, kiểm schema/app_id, rollback, **không ghi đè bản `verified`**) và
+  `config/nav_sources.json` (source path theo `app_id`).
+  Đo trên `app-hunonic` (1.628 file): 404 màn hình · 433 cạnh có bằng chứng · 247 điều kiện điều
+  hướng trên 153 cạnh · 429 overlay định nghĩa + 1.085 chỗ dùng. Ba lỗi thật đã sửa trong lúc đo:
+  chỉ đọc được 2/407 màn hình (route đăng ký bằng biến `name={KEY_NAME_X}`) ⇒ 404; 2.974 "đích
+  động" giả (`.push()` của mảng, `dispatch()` của Redux bị nhận là điều hướng) ⇒ 52; và 3 call site
+  `navigationRef.current.navigate(...)` mất tích vì mất chuỗi member lồng nhau. 28 test.
+
 ### Changed
+
+- **Giới hạn thời gian chạy task: 8/10/15/20 phút** (trước là 2/5/8). Kèm hai trần phía máy chủ phải
+  nâng theo, nếu không lựa chọn trên UI là vô nghĩa:
+  - `BUDGET_MAX_TASK_SECONDS` 480s → **1200s** (trần thật của một task; watchdog cắt ở
+    `min(max_seconds của task, trần)`).
+  - `TASK_IDLE_TIMEOUT_SECONDS` 120s → **240s**: task 15–20 phút có những bước dài (LLM thinking,
+    chờ màn hình settle) mà 120s im lặng bị coi là treo là cắt oan.
+  - Preset Flash/Pro gán `480`/`900` — giá trị **có** trong `<select>` (preset cũ gán `120`/`300`,
+    giờ không còn là lựa chọn nên `maxSeconds` sẽ thành `NaN`). 4 test khoá cả UI lẫn trần.
+
+- **`labels_grounded`: vocabulary có nguồn gốc + sửa cục bộ thay vì bỏ cả prompt.** Nguyên nhân thật
+  của lỗi 29/10/2026: vocabulary chỉ lấy chữ của workflow *được truy hồi*, nên một nhãn **có thật
+  trong KB** (mục `navigation.*`/`modal.*`, workflow composer in ra để giải thích điều kiện) vẫn bị
+  coi là bịa ⇒ chốt fail ⇒ `fallback()` thay **cả** prompt ⇒ tester mất toàn bộ hướng dẫn KB.
+  `composed_label_vocabulary()` gom nguồn: tester / retrieved / guard / **index (cả KB của app)** /
+  dimensions / final_goal; `strip_ungrounded_labels()` bỏ **đúng dòng** vi phạm, còn vi phạm trong
+  CÁC BƯỚC THỰC HIỆN và XÁC MINH KẾT QUẢ vẫn là lỗi ở mức cả prompt (không làm yếu validation).
+  Bẫy đã bắt bằng test: `prepare.SECTIONS` là bộ mục của bản dự phòng cũ, không phải mục của prompt
+  ghép ⇒ thêm `COMPOSED_SECTIONS`. Giới hạn đã biết: chốt cố ý **không** quét « » vì composer dùng
+  « » cho cả mô tả việc lẫn nhãn UI (thử siết: 5 dòng điều kiện hợp lệ bị coi là bịa).
+
+- **Sửa lỗi đối xứng trong chốt bằng chứng trạng thái.** `required_state_values` coi chuỗi ≥4 chữ số
+  là định danh (tài khoản `0999`) nhưng `observed_identifiers` chỉ nhận ≥7 chữ số ⇒ `0999` **không
+  bao giờ** quan sát được, không run nào xác minh được tài khoản. Đã cho nhận số 4–6 chữ số.
+
+- **Bốn test `explorer_mode` bám theo cấu hình đang dùng** (`flash.explorer_mode="pro"`,
+  `nodes.pro.explorer.mode="pro"`, `flash.max_turns=25`) — không đổi config runtime; hai test giữ
+  nguyên ý nghĩa "knob Pro không đụng knob Flash" bằng cách so với giá trị kế thừa từ config.
+
+- **`kb_lookup` fallback sang KB local khi endpoint từ xa không dùng được.** `.env` đặt
+  `ARTEMIS_KB_API=https://sep21th03.com/artemis` nhưng bản console ở đó **không có** router
+  `/api/kb/*` (404) ⇒ mọi lần agent hỏi KB trong run thật đều thất bại dù máy tester có KB local
+  dùng được. Giờ: endpoint hỏng ⇒ thử KB local (phân biệt với "KB trả lời", kể cả `found=false`).
 
 - **Proxy LLM của console đi thẳng Google, bỏ hẳn Vilao.** Đo trên máy thật 28/10/2026: lượt
   chạy 13:47 đứng ở "Lập kế hoạch" rồi bị console giết sau **120s không có log mới**

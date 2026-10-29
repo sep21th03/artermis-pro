@@ -16,6 +16,7 @@ import difflib
 import hashlib
 import hmac
 import importlib.util
+import io
 import json
 import math
 import os
@@ -29,8 +30,10 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 import unicodedata
 import uuid
+import zipfile
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import (
@@ -53,6 +56,15 @@ DATA_DIR = BASE_DIR / "data"
 LOG_DIR = DATA_DIR / "logs"
 TASKS_FILE = DATA_DIR / "tasks.json"
 BUDGET_FILE = DATA_DIR / "budget.json"
+#: Nơi ARTEMIS lưu ảnh từng bước (``traces/images``). Đọc thẳng từ đĩa khi tải các bước: ảnh của
+#: mọi session nằm ở đây, nên gói tải được ngay cả khi server ARTEMIS đã tắt — đúng lúc tester xem
+#: lại một lần chạy cũ rồi mới bấm tải.
+try:
+    from artemis.config import IMAGES_DIR as _ARTEMIS_IMAGES_DIR
+
+    IMAGES_DIR = Path(_ARTEMIS_IMAGES_DIR)
+except Exception:  # noqa: BLE001 - thiếu artemis thì chỉ còn đường tải ảnh qua HTTP
+    IMAGES_DIR = REPO_ROOT / "traces" / "images"
 
 def _default_artemis_dir() -> Path:
     """Pick the ARTEMIS checkout to drive.
@@ -108,7 +120,9 @@ SERVES_SHARED = CONSOLE_ROLE != "edge"
 #: máy chủ dùng chung. Người vận hành quản trị KB từ máy dev, qua SSH tunnel tới
 #: cùng database đó.
 SERVES_KB_ADMIN = CONSOLE_ROLE != "server"
-IDLE_TIMEOUT_SECONDS = int(os.getenv("TASK_IDLE_TIMEOUT_SECONDS", "120"))
+#: Treo bao lâu thì dừng task. Nâng từ 120s lên 240s vì task 15–20 phút có những bước dài (LLM
+#: thinking, chờ màn hình settle) mà 120s cắt oan; trần tuyệt đối vẫn là ``max_seconds`` của task.
+IDLE_TIMEOUT_SECONDS = int(os.getenv("TASK_IDLE_TIMEOUT_SECONDS", "240"))
 ARTEMIS_API = os.getenv("ARTEMIS_API_BASE", "http://127.0.0.1:8000").rstrip("/")
 # Khoá truy cập API. Console là proxy giữ key LLM thật, nên khi mở ra ngoài
 # (VPS/LAN) bắt buộc phải có khoá: nếu không, ai biết URL cũng tiêu hết ngân
@@ -462,7 +476,9 @@ class Budget:
         self.max_output_tokens = int(os.getenv("BUDGET_MAX_OUTPUT_TOKENS", "768"))
         self.max_task_cost_vnd = float(os.getenv("BUDGET_MAX_TASK_COST_VND", "2000"))
         self.max_daily_cost_vnd = float(os.getenv("BUDGET_DAILY_COST_VND", "6000"))
-        self.max_task_seconds = int(os.getenv("BUDGET_MAX_TASK_SECONDS", "480"))
+        # Trần thời gian của một task. Phải >= lựa chọn lớn nhất trên UI (20 phút = 1200s), nếu
+        # không thì watchdog cắt task ở trần này và lựa chọn 10/15/20 phút trên UI là vô nghĩa.
+        self.max_task_seconds = int(os.getenv("BUDGET_MAX_TASK_SECONDS", "1200"))
         self.max_request_bytes = int(os.getenv("BUDGET_MAX_REQUEST_BYTES", str(8 * 1024 * 1024)))
         self.max_prompt_tokens = int(os.getenv("BUDGET_MAX_PROMPT_TOKENS", "60000"))
         self.price_input = float(os.getenv("BUDGET_PRICE_INPUT_VND_PER_M", "500"))
@@ -1736,6 +1752,133 @@ def task_steps(task_id: str) -> dict:
         "steps": _fetch_steps(task),
         "activity": _activity(task),
     }
+
+
+@edge_route("get", "/api/tasks/{task_id}/steps-export")
+def task_steps_export(task_id: str) -> Response:
+    """Tải toàn bộ bước của một task **kèm ảnh** dưới dạng một file ZIP.
+
+    **Chỉ tạo khi tester bấm tải.** Không file nào được ghi ra đĩa: ZIP dựng trong bộ nhớ rồi trả
+    về dạng attachment, nên xem lại task bao nhiêu lần cũng không làm phình ổ đĩa console và không
+    để lại bản sao ảnh nào ngoài ý muốn. Ảnh lấy từ cùng nguồn mà tab Các bước đang dùng
+    (``ARTEMIS_API/api/images/...``); ảnh nào lấy không được thì ghi vào ``missing_images`` trong
+    ``steps.json`` chứ không làm hỏng cả file.
+    """
+    task = runner.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Không tìm thấy task.")
+
+    steps = _fetch_steps(task)
+    activity = _activity(task)
+    missing: list[str] = []
+
+    def image_suffix(data: bytes, name: str) -> str:
+        """Đuôi file theo **nội dung**, không theo URL.
+
+        URL ảnh trong tab Các bước không có đuôi (``/api/tasks/<id>/image/<name>``), nên nếu lấy đuôi
+        từ URL thì mọi ảnh JPEG trong gói sẽ mang tên ``.png`` — mở ra là file sai định dạng.
+        """
+        if data[:3] == b"\xff\xd8\xff":
+            return ".jpg"
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return ".png"
+        return Path(name).suffix or ".png"
+
+    def fetch_image(image_name: str) -> bytes | None:
+        if not image_name or not re.fullmatch(r"[A-Za-z0-9_.-]+", image_name):
+            return None
+        # 1) Đọc thẳng từ đĩa: ảnh mọi session nằm trong ``traces/images``, nên gói tải được cả khi
+        #    server ARTEMIS đã tắt (tester xem lại lần chạy cũ rồi mới tải).
+        root = IMAGES_DIR
+        for candidate in (image_name, f"{image_name}.jpg"):
+            try:
+                path = (root / candidate).resolve()
+                if path.is_file() and path.is_relative_to(root.resolve()):
+                    return path.read_bytes()
+            except OSError:
+                break
+        # 2) Chưa có trên đĩa (session ở máy khác) ⇒ hỏi server, như tab Các bước vẫn làm.
+        try:
+            with urllib.request.urlopen(
+                f"{ARTEMIS_API}/api/images/{image_name}", timeout=15
+            ) as response:
+                return response.read()
+        except Exception:  # noqa: BLE001 - thiếu một ảnh không được làm hỏng cả gói
+            missing.append(image_name)
+            return None
+
+    entries: list[dict] = []
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for index, step in enumerate(steps, start=1):
+            number = step.get("number") or index
+            record = dict(step)
+            record["images"] = {}
+            for label, url in (("before", step.get("before")), ("after", step.get("after"))):
+                name = str(url).rsplit("/", 1)[-1] if url else ""
+                data = fetch_image(name)
+                if data is None:
+                    continue
+                member = f"images/step{int(number):03d}_{label}{image_suffix(data, name)}"
+                archive.writestr(member, data)
+                record["images"][label] = member
+            entries.append(record)
+
+        final_path = LOG_DIR / f"{task_id}_final.png"
+        final_member = ""
+        if final_path.exists():
+            archive.writestr("images/final.png", final_path.read_bytes())
+            final_member = "images/final.png"
+
+        payload = {
+            "task": {
+                "id": task.id,
+                "goal": task.goal,
+                "goal_sent": task.goal_sent,
+                "package": task.package,
+                "profile": task.profile,
+                "serial": task.serial,
+                "test_name": task.test_name,
+                "status": task.status,
+                "session_id": task.session_id,
+                "started_at": task.started_at,
+                "ended_at": task.ended_at,
+                "max_seconds": task.max_seconds,
+                "cost_vnd": task.cost_vnd,
+                "requests": task.requests,
+            },
+            "summary": _task_summary(task),
+            "steps": entries,
+            "activity": activity,
+            "final_image": final_member,
+            "missing_images": missing,
+            "exported_at": time.time(),
+        }
+        archive.writestr(
+            "steps.json", json.dumps(payload, ensure_ascii=False, indent=2)
+        )
+        archive.writestr(
+            "README.txt",
+            "Các bước của một lần chạy ARTEMIS\n"
+            "=================================\n\n"
+            "steps.json   — mọi bước (số bước, nhãn hành động, lý do agent chọn, kết quả, số token),\n"
+            "               phần 'summary' (kết luận/ĐẠT-KHÔNG ĐẠT), 'activity' (diễn biến agent),\n"
+            "               và 'missing_images' nếu có ảnh không lấy được.\n"
+            "images/      — ảnh Trước/Sau của từng bước (tên file trùng khoá 'images' trong steps.json),\n"
+            "               kèm 'final.png' là ảnh màn hình cuối.\n\n"
+            f"Task: {task.id} · {task.test_name or 'không tên'} · {task.profile} · {task.status}\n"
+            f"Số bước: {len(entries)} · ảnh thiếu: {len(missing)}\n",
+        )
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="steps_{task_id}_{stamp}.zip"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @edge_route("get", "/api/tasks/{task_id}/summary")

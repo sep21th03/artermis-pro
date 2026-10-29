@@ -108,6 +108,8 @@
   .advanced .field:last-child{margin-bottom:0}
   .steps-pane{flex:1;min-height:0;overflow:auto;padding:16px;background:#f7f9fd;
     scroll-behavior:smooth;overscroll-behavior:contain}
+  .steps-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .steps-toolbar .hint{margin:0;flex:1;min-width:200px}
   #stepsList{display:flex;flex-direction:column;gap:12px}
   /* --- Knowledge Base (Workflow RAG) --- */
   .kb-pane{flex:1;min-height:0;overflow:auto;padding:16px;background:#f7f9fd}
@@ -274,11 +276,12 @@
         <div class="field">
           <label for="timeLimit">Giới hạn thời gian</label>
           <select id="timeLimit">
-            <option value="120">2 phút (khuyến nghị cho Flash)</option>
-            <option value="300" selected>5 phút</option>
-            <option value="480">8 phút (tối đa)</option>
+            <option value="480" selected>8 phút</option>
+            <option value="600">10 phút</option>
+            <option value="900">15 phút</option>
+            <option value="1200">20 phút</option>
           </select>
-          <div class="hint" style="margin-top:6px">Quá giờ hoặc 120 giây không có log mới → tự dừng và ghi lý do.</div>
+          <div class="hint" style="margin-top:6px">Đây là <b>trần</b>: xong sớm thì dừng sớm. Quá giờ, hoặc 240 giây không có log mới → tự dừng và ghi lý do.</div>
         </div>
 
         <details class="advanced">
@@ -333,6 +336,10 @@
         </div>
       </div>
       <div class="steps-pane" id="stepsPane">
+        <div class="steps-toolbar">
+          <button class="btn small" id="btnStepsExport" disabled>⤓ Tải các bước (kèm ảnh)</button>
+          <span class="hint" id="stepsExportHint">Gói .zip gồm <b>steps.json</b> + ảnh Trước/Sau của từng bước + ảnh cuối. File chỉ được tạo khi anh bấm nút này.</span>
+        </div>
         <div id="resultCard"></div>
         <div id="nowLine" class="now-line" style="display:none"></div>
         <div id="activityBox"></div>
@@ -536,7 +543,7 @@ const PRESETS = [
 ];
 
 const $ = (id) => document.getElementById(id);
-const state = {seq:0, running:false, wasRunning:false, budgetWarned:false, profile:'flash', serial:'', autoScreen:true, tab:'steps', task:null, taskId:null, lastStepCount:-1, lastActivityCount:-1, lastStepsFetch:0, summaryShown:false, viewingTaskId:null, startTs:0, maxSeconds:300, timer:null, followSteps:true, kbApi:''};
+const state = {seq:0, running:false, wasRunning:false, budgetWarned:false, profile:'flash', serial:'', autoScreen:true, tab:'steps', task:null, taskId:null, lastStepCount:-1, lastActivityCount:-1, lastStepsFetch:0, summaryShown:false, viewingTaskId:null, startTs:0, maxSeconds:480, timer:null, followSteps:true, kbApi:''};
 
 function fmtDuration(ms){
   if(!ms || ms < 0) return '00:00';
@@ -586,7 +593,7 @@ function renderPresets(){
       $('goal').value = p.goal;
       setProfile(p.profile);
       $('testName').value = p.id;
-      const limit = p.profile === 'pro' ? '300' : '120';
+      const limit = p.profile === 'pro' ? '900' : '480';
       $('timeLimit').value = limit;
       state.maxSeconds = Number(limit);
       updateGoalCount();
@@ -920,6 +927,9 @@ function setRunning(running, task){
   state.running = running;
   $('btnRun').disabled = running;
   $('btnStop').disabled = !running;
+  // Tải các bước chỉ có nghĩa khi đã có task (đang chạy hoặc xem lại lần trước).
+  const exportBtn = $('btnStepsExport');
+  if(exportBtn) exportBtn.disabled = !task;
   const pill = $('statusPill');
   let label = 'Sẵn sàng', cls = 'pill';
   if(running){ label = 'Đang chạy'; cls += ' running'; }
@@ -2032,6 +2042,19 @@ function bindEvents(){
   $('btnKbNew').onclick = newKbWorkflow;
   $('btnKbReload').onclick = async () => { await loadKb(true); toast('Đã tải lại knowledge base'); };
   $('btnPerfReload').onclick = async () => { await loadPerf(); toast('Đã cập nhật số liệu Performance'); };
+  $('btnStepsExport').onclick = () => {
+    const task = state.task;
+    if(!task){ toast('Chưa có lần chạy nào để tải'); return; }
+    // Server dựng ZIP trong bộ nhớ và trả về dạng attachment: không có file nào được tạo
+    // trước khi bấm, và tên file do Content-Disposition quyết định.
+    const a = document.createElement('a');
+    a.href = '/api/tasks/' + task.id + '/steps-export';
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast('Đang tạo gói các bước (kèm ảnh)…');
+  };
   $('btnPerfExport').onclick = () => {
     if(!state.task){ toast('Chưa có lần chạy nào để xuất'); return; }
     window.open('/api/tasks/' + state.task.id + '/performance.json', '_blank');
