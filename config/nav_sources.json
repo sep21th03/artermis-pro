@@ -1,0 +1,20 @@
+{
+  "$comment": "Nguồn source cho Navigation Graph theo app_id — KHÔNG hardcode app nào trong code. Thêm app mới = thêm một mục ở đây. Đường dẫn tương đối được tính từ thư mục chạy lệnh.",
+  "apps": {
+    "hunonic": {
+      "source": "/Users/nguyenhoa/Developer/app-hunonic",
+      "include": [],
+      "exclude": [
+        "**/node_modules/**",
+        "**/ios/Pods/**",
+        "**/android/build/**",
+        "**/android/app/build/**",
+        "**/e2e/**",
+        "**/*.stories.js",
+        "artemis-ui-kb-output/**",
+        "scripts/**"
+      ],
+      "notes": "React Native app (App.js + src/Common/NavigatorManage.js). Chỉ đọc source, không cần Metro/debug build, không nhúng SDK vào APK."
+    }
+  }
+}
