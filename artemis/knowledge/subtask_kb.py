@@ -29,18 +29,22 @@ Module này chỉ làm ba việc, đều tất định và test được:
    ``device_action.<type>`` tương ứng.
 2. Tra **đúng id đó** qua ``lookup_knowledge`` (cơ chế KB sẵn có, không dựng engine mới) — tra theo
    id tốn **0 embedding**.
-3. Cache theo ``(subtask_id, device_type)`` ⇒ mỗi công đoạn chỉ tra **một lần**, không tra lại sau
-   mỗi tap.
+3. Cache theo ``(subtask_id, device_type)`` ⇒ mỗi công đoạn chỉ tra **một lần** mỗi hạn dùng, không
+   tra lại sau mỗi tap; lỗi tạm thời **không** bị cache.
 
-Không suy đoán: không có bằng chứng về bước chọn thiết bị và cũng không nhận ra loại thiết bị ⇒
-trả chuỗi rỗng (im lặng), thà thiếu hướng dẫn còn hơn dạy sai.
+Loại thiết bị lấy theo **bằng chứng, ưu tiên màn hình thật** (xem :func:`detect_device_type`): hai
+nguồn cùng nói một loại ⇒ chắc chắn; chỉ một nguồn nói ⇒ có dùng nhưng ghi rõ là chưa chắc; màn hình
+có nhiều loại mà công đoạn không xác nhận loại nào ⇒ **im lặng**, không đoán.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import time
 from dataclasses import dataclass, field
 
+from artemis.core.tool_failure import is_tool_failure
 from artemis.knowledge.text import normalize
 
 #: Cache regex theo từ khoá (mỗi từ khoá biên dịch một lần cho cả run).
@@ -54,6 +58,41 @@ MAX_ENTRIES = 2
 
 #: Trần ký tự của khối KB theo công đoạn.
 DEFAULT_MAX_CHARS = 1400
+
+#: Chỉ dùng luật thiết bị khi nhận diện **chắc chắn** (bỏ qua bằng chứng chỉ từ một phía).
+REQUIRE_HIGH_ENV = "ARTEMIS_SUBTASK_KB_REQUIRE_HIGH"
+
+#: Hạn dùng của một câu trả lời KB đã cache (giây) — hết hạn thì tra lại để bắt kịp KB vừa đổi.
+CACHE_TTL_ENV = "ARTEMIS_SUBTASK_KB_TTL"
+DEFAULT_CACHE_TTL = 600.0
+
+#: Hạn dùng ngắn hơn cho câu trả lời "không có mục nào khớp" — KB có thể vừa được cập nhật.
+CACHE_EMPTY_TTL_ENV = "ARTEMIS_SUBTASK_KB_EMPTY_TTL"
+DEFAULT_CACHE_EMPTY_TTL = 120.0
+
+#: Sau một lần tra **lỗi**, chờ bao lâu mới thử lại (giây). Lỗi không bao giờ được cache.
+CACHE_RETRY_ENV = "ARTEMIS_SUBTASK_KB_RETRY_SECONDS"
+DEFAULT_CACHE_RETRY = 30.0
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _env_seconds(name: str, *, default: float) -> float:
+    try:
+        return max(0.0, float(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+def require_high_confidence() -> bool:
+    """Chính sách: có bắt buộc nhận diện **chắc chắn** mới dùng luật thiết bị hay không."""
+    return _env_flag(REQUIRE_HIGH_ENV, default=False)
+
 
 #: Dấu hiệu công đoạn **đang ở bước chọn thiết bị / chọn hành động**.
 #: Viết ở dạng đã bỏ dấu vì ``normalize`` bỏ dấu cả hai phía.
@@ -125,39 +164,161 @@ _STORE_TERMS: tuple[str, ...] = ("cua hang", "store", "shop")
 
 @dataclass(frozen=True)
 class DeviceTypeMatch:
-    """Loại thiết bị nhận ra được, kèm **bằng chứng** (từ khoá + nguồn)."""
+    """Loại thiết bị nhận ra được, kèm **bằng chứng**, **độ chắc chắn** và **mâu thuẫn** (nếu có).
+
+    ``confidence`` chỉ có hai mức, và mức nào cũng **có thật**:
+
+    * ``"high"`` — màn hình và công đoạn **cùng nói một loại**, hoặc chỉ màn hình nói và nói đúng
+      một loại (màn hình là bằng chứng thật của bước đang làm);
+    * ``"medium"`` — chỉ **một phía** nói: công đoạn nói mà màn hình không nhắc gì, hoặc màn hình
+      nói một loại còn công đoạn nói loại khác (``conflict`` giữ loại của công đoạn).
+
+    Không có mức ``"low"``: không đủ căn cứ thì hàm nhận diện trả ``None`` (im lặng) chứ không trả
+    một phỏng đoán.
+    """
 
     workflow_id: str
     term: str
-    source: str  # "ui" | "subtask"
+    source: str  # "ui+subtask" | "ui" | "subtask"
+    confidence: str = "high"  # "high" | "medium"
+    conflict: str = ""  # loại mà phía còn lại nói tới khi hai phía mâu thuẫn
+
+    @property
+    def from_screen(self) -> bool:
+        """Bằng chứng có đến từ màn hình thật hay không."""
+        return self.source.startswith("ui")
+
+    def evidence(self) -> str:
+        """Câu mô tả bằng chứng để đưa vào prompt (nói rõ vì sao tin loại này)."""
+        where = {
+            "ui+subtask": "khớp cả màn hình và công đoạn",
+            "ui": "theo màn hình",
+            "subtask": "theo công đoạn",
+        }.get(self.source, self.source)
+        text = f"{self.workflow_id} ({self.term}, {where}"
+        if self.confidence != "high":
+            text += ", chưa chắc chắn"
+        text += ")"
+        if self.conflict:
+            text += f" ⚠ công đoạn nói {self.conflict} — luật dưới đây theo màn hình"
+        return text
 
     def as_dict(self) -> dict:
-        return {"workflow_id": self.workflow_id, "term": self.term, "source": self.source}
+        return {
+            "workflow_id": self.workflow_id,
+            "term": self.term,
+            "source": self.source,
+            "confidence": self.confidence,
+            "conflict": self.conflict,
+        }
+
+
+@dataclass
+class _CacheEntry:
+    """Một câu trả lời KB đã cache, kèm **hạn dùng**."""
+
+    text: str
+    expires_at: float
 
 
 @dataclass
 class SubtaskKbCache:
-    """Cache theo ``(subtask_id, device_type)`` — một công đoạn chỉ tra KB **một lần**."""
+    """Cache theo ``(subtask_id, device_type)`` — một công đoạn chỉ tra KB **một lần** mỗi hạn dùng.
 
-    blocks: dict[tuple[str, str], str] = field(default_factory=dict)
+    Ba tính chất được chọn có chủ đích:
+
+    * **chỉ cache câu trả lời**, không bao giờ cache **lỗi**: lỗi tạm thời (mạng, KB đang khởi
+      động) mà bị cache thì công đoạn đó mất KB tới hết run — đúng thứ cần tránh;
+    * lỗi chỉ ghi lại **thời điểm** ⇒ :meth:`retry_allowed` chặn dội liên tục trong
+      ``retry_seconds`` rồi **cho thử lại**;
+    * câu trả lời "không có mục nào khớp" có hạn dùng **ngắn hơn** nội dung thật (KB có thể vừa
+      được cập nhật), và :meth:`invalidate` cho phép làm mới ngay khi cần.
+    """
+
+    content_ttl: float = DEFAULT_CACHE_TTL
+    empty_ttl: float = DEFAULT_CACHE_EMPTY_TTL
+    retry_seconds: float = DEFAULT_CACHE_RETRY
+    entries: dict[tuple[str, str], _CacheEntry] = field(default_factory=dict)
+    failures: dict[tuple[str, str], float] = field(default_factory=dict)
     lookups: int = 0
     hits: int = 0
+    misses: int = 0
+    expired: int = 0
+    errors: int = 0
+    suppressed: int = 0
 
-    def get(self, key: tuple[str, str]) -> str | None:
-        value = self.blocks.get(key)
-        if value is not None:
-            self.hits += 1
-        return value
+    @classmethod
+    def from_env(cls) -> SubtaskKbCache:
+        """Cấu hình đọc từ biến môi trường (một chỗ duy nhất, dễ chỉnh khi vận hành)."""
+        return cls(
+            content_ttl=_env_seconds(CACHE_TTL_ENV, default=DEFAULT_CACHE_TTL),
+            empty_ttl=_env_seconds(CACHE_EMPTY_TTL_ENV, default=DEFAULT_CACHE_EMPTY_TTL),
+            retry_seconds=_env_seconds(CACHE_RETRY_ENV, default=DEFAULT_CACHE_RETRY),
+        )
 
-    def put(self, key: tuple[str, str], value: str) -> None:
-        self.blocks[key] = value
+    def get(self, key: tuple[str, str], *, now: float | None = None) -> str | None:
+        """Câu trả lời còn hạn, hoặc ``None`` (đồng thời dọn mục đã hết hạn)."""
+        entry = self.entries.get(key)
+        if entry is None:
+            self.misses += 1
+            return None
+        if entry.expires_at <= (time.monotonic() if now is None else now):
+            del self.entries[key]
+            self.expired += 1
+            self.misses += 1
+            return None
+        self.hits += 1
+        return entry.text
+
+    def put(
+        self,
+        key: tuple[str, str],
+        value: str,
+        *,
+        now: float | None = None,
+        ttl: float | None = None,
+    ) -> None:
+        """Ghi một **câu trả lời** (kể cả rỗng) với hạn dùng; xoá dấu vết lỗi của khoá đó."""
+        now = time.monotonic() if now is None else now
+        if ttl is None:
+            ttl = self.content_ttl if value else self.empty_ttl
+        self.entries[key] = _CacheEntry(value, now + ttl)
+        self.failures.pop(key, None)
+
+    def note_failure(self, key: tuple[str, str], *, now: float | None = None) -> None:
+        """Ghi **thời điểm** một lần tra lỗi — không ghi nội dung lỗi vào cache."""
+        self.failures[key] = time.monotonic() if now is None else now
+        self.errors += 1
+
+    def retry_allowed(self, key: tuple[str, str], *, now: float | None = None) -> bool:
+        """Có được thử tra lại khoá này không (tính từ lần lỗi gần nhất)."""
+        stamp = self.failures.get(key)
+        if stamp is None:
+            return True
+        now = time.monotonic() if now is None else now
+        if now - stamp >= self.retry_seconds:
+            del self.failures[key]
+            return True
+        return False
+
+    def invalidate(self, key: tuple[str, str] | None = None) -> int:
+        """Làm mới KB: xoá một khoá (hoặc toàn bộ) và xoá cả dấu vết lỗi. Trả số khoá đã xoá."""
+        if key is None:
+            removed = len(self.entries) + len(self.failures)
+            self.entries.clear()
+            self.failures.clear()
+            return removed
+        removed = int(key in self.entries) + int(key in self.failures)
+        self.entries.pop(key, None)
+        self.failures.pop(key, None)
+        return removed
 
 
 def get_cache(ctx: object) -> SubtaskKbCache:
     """Cache sống theo **run**: ``ctx`` là đối tượng của một lần chạy, không phải toàn cục."""
     cache = getattr(ctx, "subtask_kb_cache", None)
     if not isinstance(cache, SubtaskKbCache):
-        cache = SubtaskKbCache()
+        cache = SubtaskKbCache.from_env()
         try:
             setattr(ctx, "subtask_kb_cache", cache)
         except Exception:  # noqa: BLE001 - không set được thì vẫn dùng cache cục bộ của lượt
@@ -186,57 +347,109 @@ def detect_picker_step(*texts: str) -> bool:
     return any(_matches(haystack, term) for term in PICKER_TERMS)
 
 
-def _first_match_in_text(text: str) -> DeviceTypeMatch | None:
-    """Loại thiết bị xuất hiện **sớm nhất** trong ``text`` (không theo thứ tự bảng).
+def _matches_in_text(text: str) -> tuple[DeviceTypeMatch, ...]:
+    """**Mọi** loại thiết bị xuất hiện trong ``text``, theo vị trí, mỗi loại một lần.
 
-    Vì sao theo vị trí: một màn danh sách có thể chứa nhiều thiết bị ("Công tắc 10 … Rèm phòng
-    khách"). Duyệt theo thứ tự bảng thì thiết bị nào đứng trước trong bảng sẽ thắng, bất kể màn hình
-    đang nói tới cái nào — đo trên ví dụ thật: ra ``device_action.blind`` (rèm) trong khi công đoạn
-    nói về công tắc.
+    Vì sao cần *tất cả* chứ không chỉ loại đầu tiên: quyết định "đủ chắc chắn hay không" phụ thuộc
+    số loại cùng xuất hiện (màn hình có 2 loại mà công đoạn không nói gì ⇒ không biết mục tiêu).
+
+    Vị trí chứ không phải thứ tự bảng: màn danh sách có thể chứa nhiều thiết bị ("Công tắc 10 · Ổ cắm
+    12 · Rèm phòng khách"); duyệt theo thứ tự bảng thì thiết bị nào đứng trước trong bảng sẽ thắng,
+    bất kể màn hình đang nói tới cái nào.
     """
     haystack = normalize(text or "")
     if not haystack:
-        return None
-    best: tuple[int, DeviceTypeMatch] | None = None
+        return ()
+    found: list[tuple[int, DeviceTypeMatch]] = []
     for workflow_id, terms in DEVICE_TYPE_TERMS:
+        best: tuple[int, str] | None = None
         for term in terms:
             # "cửa" trong "cửa hàng" không phải thiết bị cửa.
             if term == "cua" and any(store in haystack for store in _STORE_TERMS):
                 continue
-            found = _term_pattern(term).search(haystack)
-            if not found:
-                continue
-            if best is None or found.start() < best[0]:
-                best = (found.start(), DeviceTypeMatch(workflow_id, term, ""))
-    return best[1] if best else None
+            hit = _term_pattern(term).search(haystack)
+            if hit and (best is None or hit.start() < best[0]):
+                best = (hit.start(), term)
+        if best is not None:
+            found.append((best[0], DeviceTypeMatch(workflow_id, best[1], "")))
+    found.sort(key=lambda row: row[0])
+    return tuple(match for _position, match in found)
+
+
+def _first_match_in_text(text: str) -> DeviceTypeMatch | None:
+    """Loại thiết bị xuất hiện **sớm nhất** trong ``text`` (``None`` nếu không có)."""
+    matches = _matches_in_text(text)
+    return matches[0] if matches else None
+
+
+def _confident_enough(match: DeviceTypeMatch, require_high: bool | None = None) -> bool:
+    """Có được dùng luật của loại này không, theo chính sách "đủ chắc chắn"."""
+    strict = require_high_confidence() if require_high is None else require_high
+    return match.confidence == "high" or not strict
 
 
 def detect_device_type(subtask_text: str, observed_text: str) -> DeviceTypeMatch | None:
-    """Loại thiết bị theo **bằng chứng**, ưu tiên công đoạn rồi mới tới màn hình.
+    """Loại thiết bị **mục tiêu** của bước này — màn hình là bằng chứng, công đoạn là ý định.
 
-    Ưu tiên **công đoạn** vì công đoạn nói *ý định của bước này* ("thêm hành động cho công tắc"),
-    còn màn hình danh sách chỉ là nơi chứa nhiều thiết bị. Màn hình vẫn là nguồn khi công đoạn chưa
-    nêu loại thiết bị (màn hình đang mở đúng danh sách có "Công tắc 10"). Không suy đoán: không khớp
-    từ khoá nào ⇒ ``None``.
+    Bảng quyết định (đo trên màn danh sách thật "Công tắc 10 · Ổ cắm 12 · Rèm phòng khách"):
+
+    ==========================================  ==================  ====================
+    Bằng chứng                                  Kết quả             ``confidence``
+    ==========================================  ==================  ====================
+    Màn hình và công đoạn **cùng một loại**     loại đó             ``high``
+    Màn hình đúng **một loại**, công đoạn im    loại trên màn hình  ``high``
+    Màn hình một loại, công đoạn nói loại khác  **loại trên màn hình** (``conflict``)  ``medium``
+    Màn hình nhiều loại, công đoạn không khớp   ``None`` (im lặng)  —
+    Chỉ công đoạn nói, đúng một loại            loại của công đoạn  ``medium``
+    Không phía nào nói                          ``None`` (im lặng)  —
+    ==========================================  ==================  ====================
+
+    Vì sao màn hình thắng khi hai phía mâu thuẫn: màn hình là cái **đang thật sự hiện ra** cho agent,
+    còn công đoạn là kế hoạch viết trước. Nhưng mâu thuẫn vẫn được ghi lại (``conflict``) và đưa vào
+    prompt, để agent thấy ngay là hai nguồn không khớp nhau thay vì im lặng dạy sai.
+
+    Vì sao **không** chọn khi màn hình có nhiều loại: "tên loại trùng với một item khác" chính là lỗi
+    đã đo được (bản đầu chọn ``rèm`` chỉ vì nó đứng trước trong bảng từ khoá). Thà thiếu hướng dẫn.
     """
-    for source, text in (("subtask", subtask_text), ("ui", observed_text)):
-        match = _first_match_in_text(text)
-        if match is not None:
-            return DeviceTypeMatch(match.workflow_id, match.term, source)
+    ui = _matches_in_text(observed_text)
+    plan = _matches_in_text(subtask_text)
+    ui_ids = {match.workflow_id for match in ui}
+    plan_ids = {match.workflow_id for match in plan}
+    common = ui_ids & plan_ids
+    if len(common) == 1:
+        chosen = next(match for match in ui if match.workflow_id in common)
+        return DeviceTypeMatch(chosen.workflow_id, chosen.term, "ui+subtask", "high")
+    if len(ui_ids) == 1:
+        only = ui[0]
+        conflict = ", ".join(sorted(plan_ids - ui_ids))
+        return DeviceTypeMatch(
+            only.workflow_id, only.term, "ui", "medium" if conflict else "high", conflict
+        )
+    if ui_ids:
+        # Nhiều loại cùng trên màn hình và công đoạn không xác nhận loại nào ⇒ không đoán.
+        return None
+    if len(plan_ids) == 1:
+        return DeviceTypeMatch(plan[0].workflow_id, plan[0].term, "subtask", "medium")
     return None
 
 
-def subtask_kb_ids(subtask_text: str, observed_text: str) -> tuple[str, ...]:
+def subtask_kb_ids(
+    subtask_text: str,
+    observed_text: str,
+    *,
+    require_high: bool | None = None,
+) -> tuple[str, ...]:
     """Id cần tra cho công đoạn này — nhiều nhất :data:`MAX_ENTRIES`, mục cụ thể đứng trước.
 
     * Bước chọn thiết bị/hành động ⇒ ``device_action.selector``.
-    * Nhận ra loại thiết bị ⇒ ``device_action.<type>`` (hoặc biến thể ``.bottomsheet.`` nếu màn hình
-      đang hiện sheet chọn trạng thái).
-    * Không có bằng chứng nào ⇒ rỗng (im lặng).
+    * Nhận ra loại thiết bị **đủ chắc chắn** ⇒ ``device_action.<type>`` (hoặc biến thể
+      ``.bottomsheet.`` nếu màn hình đang hiện sheet chọn trạng thái).
+    * Không có bằng chứng nào (hoặc bằng chứng chỉ ở mức ``medium`` khi bật
+      :data:`REQUIRE_HIGH_ENV`) ⇒ chỉ còn luật chung của bộ chọn, hoặc rỗng nếu cũng không có.
     """
     ids: list[str] = []
     match = detect_device_type(subtask_text, observed_text)
-    if match is not None:
+    if match is not None and _confident_enough(match, require_high):
         variant = SHEET_VARIANTS.get(match.workflow_id)
         on_sheet = any(term in normalize(observed_text or "") for term in SHEET_TERMS)
         ids.append(variant if (variant and on_sheet) else match.workflow_id)
@@ -264,11 +477,18 @@ def subtask_kb_block(
     lookup=None,
     cache: SubtaskKbCache | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,
+    force_refresh: bool = False,
+    now: float | None = None,
 ) -> str:
     """Khối KB cho **công đoạn đang làm**, hoặc ``""`` khi không có gì chắc chắn để đưa.
 
-    Một công đoạn ⇒ một lần tra (cache theo ``subtask_id + device_type``). Tra theo **id** nên
-    không tốn embedding, và chỉ 1–2 mục vào prompt thay vì cả 26.
+    Một công đoạn ⇒ một lần tra cho mỗi hạn dùng của cache (khoá ``subtask_id + device_type``). Tra
+    theo **id** nên không tốn embedding, và chỉ 1–2 mục vào prompt thay vì cả 26.
+
+    Xử lý lỗi tạm thời: câu trả lời **lỗi** không bao giờ vào cache. Lần lỗi đầu được nói cho agent
+    biết (một câu ngắn), các lượt sau trong ``cache.retry_seconds`` **im lặng** để không lặp lại cùng
+    một lỗi mỗi lượt; hết khoảng đó thì tra lại. ``force_refresh`` (hoặc ``cache.invalidate``) dùng
+    khi cần làm mới KB ngay.
     """
     active = exec_state.active() if exec_state is not None else None
     if active is None:
@@ -282,15 +502,21 @@ def subtask_kb_block(
         return ""
 
     match = detect_device_type(subtask_text, observed_text)
-    device_key = match.workflow_id if match else "-"
+    confident = match if (match is not None and _confident_enough(match)) else None
+    device_key = confident.workflow_id if confident else "-"
     key = (str(getattr(active, "id", "") or subtask_text), device_key)
-    if cache is not None:
-        cached = cache.get(key)
+    if cache is not None and not force_refresh:
+        cached = cache.get(key, now=now)
         if cached is not None:
             return cached
+        if not cache.retry_allowed(key, now=now):
+            # Vừa lỗi cách đây ít lâu: không dội lại mỗi lượt, cũng không lặp lại câu lỗi.
+            cache.suppressed += 1
+            return ""
 
     fetcher = lookup or _default_lookup
-    parts: list[str] = []
+    answers: list[str] = []
+    failures: list[str] = []
     for workflow_id in ids:
         text = fetcher(
             workflow_id=workflow_id,
@@ -298,36 +524,53 @@ def subtask_kb_block(
             run_id=run_id,
             max_results=1,
         )
-        if text:
-            parts.append(str(text).strip())
+        if not text:
+            continue
+        if is_tool_failure(text):
+            failures.append(str(text).strip())
+        else:
+            answers.append(str(text).strip())
     if cache is not None:
         cache.lookups += 1
 
-    if not parts:
-        block = ""
-    else:
-        evidence = (
-            f"thiết bị: {match.workflow_id} ({match.term}, theo {'màn hình' if match.source == 'ui' else 'công đoạn'})"
-            if match
-            else "chưa xác định được loại thiết bị"
-        )
-        header = (
-            "[KB THEO CÔNG ĐOẠN] "
-            f"công đoạn «{subtask_text[:90]}» · {evidence} · id tra: {', '.join(ids)}"
-        )
-        block = header + "\n" + "\n".join(parts)
-        if len(block) > max_chars:
-            block = block[:max_chars].rstrip() + "\n…(đã cắt bớt)"
+    if not answers:
+        if cache is not None:
+            if failures:
+                cache.note_failure(key, now=now)
+            else:
+                cache.put(key, "", now=now)
+        # Lỗi hạ tầng: nói **một lần** rồi thôi (các lượt sau trong khoảng backoff trả "" ở trên).
+        return failures[0] if failures else ""
+
+    evidence = (
+        f"thiết bị: {confident.evidence()}" if confident else "chưa xác định được loại thiết bị"
+    )
+    header = (
+        "[KB THEO CÔNG ĐOẠN] "
+        f"công đoạn «{subtask_text[:90]}» · {evidence} · id tra: {', '.join(ids)}"
+    )
+    block = header + "\n" + "\n".join(answers)
+    if len(block) > max_chars:
+        block = block[:max_chars].rstrip() + "\n…(đã cắt bớt)"
     if cache is not None:
-        cache.put(key, block)
+        # Tra được một phần (còn id lỗi) ⇒ hạn dùng ngắn để sớm bù phần thiếu, không giữ nửa vời
+        # suốt công đoạn.
+        cache.put(key, block, now=now, ttl=cache.empty_ttl if failures else None)
     return block
 
 
 __all__ = [
+    "CACHE_EMPTY_TTL_ENV",
+    "CACHE_RETRY_ENV",
+    "CACHE_TTL_ENV",
+    "DEFAULT_CACHE_EMPTY_TTL",
+    "DEFAULT_CACHE_RETRY",
+    "DEFAULT_CACHE_TTL",
     "DEFAULT_MAX_CHARS",
     "DEVICE_TYPE_TERMS",
     "MAX_ENTRIES",
     "PICKER_TERMS",
+    "REQUIRE_HIGH_ENV",
     "SELECTOR_ID",
     "SHEET_TERMS",
     "SHEET_VARIANTS",
@@ -336,6 +579,7 @@ __all__ = [
     "detect_device_type",
     "detect_picker_step",
     "get_cache",
+    "require_high_confidence",
     "subtask_kb_block",
     "subtask_kb_ids",
 ]

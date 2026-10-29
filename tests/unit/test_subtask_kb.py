@@ -31,6 +31,7 @@ from artemis.knowledge.subtask_kb import (
     detect_device_type,
     detect_picker_step,
     get_cache,
+    require_high_confidence,
     subtask_kb_block,
     subtask_kb_ids,
 )
@@ -207,7 +208,9 @@ def test_the_subtask_intent_wins_over_a_busy_device_list():
     """Màn danh sách chứa nhiều thiết bị: phải theo loại mà **công đoạn** nói tới.
 
     Đo trên ví dụ thật: màn hình có "Công tắc 10 … Rèm phòng khách" và bản đầu chọn ``rèm`` chỉ vì
-    nó đứng trước trong bảng từ khoá.
+    nó đứng trước trong bảng từ khoá. Ở đây màn hình có **hai** loại (công tắc, rèm) nên một mình nó
+    không đủ căn cứ; công đoạn ("Select a switch device") xác nhận một loại ⇒ giao của hai nguồn đúng
+    một loại ⇒ ``ui+subtask`` với độ chắc chắn ``high`` (mạnh hơn cả khi chỉ công đoạn nói).
     """
     match = detect_device_type(
         "Thêm hành động cho ngữ cảnh Select a switch device",
@@ -216,7 +219,8 @@ def test_the_subtask_intent_wins_over_a_busy_device_list():
 
     assert match is not None
     assert match.workflow_id == "device_action.switch"
-    assert match.source == "subtask"
+    assert match.source == "ui+subtask"
+    assert match.confidence == "high"
 
 
 def test_no_active_subtask_means_no_lookup_and_no_noise():
@@ -263,6 +267,216 @@ def test_the_cache_lives_on_the_run_context():
     second = get_cache(ctx)
 
     assert first is second
+
+
+# ── bằng chứng màn hình > công đoạn, và chỉ khi đủ chắc chắn ────────────
+def test_screen_only_evidence_is_certain_when_the_subtask_is_silent():
+    """Màn hình đúng **một** loại, công đoạn không nói gì ⇒ dùng luật loại đó, mức ``high``."""
+    match = detect_device_type("thêm hành động cho ngữ cảnh", "Công tắc 10")
+
+    assert match is not None
+    assert (match.source, match.confidence) == ("ui", "high")
+
+
+def test_subtask_only_evidence_is_medium_confidence():
+    """Chỉ công đoạn nói ⇒ vẫn dùng (không có gì mâu thuẫn), nhưng phải nói rõ là chưa chắc."""
+    match = detect_device_type("chọn hành động cho rèm phòng khách", "")
+
+    assert match is not None
+    assert (match.source, match.confidence) == ("subtask", "medium")
+
+
+def test_a_conflict_uses_the_screen_and_says_so():
+    """Plan và màn hình mâu thuẫn: theo **màn hình** (bằng chứng thật) và ghi rõ mâu thuẫn.
+
+    Không dùng luật của loại mà công đoạn nói tới — đó chính là "KB sai loại" cần tránh. Mâu thuẫn
+    được ghi vào ``conflict`` để prompt nói thẳng ra thay vì im lặng dạy sai.
+    """
+    match = detect_device_type("chọn hành động cho công tắc", "Rèm phòng khách")
+
+    assert match is not None
+    assert match.workflow_id == "device_action.blind"
+    assert match.source == "ui"
+    assert match.confidence == "medium"
+    assert match.conflict == "device_action.switch"
+    assert "công đoạn nói device_action.switch" in match.evidence()
+
+
+def test_two_types_on_screen_without_subtask_agreement_is_silent():
+    """Màn hình nhiều loại, công đoạn không xác nhận loại nào ⇒ **không** chọn đại một cái.
+
+    Vẫn còn luật **chung** của bộ chọn (``device_action.selector``) vì đó không phải luật của một
+    loại thiết bị nào — nhưng không có luật thiết bị nào được đưa.
+    """
+    assert (
+        detect_device_type("thêm hành động cho ngữ cảnh", "Công tắc 10 · Rèm phòng khách") is None
+    )
+
+    ids = subtask_kb_ids("thêm hành động cho ngữ cảnh", "Công tắc 10 · Rèm phòng khách")
+
+    assert ids == (SELECTOR_ID,)
+    assert "device_action.switch" not in ids and "device_action.blind" not in ids
+
+
+def test_a_type_name_in_another_item_does_not_pick_a_device():
+    """Tên loại trùng với một item khác trên màn hình **không** được tự chọn thành mục tiêu."""
+    # Công đoạn nói cửa, màn hình chỉ có công tắc + rèm (không có cửa) ⇒ hai loại trên màn hình,
+    # giao rỗng ⇒ không đoán.
+    assert detect_device_type("chọn hành động cửa", "Công tắc 10 · Rèm phòng khách") is None
+    # Công đoạn nói một loại không có trên màn hình, màn hình đúng một loại ⇒ theo màn hình.
+    match = detect_device_type("chọn hành động cửa", "Công tắc 10")
+    assert match is not None and match.workflow_id == "device_action.switch"
+
+
+def test_require_high_drops_medium_evidence(monkeypatch):
+    """Chính sách chặt: chỉ dùng luật thiết bị khi hai nguồn cùng xác nhận."""
+    monkeypatch.setenv("ARTEMIS_SUBTASK_KB_REQUIRE_HIGH", "1")
+
+    assert require_high_confidence() is True
+    # Bằng chứng chỉ từ công đoạn (medium) ⇒ bỏ luật thiết bị, chỉ còn luật chung của bộ chọn.
+    assert subtask_kb_ids("chọn thiết bị cho rèm", "") == (SELECTOR_ID,)
+    # Hai nguồn cùng nói (high) ⇒ vẫn dùng.
+    assert subtask_kb_ids("chọn thiết bị cho rèm", "Rèm phòng khách")[0] == "device_action.blind"
+
+
+def test_the_header_states_confidence_and_conflict():
+    seen: list[dict] = []
+    block = subtask_kb_block(
+        _active_state(),
+        "Công tắc 10",
+        lookup=_recording_lookup(seen),
+        cache=SubtaskKbCache(),
+    )
+
+    assert "thiết bị: device_action.switch" in block
+    assert "khớp cả màn hình và công đoạn" in block
+
+
+# ── cache: hạn dùng, lỗi tạm thời, làm mới ──────────────────────────────
+def _failing_lookup(message: str = "[KB] không lấy được hướng dẫn: KB local tra cứu lỗi: timeout"):
+    from artemis.core.tool_failure import ToolFailure
+
+    def lookup(**_kwargs):
+        return ToolFailure(message)
+
+    return lookup
+
+
+def test_a_transient_failure_is_not_cached_and_is_retried_after_the_backoff():
+    """Lỗi tạm thời không được cache: hết backoff phải thử lại và lấy được KB thật."""
+    cache = SubtaskKbCache(retry_seconds=30.0)
+    state = _active_state()
+    calls: list[str] = []
+    answers = {"n": 0}
+
+    def flaky(**kwargs):
+        calls.append(kwargs["workflow_id"])
+        answers["n"] += 1
+        if answers["n"] <= 2:  # cả hai id của công đoạn đều lỗi ở lượt đầu
+            return _failing_lookup()()
+        return f"[KB] {kwargs['workflow_id']} ok"
+
+    first = subtask_kb_block(state, "Công tắc 10", lookup=flaky, cache=cache, now=100.0)
+
+    assert "không lấy được hướng dẫn" in first  # agent được biết KB đang không trả lời
+    assert cache.entries == {}  # nhưng KHÔNG có mục nào được cache
+    assert cache.errors == 1
+
+    # Trong khoảng backoff: im lặng, không gọi lại KB.
+    before = len(calls)
+    assert subtask_kb_block(state, "Công tắc 10", lookup=flaky, cache=cache, now=120.0) == ""
+    assert len(calls) == before
+    assert cache.suppressed == 1
+
+    # Hết backoff: thử lại và lấy được câu trả lời thật.
+    again = subtask_kb_block(state, "Công tắc 10", lookup=flaky, cache=cache, now=131.0)
+
+    assert "[KB THEO CÔNG ĐOẠN]" in again
+    assert cache.errors == 1  # không tăng: lần này thành công
+    assert cache.hits == 0
+
+
+def test_the_failure_message_is_shown_once_then_silenced():
+    """Không lặp lại cùng một câu lỗi ở mọi lượt Operator."""
+    cache = SubtaskKbCache(retry_seconds=60.0)
+    state = _active_state()
+    lookup = _failing_lookup()
+
+    first = subtask_kb_block(state, "Công tắc 10", lookup=lookup, cache=cache, now=0.0)
+    second = subtask_kb_block(state, "Công tắc 10", lookup=lookup, cache=cache, now=1.0)
+
+    assert first.startswith("[KB]")
+    assert second == ""
+
+
+def test_a_cached_answer_expires_and_is_looked_up_again():
+    """Hết hạn dùng thì tra lại — KB có thể vừa được cập nhật."""
+    cache = SubtaskKbCache(content_ttl=600.0)
+    state = _active_state()
+    seen: list[dict] = []
+    lookup = _recording_lookup(seen)
+
+    subtask_kb_block(state, "Công tắc 10", lookup=lookup, cache=cache, now=0.0)
+    subtask_kb_block(state, "Công tắc 10", lookup=lookup, cache=cache, now=599.0)
+
+    assert cache.lookups == 1 and cache.hits == 1
+
+    subtask_kb_block(state, "Công tắc 10", lookup=lookup, cache=cache, now=601.0)
+
+    assert cache.lookups == 2
+    assert cache.expired == 1
+
+
+def test_an_empty_answer_has_a_shorter_ttl_than_content():
+    """ "Không có mục nào khớp" hết hạn sớm hơn nội dung thật (KB có thể vừa được bổ sung)."""
+    cache = SubtaskKbCache(content_ttl=600.0, empty_ttl=120.0)
+    state = _active_state()
+    silent = lambda **_kwargs: ""  # noqa: E731 - KB không có gì để trả, không phải lỗi
+
+    assert subtask_kb_block(state, "Công tắc 10", lookup=silent, cache=cache, now=0.0) == ""
+
+    empty_key = next(iter(cache.entries))
+    assert cache.entries[empty_key].expires_at == 120.0
+
+    cache.put(("s", "d"), "[KB] có nội dung", now=0.0)
+    assert cache.entries[("s", "d")].expires_at == 600.0
+
+
+def test_invalidate_and_force_refresh_make_a_fresh_lookup():
+    """Làm mới KB khi cần: ``invalidate`` và ``force_refresh`` đều buộc tra lại."""
+    cache = SubtaskKbCache()
+    state = _active_state()
+    seen: list[dict] = []
+    lookup = _recording_lookup(seen)
+
+    subtask_kb_block(state, "Công tắc 10", lookup=lookup, cache=cache)
+    assert cache.lookups == 1
+
+    assert cache.invalidate() == 1
+    subtask_kb_block(state, "Công tắc 10", lookup=lookup, cache=cache)
+    assert cache.lookups == 2
+
+    subtask_kb_block(state, "Công tắc 10", lookup=lookup, cache=cache, force_refresh=True)
+    assert cache.lookups == 3
+
+
+def test_a_partial_answer_is_cached_with_the_short_ttl():
+    """Một id lỗi, một id trả lời ⇒ có KB để dùng, nhưng hạn dùng ngắn để sớm bù phần thiếu."""
+    cache = SubtaskKbCache(content_ttl=600.0, empty_ttl=120.0)
+    state = _active_state()
+
+    def half(**kwargs):
+        if kwargs["workflow_id"] == SELECTOR_ID:
+            return _failing_lookup()()
+        return "[KB] device_action.switch ok"
+
+    block = subtask_kb_block(state, "Công tắc 10", lookup=half, cache=cache, now=0.0)
+
+    assert "[KB THEO CÔNG ĐOẠN]" in block
+    key = next(iter(cache.entries))
+    assert cache.get(key, now=100.0) == block  # còn trong hạn ngắn
+    assert cache.get(key, now=200.0) is None  # hết hạn ⇒ tra lại để bù phần thiếu
+    assert cache.errors == 0  # vẫn có câu trả lời ⇒ không tính là lượt lỗi
 
 
 # ── nối vào prompt của Operator ─────────────────────────────────────────

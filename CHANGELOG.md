@@ -45,6 +45,43 @@
 
 ### Changed
 
+- **Cắt độ trễ tra KB: local-first + cầu dao, bằng chứng màn hình cho loại thiết bị, cache có hạn
+  dùng.** Ba việc theo yêu cầu trước khi chạy lại task trên APK; kiến trúc không đổi (vẫn
+  `SubtaskKbPromptComponent` + `lookup_knowledge`, không executor mới, không sửa KB production).
+
+  1. **Đường vận chuyển** (`artemis/tools/knowledge/__init__.py`) — KB local đọc **trước** (hai đường
+     đọc cùng một cơ sở dữ liệu nên không mất thông tin nào); console từ xa chỉ khi local không dùng
+     được **và** cầu dao cho phép. `RemoteHealth`: 404/403/405/501 ⇒ ngắt 900s; lỗi tạm thời
+     (5xx/timeout/mạng) cần **2 lần liên tiếp** mới ngắt và ngắt ngắn (60s); hết cooldown thì **đúng
+     một** lần gọi được đi (half-open) — thành công là đóng mạch và remote dùng lại bình thường ⇒
+     **không mất khả năng dùng remote khi nó hoạt động**. Kèm nhớ `package → app_id` (100–180ms mỗi
+     lần tra, giá trị không đổi trong một run; hạn 300s). Có `ARTEMIS_KB_LOCAL_FIRST=0` để quay lại
+     thứ tự cũ nếu console được trỏ vào cơ sở dữ liệu khác.
+
+     Đo trên máy thật 29/10/2026 (KB thật, chỉ đọc): một vòng HTTP tới console VPS
+     (`ARTEMIS_KB_API`) trả 404 mất **286–1060ms (trung bình 544ms)**; một truy vấn KB local qua
+     tunnel **326–415ms**; một lần tra trọn vẹn đi **1568ms → 432ms** (trung bình 5 lần) và số vòng
+     mạng cho 5 lần tra là **0** (trước: 5). Khi local chết mà remote vẫn 404: lần đầu 1416ms, các
+     lần sau **0ms** — trước đây mỗi lần đều trả giá một vòng HTTP.
+
+  2. **Loại thiết bị theo bằng chứng, ưu tiên màn hình thật** (`subtask_kb.detect_device_type`) —
+     màn hình + công đoạn cùng nói một loại ⇒ `high`; chỉ màn hình nói (đúng một loại) ⇒ `high`; chỉ
+     công đoạn nói ⇒ `medium` (vẫn dùng, nhưng prompt ghi rõ "chưa chắc chắn"); hai phía mâu thuẫn ⇒
+     **theo màn hình** và ghi rõ `⚠ công đoạn nói <loại khác>` (không dùng luật của loại mà công đoạn
+     nói tới); màn hình có **nhiều loại** mà công đoạn không xác nhận loại nào ⇒ **im lặng** — không
+     chọn thiết bị chỉ vì tên loại trùng với một item khác. Có `ARTEMIS_SUBTASK_KB_REQUIRE_HIGH=1`
+     cho chế độ chặt (chỉ dùng luật thiết bị khi hai nguồn cùng xác nhận).
+
+  3. **Cache có hạn dùng, không cache lỗi** — khoá vẫn là `subtask_id + device_type`; nội dung thật
+     giữ 600s, câu trả lời "không có mục nào khớp" giữ 120s (KB có thể vừa được cập nhật), **lỗi tra
+     cứu không bao giờ được cache** — chỉ ghi thời điểm để không dội lại trong 30s, hết khoảng đó thì
+     tra lại; câu lỗi chỉ hiện **một lần** cho agent rồi im lặng. Thêm `cache.invalidate()` và
+     `force_refresh=True` để làm mới KB ngay khi cần; tra được một phần (một id lỗi) thì cache với
+     hạn dùng ngắn để sớm bù phần thiếu. Cấu hình qua `ARTEMIS_SUBTASK_KB_TTL` /
+     `ARTEMIS_SUBTASK_KB_EMPTY_TTL` / `ARTEMIS_SUBTASK_KB_RETRY_SECONDS`.
+
+  21 test mới (7 đường vận chuyển · 14 bằng chứng + cache); suite **3353 passed, 0 failed**.
+
 - **Giới hạn thời gian chạy task: 8/10/15/20 phút** (trước là 2/5/8). Kèm hai trần phía máy chủ phải
   nâng theo, nếu không lựa chọn trên UI là vô nghĩa:
   - `BUDGET_MAX_TASK_SECONDS` 480s → **1200s** (trần thật của một task; watchdog cắt ở

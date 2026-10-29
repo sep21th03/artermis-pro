@@ -1418,12 +1418,15 @@ class SubtaskKbPromptComponent(PromptComponent):
     hạng 1. Nên nguồn truy vấn là **công đoạn**, không phải cả câu task.
 
     Công đoạn lấy từ :func:`artemis.utils.execution_state.build_execution_state` — cùng nguồn với
-    :class:`ExecutionStatePromptComponent`, không thêm nguồn sự thật thứ hai. Loại thiết bị lấy từ
-    **màn hình đang thấy** trước, rồi mới tới công đoạn; không có bằng chứng thì không tra (im
-    lặng) — thà thiếu hướng dẫn còn hơn dạy sai luật thiết bị.
+    :class:`ExecutionStatePromptComponent`, không thêm nguồn sự thật thứ hai. Loại thiết bị lấy theo
+    **bằng chứng, ưu tiên màn hình đang thấy**: hai nguồn cùng nói một loại ⇒ chắc chắn; chỉ một
+    nguồn nói ⇒ có dùng nhưng ghi rõ là chưa chắc; hai nguồn mâu thuẫn ⇒ theo màn hình **và nói rõ
+    mâu thuẫn**; màn hình có nhiều loại mà công đoạn không xác nhận loại nào ⇒ không tra (im lặng) —
+    thà thiếu hướng dẫn còn hơn dạy sai luật thiết bị.
 
-    Mỗi công đoạn chỉ tra **một lần** (cache theo ``subtask_id + device_type`` trên ``ctx``), nên
-    nhiều lượt Operator trong cùng một công đoạn không sinh thêm lần tra nào.
+    Mỗi công đoạn chỉ tra **một lần** trong hạn dùng của cache (``subtask_id + device_type`` trên
+    ``ctx``; nội dung 10 phút, "không tìm thấy" 2 phút), nên nhiều lượt Operator trong cùng một công
+    đoạn không sinh thêm lần tra nào; lỗi tra cứu **không** được cache mà chỉ hoãn thử lại 30 giây.
     """
 
     async def __call__(self, builder: PromptBuilder, state: State, ctx: ArtemisContext, **kwargs):
@@ -1449,6 +1452,7 @@ class SubtaskKbPromptComponent(PromptComponent):
             exec_state,
             observed_text,
             app_package=app_package,
+            run_id=str(getattr(ctx, "run_id", "") or "") or None,
             cache=get_cache(ctx),
         )
         if block:

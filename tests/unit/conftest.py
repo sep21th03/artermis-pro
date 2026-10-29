@@ -43,8 +43,20 @@ def knowledge_base_offline(monkeypatch):
         "ARTEMIS_KB_API_KEY",
         "ARTEMIS_KB_API_TIMEOUT",
         "ARTEMIS_KB_PRESUPPLIED",
+        "ARTEMIS_KB_LOCAL_FIRST",
+        "ARTEMIS_KB_REMOTE_COOLDOWN",
+        "ARTEMIS_KB_REMOTE_TRANSIENT_COOLDOWN",
     ):
         monkeypatch.delenv(name, raising=False)
+    # Cầu dao của KB từ xa là trạng thái toàn tiến trình: một test làm nó ngắt mạch sẽ khiến test
+    # sau không còn thấy lời gọi remote nữa. Mỗi test phải bắt đầu với cầu dao đóng.
+    try:
+        from artemis.tools.knowledge import reset_app_id_memo, reset_remote_health
+    except Exception:  # noqa: BLE001 - module KB không import được thì bỏ qua
+        pass
+    else:
+        reset_remote_health()
+        reset_app_id_memo()
     try:
         importlib.import_module("apps.test_console.server")
     except Exception:  # noqa: BLE001 - the console is an optional app

@@ -19,8 +19,9 @@ Ba tính chất phải giữ, vì chúng là lý do tool này tồn tại:
 1. **Không bao giờ ném lỗi** — KB hỏng chỉ được làm câu trả lời nghèo đi, không được làm hỏng run.
 2. **Không tìm thấy là một câu trả lời** — im lặng thì agent tự nghĩ ra cách làm (đúng lỗi đã xảy
    ra với bước chuyển tài khoản ngày 29/10/2026).
-3. **Đi đúng đường của bản triển khai hiện tại** — có ``ARTEMIS_KB_API`` thì hỏi console, không thì
-   dùng KB local; không dựng KB thứ hai.
+3. **Đi đúng đường của bản triển khai hiện tại** — KB local trước (cùng cơ sở dữ liệu, không tốn vòng
+   HTTP), console từ xa khi local không dùng được và khi cầu dao cho phép; không dựng KB thứ hai.
+   Chi tiết đường vận chuyển nằm ở ``test_kb_lookup_transport.py``.
 """
 
 import json
@@ -234,8 +235,26 @@ def test_an_unusable_remote_endpoint_falls_back_to_the_local_kb(monkeypatch):
     assert service.calls  # và nó thật sự được hỏi
 
 
-def test_a_remote_answer_is_not_overridden_by_a_local_lookup(monkeypatch):
-    """Remote *trả lời* (kể cả không tìm thấy) thì không hỏi thêm KB local — tránh hai nguồn sự thật."""
+def test_a_local_answer_is_not_overridden_by_the_remote_endpoint(monkeypatch):
+    """Local trả lời trước ⇒ **không** hỏi remote nữa (một nguồn sự thật, và bỏ được một vòng HTTP)."""
+    service = FakeService(_result(_workflow()))
+    _patch_local(monkeypatch, service)
+    monkeypatch.setattr(kb_tool, "remote_api_url", lambda: "https://kb.example/artemis")
+
+    def boom(request, timeout=None):
+        raise AssertionError("remote không được gọi khi KB local đã trả lời")
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+
+    out = kb_tool.lookup_knowledge(query="chuyển nhà")
+
+    assert "modal.home.switch_house" in out
+    assert service.calls
+
+
+def test_a_remote_answer_is_used_when_the_local_kb_cannot_answer(monkeypatch):
+    """Local không dùng được (thiếu app_id/DSN) ⇒ câu trả lời của remote được tôn trọng, kể cả
+    "không tìm thấy" — không được lấy KB local ra ghi đè."""
 
     def fake_urlopen(request, timeout=None):
         return _FakeResponse({"found": False, "reason": "không có", "filters": {}, "hits": []})
