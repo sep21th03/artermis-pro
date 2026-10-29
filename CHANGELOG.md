@@ -183,7 +183,32 @@
 
 ### Fixed
 
-- **Kế hoạch bị thụt lề làm `convergence_gate` kết thúc run giữa đường (B1+B2).** Ca thật
+- **F-A: dòng system UI không còn là bằng chứng thiết bị** (`artemis/knowledge/subtask_kb.py`). Đo
+  trên run thật `5b459634` (29/10/2026, 16:02:30): status bar có dòng
+  `[3] Text: 'Chuông rung.' | Bounds: [738,18][777,34]` và nó bị khớp thành
+  `device_action.doorbell_hsrf` ⇒ 244 ms tra KB + **1.238 ký tự luật doorbell** vào prompt của công
+  đoạn "Vào màn ngữ cảnh" — hoàn toàn không liên quan. Hai nguyên nhân, sửa cả hai:
+
+  - **Nguồn dữ liệu**: `detect_device_type` dùng `minimal_list` (danh sách phần tử của màn hình, có
+    `Bounds`). Nay lọc **trước khi khớp**: bỏ dòng thuộc băng trên/dưới màn hình (status bar / thanh
+    điều hướng, theo tỉ lệ chiều cao nên không phụ thuộc độ phân giải), bỏ dòng chỉ báo hệ thống
+    (giờ, pin, Wi-Fi, "Chuông rung", "Chế độ"…). Trên UI thật của run: 56 dòng → giữ 39, loại đúng
+    `16:02`, `Ngủ Chế độ`, `Chuông rung.`, `Tín hiệu Wi-Fi đủ.`, `100 phần trăm pin.` và icon nav bar.
+  - **Từ khoá**: bỏ `"chuong"` trần mà bản đầu tôi tự thêm; chỉ dùng từ khoá **có thật trong KB**
+    (`doorbell`, `hsrf`, `nhac chuong`) cộng tên thiết bị thường gặp `chuong cua`. Thêm luật **từ khoá
+    cụ thể thắng từ khoá chung**: trên cùng một đoạn, loại khớp bằng từ khoá nằm trong từ khoá của
+    loại khác bị bỏ ("Chuông cửa" ⇒ doorbell, không phải thiết bị *cửa*).
+  - **Chỉ nhận dòng giống một dòng thiết bị**: dòng phải chỉ chứa **một** loại thiết bị, và hoặc bắt
+    đầu bằng tên thiết bị, hoặc là nhãn ngắn không có dấu đo lường (`%`/`°`/`:`), hoặc có ngữ cảnh
+    danh sách/sheet rõ ràng. Nhờ đó thẻ thời tiết `28°C , Độ ẩm: 55% , Nhiều mây` không còn bị coi là
+    cảm biến nhiệt/ẩm, còn tên thiết bị kiểu "Cảm biến nhiệt độ" vẫn nhận được.
+  - **Giữ fallback an toàn**: không dòng nào đủ tư cách ⇒ trả `None` (im lặng), không đoán.
+
+  Đối chiếu trên dữ liệu thật: UI lượt 16:02 ⇒ `subtask_kb_ids = ()` (trước: 1 truy vấn doorbell);
+  UI màn chọn thiết bị thật (16:04) ⇒ vẫn `('device_action.switch', 'device_action.selector')`
+  (không mất khả năng nhận đúng). 7 test mới (Chuông rung/Chuông báo thức, status bar & nav bar,
+  thẻ thời tiết, chuông cửa thật, dòng trộn nhiều thiết bị, danh sách chọn thật). Suite
+  **3360 passed, 0 failed**.
   `task_2910_1428` (29/10/2026): model viết **cả** `task_plan` trong một khối thụt 2 space ⇒
   `PlanItem.is_top_level` (`indent == 0`) không thấy milestone nào ⇒ cổng kết thúc run **ngay sau**
   khi agent mở bảng chọn thiết bị, final check chốt `blocked` dù ngữ cảnh còn chưa được lưu —

@@ -132,7 +132,11 @@ DEVICE_TYPE_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("device_action.ths_sensor", ("ths", "nhiet do", "do am")),
     ("device_action.motion_rada_sensor", ("rada", "mos", "cam bien chuyen dong")),
     ("device_action.stair_led", ("stair led", "den cau thang")),
-    ("device_action.doorbell_hsrf", ("doorbell", "hsrf", "chuong")),
+    # Chỉ từ khoá **có thật trong KB** (name + aliases: "doorbell action", "HSRF sound action",
+    # "chọn nhạc chuông RF") cộng tên thiết bị thường gặp "chuông cửa". Bản đầu tôi tự thêm "chuong"
+    # trần và nó khớp dòng *"Chuông rung."* trên thanh trạng thái ⇒ một luật doorbell không liên quan
+    # vào prompt (đo trên run thật 5b459634, 16:02:30). "chuông cửa" thì cụ thể, không mơ hồ.
+    ("device_action.doorbell_hsrf", ("doorbell", "hsrf", "nhac chuong", "chuong cua")),
     ("device_action.buoy_thief_shock", ("phao", "chong trom", "shock")),
     ("device_action.smart_lock", ("smart lock", "slock", "tadolock", "khoa thong minh")),
     ("device_action.io_gateway", ("io gateway", "multi output")),
@@ -160,6 +164,56 @@ SHEET_TERMS: tuple[str, ...] = (
 
 #: Cụm từ chỉ *cửa hàng* (store) — loại trừ để "cửa" không khớp nhầm.
 _STORE_TERMS: tuple[str, ...] = ("cua hang", "store", "shop")
+
+# ── Bằng chứng màn hình: bỏ system UI, chỉ nhận dòng giống một dòng thiết bị ──────────────
+#: Băng trên/dưới của màn hình là **của hệ điều hành** (status bar / thanh điều hướng), tính theo
+#: tỉ lệ chiều cao quan sát được. Không phải bằng chứng về app đang test.
+SYSTEM_TOP_BAND = 0.06
+SYSTEM_BOTTOM_BAND = 0.90
+
+#: Chiều cao tối thiểu để tính băng system UI: danh sách phần tử của ARTEMIS dùng hệ toạ độ chuẩn
+#: hoá ~1000 đơn vị, còn hierarchy thô thì theo pixel (>=1000). Lấy max để đúng cho cả hai.
+NORMALIZED_SCREEN_HEIGHT = 1000
+
+#: Số ký tự đầu dòng được phép đứng trước tên thiết bị (ô tick/icon của app).
+DEVICE_ROW_LEAD = 2
+
+#: Trần độ dài của một **nhãn thiết bị** (tên + trạng thái). Dài hơn ⇒ là câu/mô tả, không phải tên.
+DEVICE_LABEL_MAX_CHARS = 40
+
+#: Dấu hiệu dòng **đo lường** (thẻ thời tiết, cảm biến hiển thị số) — không phải tên thiết bị.
+MEASUREMENT_MARKERS: tuple[str, ...] = ("%", "°", ":")
+
+#: Dòng **chỉ báo của hệ thống** — không bao giờ là bằng chứng thiết bị, kể cả khi nằm ngoài băng.
+SYSTEM_TEXT_TERMS: tuple[str, ...] = (
+    "chuong rung",
+    "tin hieu",
+    "wi-fi",
+    "wifi",
+    "pin",
+    "che do",
+    "ngu che do",
+    "am thanh",
+    "do pin",
+    "battery",
+    "thong bao",
+    "notification",
+)
+
+#: Cụm từ cho biết dòng đang thuộc **danh sách thiết bị / sheet chọn trạng thái** ⇒ bằng chứng có
+#: ngữ cảnh rõ ràng, dù tên thiết bị không nằm ở đầu dòng.
+LIST_CONTEXT_TERMS: tuple[str, ...] = (
+    "chua xep phong",
+    "danh sach thiet bi",
+    "thiet bi hay dung",
+    "chon thiet bi",
+    "chon hanh dong",
+    "device list",
+)
+
+#: Một dòng trong danh sách phần tử: ``[12] Text: '...' | Bounds: [63,265][341,389] (WARNING: ...)``.
+_BOUNDS_RE = re.compile(r"Bounds:\s*\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
+_QUOTED_RE = re.compile(r"'([^']*)'")
 
 
 @dataclass(frozen=True)
@@ -373,13 +427,148 @@ def _matches_in_text(text: str) -> tuple[DeviceTypeMatch, ...]:
         if best is not None:
             found.append((best[0], DeviceTypeMatch(workflow_id, best[1], "")))
     found.sort(key=lambda row: row[0])
-    return tuple(match for _position, match in found)
+    return _prefer_specific(found)
+
+
+def _prefer_specific(
+    rows: list[tuple[int, DeviceTypeMatch]],
+) -> tuple[DeviceTypeMatch, ...]:
+    """Bỏ loại khớp bằng từ khoá **nằm trong** từ khoá của loại khác trên cùng một đoạn.
+
+    Vì sao: "Chuông cửa" vừa khớp ``device_action.doorbell_hsrf`` (từ khoá ``chuong cua``) vừa khớp
+    ``device_action.sdoor`` (từ khoá ``cua``) — hai loại trên cùng một tên thiết bị. Từ khoá dài hơn
+    là bằng chứng cụ thể hơn, nên loại ngắn hơn (chung hơn) bị bỏ khỏi đoạn đó.
+    """
+    kept: list[tuple[int, DeviceTypeMatch]] = []
+    for position, match in rows:
+        contained = any(
+            other.term != match.term and match.term in other.term
+            for _pos, other in rows
+            if other.workflow_id != match.workflow_id
+        )
+        if not contained:
+            kept.append((position, match))
+    return tuple(match for _position, match in kept)
 
 
 def _first_match_in_text(text: str) -> DeviceTypeMatch | None:
     """Loại thiết bị xuất hiện **sớm nhất** trong ``text`` (``None`` nếu không có)."""
     matches = _matches_in_text(text)
     return matches[0] if matches else None
+
+
+def _element_text(line: str) -> str:
+    """Phần chữ của một dòng trong danh sách phần tử (bỏ chỉ số, nhãn, toạ độ, cảnh báo)."""
+    quoted = _QUOTED_RE.search(line)
+    return (quoted.group(1) if quoted else line).strip()
+
+
+def _is_system_text(text: str) -> bool:
+    """Dòng chỉ báo của hệ thống (giờ, pin, Wi-Fi, chế độ chuông…) — không phải nội dung app."""
+    haystack = normalize(text)
+    if re.fullmatch(r"\d{1,2}:\d{2}", haystack):
+        return True
+    return any(_matches(haystack, term) for term in SYSTEM_TEXT_TERMS)
+
+
+def _ui_evidence_lines(observed_text: str) -> list[str]:
+    """Chữ của các dòng **không thuộc system UI** trong danh sách phần tử màn hình.
+
+    Vì sao cần: run thật 29/10/2026 (task ``5b459634``) có dòng
+    ``[3] Text: 'Chuông rung.' | Bounds: [738,18][777,34]`` trên **thanh trạng thái**, bị khớp thành
+    thiết bị *doorbell* ⇒ 244 ms tra KB + 1.238 ký tự luật không liên quan vào prompt của công đoạn
+    đầu. Status bar / thanh điều hướng là của hệ điều hành, không phải của app đang test.
+
+    Băng trên/dưới tính theo **chiều cao quan sát được** (``max(y2)``) nên không phụ thuộc độ phân
+    giải. Dòng không có ``Bounds`` vẫn được giữ (không đủ dữ kiện để loại).
+    """
+    lines = [ln for ln in (observed_text or "").splitlines() if ln.strip()]
+    parsed: list[tuple[str, tuple[int, int, int, int] | None]] = []
+    heights: list[int] = []
+    for line in lines:
+        found = _BOUNDS_RE.search(line)
+        bounds = tuple(int(v) for v in found.groups()) if found else None
+        if bounds is not None:
+            heights.append(bounds[3])
+        parsed.append((line, bounds))
+    height = max(heights) if heights else 0
+    height = max(height, NORMALIZED_SCREEN_HEIGHT) if heights else 0
+
+    kept: list[str] = []
+    for line, bounds in parsed:
+        text = _element_text(line)
+        if not text or _is_system_text(text):
+            continue
+        if bounds is not None and height:
+            _x1, y1, _x2, y2 = bounds
+            if y2 <= SYSTEM_TOP_BAND * height or y1 >= SYSTEM_BOTTOM_BAND * height:
+                continue
+        kept.append(text)
+    return kept
+
+
+def _is_device_row(text: str, match: DeviceTypeMatch) -> bool:
+    """Dòng có đủ tư cách là **một dòng thiết bị** trong danh sách/màn hình.
+
+    Ba đường, theo thứ tự chặt dần:
+
+    1. dòng **bắt đầu** bằng tên thiết bị (cho phép tối đa :data:`DEVICE_ROW_LEAD` ký tự trang trí
+       như ô tick/icon của app) — "Công tắc 10", "Ổ cắm 12 , Đang bật";
+    2. dòng là **nhãn ngắn** (≤ :data:`DEVICE_LABEL_MAX_CHARS`) và **không** phải dòng đo lường
+       (không có ``%``/``°``/``:``) — "Cảm biến nhiệt độ" (tên thiết bị không bắt đầu bằng từ khoá loại);
+    3. dòng có ngữ cảnh danh sách/sheet rõ ràng (:func:`_has_list_context`).
+
+    Loại trừ là mục đích chính: thẻ thời tiết ``28°C , Độ ẩm: 55% , Nhiều mây`` rơi vào dòng đo lường
+    nên không bị coi là cảm biến, dù nó chứa "độ ẩm".
+    """
+    haystack = normalize(text)
+    found = _term_pattern(match.term).search(haystack)
+    if found is None:
+        return False
+    lead = len(haystack) - len(re.sub(r"^[^\w]+", "", haystack, count=1))
+    if found.start() - lead <= DEVICE_ROW_LEAD:
+        return True
+    if any(marker in text for marker in MEASUREMENT_MARKERS):
+        return False
+    if len(text.strip()) <= DEVICE_LABEL_MAX_CHARS:
+        return True
+    return _has_list_context(text)
+
+
+def _has_list_context(text: str) -> bool:
+    """Dòng thuộc danh sách thiết bị / sheet chọn trạng thái ⇒ bằng chứng có ngữ cảnh rõ ràng."""
+    haystack = normalize(text)
+    terms = (*PICKER_TERMS, *SHEET_TERMS, *LIST_CONTEXT_TERMS)
+    return any(_matches(haystack, term) for term in terms)
+
+
+def _ui_evidence_matches(observed_text: str) -> tuple[DeviceTypeMatch, ...]:
+    """Loại thiết bị nhận được từ **màn hình**, chỉ từ dòng đủ tư cách làm bằng chứng.
+
+    Một dòng được nhận khi thoả **cả hai**:
+
+    * chỉ chứa **một** loại thiết bị (dòng trộn nhiều tên thiết bị không phải một dòng thiết bị);
+    * hoặc **bắt đầu** bằng tên thiết bị (dòng trong danh sách chọn), hoặc có ngữ cảnh danh sách/
+      sheet rõ ràng.
+
+    Không dòng nào đủ tư cách ⇒ rỗng ⇒ :func:`detect_device_type` trả ``None`` (im lặng), giữ đúng
+    nguyên tắc "thà thiếu hướng dẫn còn hơn dạy sai luật thiết bị".
+    """
+    accepted: list[DeviceTypeMatch] = []
+    for text in _ui_evidence_lines(observed_text):
+        matches = _matches_in_text(text)
+        if len({m.workflow_id for m in matches}) != 1:
+            continue
+        match = matches[0]
+        if _is_device_row(text, match) or _has_list_context(text):
+            accepted.append(match)
+    seen: set[str] = set()
+    ordered: list[DeviceTypeMatch] = []
+    for match in accepted:
+        if match.workflow_id not in seen:
+            seen.add(match.workflow_id)
+            ordered.append(match)
+    return tuple(ordered)
 
 
 def _confident_enough(match: DeviceTypeMatch, require_high: bool | None = None) -> bool:
@@ -390,6 +579,9 @@ def _confident_enough(match: DeviceTypeMatch, require_high: bool | None = None) 
 
 def detect_device_type(subtask_text: str, observed_text: str) -> DeviceTypeMatch | None:
     """Loại thiết bị **mục tiêu** của bước này — màn hình là bằng chứng, công đoạn là ý định.
+
+    Bằng chứng màn hình chỉ lấy từ :func:`_ui_evidence_matches`: đã bỏ status bar / thanh điều hướng /
+    dòng chỉ báo hệ thống, và chỉ nhận dòng giống **một dòng thiết bị** (xem hàm đó).
 
     Bảng quyết định (đo trên màn danh sách thật "Công tắc 10 · Ổ cắm 12 · Rèm phòng khách"):
 
@@ -411,7 +603,7 @@ def detect_device_type(subtask_text: str, observed_text: str) -> DeviceTypeMatch
     Vì sao **không** chọn khi màn hình có nhiều loại: "tên loại trùng với một item khác" chính là lỗi
     đã đo được (bản đầu chọn ``rèm`` chỉ vì nó đứng trước trong bảng từ khoá). Thà thiếu hướng dẫn.
     """
-    ui = _matches_in_text(observed_text)
+    ui = _ui_evidence_matches(observed_text)
     plan = _matches_in_text(subtask_text)
     ui_ids = {match.workflow_id for match in ui}
     plan_ids = {match.workflow_id for match in plan}
