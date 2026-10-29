@@ -406,20 +406,25 @@ class TemplatePromptComponent(PromptComponent):
         )
 
         parts = full_prompt.split("# CURRENT OBSERVATION")
-        marker = f"# CURRENT OBSERVATION{_legacy_elapsed_suffix(ctx)}\n"
         if len(parts) > 1 and stable_prefix_enabled():
             # PHẦN BẤT BIẾN ĐỨNG TRƯỚC: toàn bộ chỉ dẫn (thân template + đuôi template) vào system
-            # message, kết thúc bằng mốc quan sát; phần **biến động** (kế hoạch + lịch sử thực thi)
-            # xuống đầu message human, trước ảnh/UI. Không mất quy tắc nào — chỉ đổi vị trí — nhưng
-            # tiền tố chung giữa hai lượt liên tiếp dài hơn hẳn (đo trên trace 5b459634: 5.311 →
-            # 7.372 token, tức 55% → 76% prompt có thể được cache).
+            # message; phần **biến động** xuống message human, theo thứ tự: kế hoạch + lịch sử, rồi
+            # mốc quan sát (mốc này mang đồng hồ phiên ``[T+mm:ss]`` — đổi mỗi lượt, nên **không**
+            # được nằm trong system).
+            #
+            # Không mất quy tắc nào — chỉ đổi vị trí: section kế hoạch trong template chỉ là
+            # ``## Current Plan & Execution History`` + ``{{ plan_and_history }}`` (dữ liệu thuần:
+            # dòng tiến độ, checklist, lịch sử từng bước), không có quy tắc về an toàn, dùng tool,
+            # xác minh, kết thúc task hay hợp đồng thực thi. Đo trên trace 5b459634: tiền tố chung
+            # giữa hai lượt liên tiếp 5.311 → 7.372 token (55% → 76% prompt).
             static_body, plan_section = split_plan_section(parts[0])
-            builder.add_system_text(static_body + parts[1] + marker)
+            builder.add_system_text(static_body + parts[1])
             if plan_section:
                 builder.add_human_content(plan_section)
+            builder.add_human_content(f"# CURRENT OBSERVATION{_legacy_elapsed_suffix(ctx)}")
             return
 
-        builder.add_system_text(parts[0] + marker)
+        builder.add_system_text(parts[0] + f"# CURRENT OBSERVATION{_legacy_elapsed_suffix(ctx)}\n")
 
         if len(parts) > 1:
             builder.set_human_footer(parts[1])

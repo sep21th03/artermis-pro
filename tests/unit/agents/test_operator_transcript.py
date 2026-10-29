@@ -65,18 +65,21 @@ from artemis.memory.transcript import (
 # tiền tố chung, tức 55% → 76% prompt có thể được cache), còn kế hoạch + lịch sử (đổi mỗi lượt)
 # xuống đầu message human. Vì thế **hai plan khác nhau giờ cho cùng một hash** — đó chính là tính
 # chất cần giữ, và test dưới đây kiểm cả hai mặt (byte-stable + độc lập với plan).
-# Hash cũ (trước khi di chuyển): empty=f6045c7c…, sentinel=f15f1a08…
-GOLDEN_EMPTY_PLAN = "67bd622735391647be9f36c8036e049a203d8185a7308953305d56bfb87c49d7"
-GOLDEN_SENTINEL_PLAN = "67bd622735391647be9f36c8036e049a203d8185a7308953305d56bfb87c49d7"
+#
+# Cập nhật 29/10/2026 (lần 2): mốc ``# CURRENT OBSERVATION`` kèm **đồng hồ phiên** ``[T+mm:ss]``
+# (đổi mỗi lượt) được chuyển hẳn sang message human — system không còn ký tự nào đổi theo thời gian,
+# nên tiền tố ổn định là **toàn bộ** system message. Hash cũ (lần 1): 67bd6227…
+GOLDEN_EMPTY_PLAN = "7721bbc3fc869f462ae6812a5c591ab11425026db923f1278f767e070ffab4e6"
+GOLDEN_SENTINEL_PLAN = "7721bbc3fc869f462ae6812a5c591ab11425026db923f1278f767e070ffab4e6"
 
 SCREENSHOT_B64 = base64.b64encode(b"fake-jpeg-bytes").decode("utf-8")
 
 
-async def _render_legacy(plan_and_history: str) -> tuple[str, list[str]]:
+async def _render_legacy(plan_and_history: str, ctx=None) -> tuple[str, list[str]]:
     """(system text, human text parts) của đường legacy với đầu vào cố định."""
     builder = PromptBuilder()
     component = TemplatePromptComponent()
-    ctx = SimpleNamespace(execution_setup=None, actuator=None, data_engine=None)
+    ctx = ctx or SimpleNamespace(execution_setup=None, actuator=None, data_engine=None)
     state = SimpleNamespace(initial_goal="GOLDEN_FIXED_GOAL")
     await component(
         builder,
@@ -126,6 +129,36 @@ async def test_legacy_system_is_plan_independent_and_the_plan_moves_to_the_human
         "Action Selection",
     ):
         assert rule in system_a
+
+
+@pytest.mark.asyncio
+async def test_the_session_clock_never_enters_the_system_message():
+    """``# CURRENT OBSERVATION [T+mm:ss]`` đổi mỗi lượt ⇒ phải nằm ở human, không ở system.
+
+    Kiểm bằng hai ngữ cảnh có đồng hồ phiên **khác nhau**: system phải giống nhau từng byte (đó là
+    tiền tố ổn định để provider cache), còn đồng hồ thật phải xuất hiện trong message human. Mẫu
+    ``T+12:30`` trong system là ví dụ tĩnh của template, không phải đồng hồ phiên.
+    """
+    import re
+    import time
+
+    def ctx_with(start: float) -> SimpleNamespace:
+        return SimpleNamespace(
+            execution_setup=None,
+            actuator=None,
+            data_engine=SimpleNamespace(session_start_time=start),
+        )
+
+    now = time.time()
+    system_a, human_a = await _render_legacy("PLAN", ctx=ctx_with(now))
+    system_b, human_b = await _render_legacy("PLAN", ctx=ctx_with(now - 125))
+
+    assert system_a == system_b  # không có gì đổi theo thời gian trong system
+    clocks_a = [p for p in human_a if re.search(r"T\+\d\d:\d\d", p)]
+    clocks_b = [p for p in human_b if re.search(r"T\+\d\d:\d\d", p)]
+    assert clocks_a and clocks_b
+    assert clocks_a[0] != clocks_b[0]  # đồng hồ thật sự đổi giữa hai lượt
+    assert "# CURRENT OBSERVATION" in clocks_a[0]
 
 
 def test_main_template_contains_exactly_one_plan_history_section():

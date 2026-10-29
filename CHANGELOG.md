@@ -110,9 +110,22 @@
     **3.201 token**. Bộ tool thật của một lượt Operator ≈ 22 tool ⇒ khớp với phần dư đo được từ trace
     (5.400 ± 487 token/lượt). Đề xuất (chưa làm): rút gọn mô tả `swipe` (**1.922 ký tự** trong 2.668
     ký tự mô tả của cả 7 tool) và/hoặc chọn tool theo công đoạn.
-  - Test: 8 test mới (`test_prompt_cache_order.py`) + 1 test khoá tính chất "system độc lập với kế
-    hoạch"; golden hash của prompt legacy được cập nhật **kèm lý do** (di chuyển khối, không mất quy
-    tắc). Suite **3369 passed, 0 failed**.
+  - **Đồng hồ phiên ra khỏi system (kiểm tra #2).** `# CURRENT OBSERVATION [T+mm:ss]` **đổi mỗi lượt**
+    (đo trên trace: `[T+00:31]` → `[T+00:37]` → `[T+00:43]` …), nên nó không được nằm trong phần cần
+    ổn định: mốc **kèm đồng hồ** giờ là một part của message human (đứng ngay trước ảnh/UI), còn
+    system message không còn ký tự nào đổi theo thời gian. Đo lại bằng **token thật**
+    (`countTokens`, 6 cặp lượt liên tiếp của `5b459634`): tiền tố chung **3.661 → 5.786 token**
+    (60% → **95%** prompt text; prompt text không đổi 6.082 token). Có test khoá: hai ngữ cảnh có
+    đồng hồ khác nhau ⇒ system giống nhau **từng byte**, còn đồng hồ thật nằm trong human.
+  - **Kiểm tra #1 — system→human boundary: không có quy tắc nào bị hạ cấp.** Section
+    `## Current Plan & Execution History` trong template chỉ là tiêu đề + `{{ plan_and_history }}`,
+    nội dung thật (đọc từ trace) chỉ gồm `--- Task Plan ---` (dòng tiến độ + checklist) và
+    `--- Execution History ---` (lịch sử từng bước: lý do, tool call, action) — **dữ liệu thuần**,
+    không có quy tắc an toàn/dùng tool/xác minh/kết thúc task/hợp đồng thực thi. Các quy tắc đó nằm ở
+    thân và đuôi template và **vẫn ở system**. Golden hash cập nhật lần 2 kèm lý do (hash cũ 67bd6227…).
+  - Test: 9 test mới (`test_prompt_cache_order.py` + khoá "system độc lập với kế hoạch" + "đồng hồ
+    phiên không vào system"); golden hash prompt legacy cập nhật **kèm lý do**. Suite **3370 passed, 0 failed**.
+
 
   nâng theo, nếu không lựa chọn trên UI là vô nghĩa:
   - `BUDGET_MAX_TASK_SECONDS` 480s → **1200s** (trần thật của một task; watchdog cắt ở
