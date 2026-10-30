@@ -136,7 +136,13 @@ def metrics_for(holder) -> StepMetrics:
     current = StepMetrics()
     try:
         holder.step_metrics = current
-    except Exception:  # noqa: BLE001 - holder lạ thì vẫn trả bộ đếm cục bộ
+    except Exception as exc:  # noqa: BLE001 - holder lạ thì vẫn trả bộ đếm cục bộ
+        # **Không nuốt im lặng**: bộ đếm không gắn được vào holder là lỗi thật (đã xảy ra với
+        # `State` của pydantic) — phải thấy được trong log, không chỉ thấy số 0 vô nghĩa.
+        logger.warning(
+            f"step-metrics: không gắn được bộ đếm vào {type(holder).__name__} ({exc});"
+            " số đo lượt này sẽ không tích luỹ được."
+        )
         return current
     return current
 
@@ -147,7 +153,8 @@ def reset_turn(ctx=None, state=None) -> StepMetrics:
     fresh = StepMetrics()
     try:
         holder.step_metrics = fresh
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"step-metrics: không reset được bộ đếm trên {type(holder).__name__} ({exc})")
         return fresh
     return fresh
 
@@ -222,7 +229,8 @@ def finish_execution(
 
 def _emit(ctx, metrics: StepMetrics) -> None:
     """Ghi một dòng log dễ đọc + một event có cấu trúc. Hỏng thì im lặng."""
-    step = getattr(holder_for(ctx), "current_step_number", None) or "-"
+    raw_step = getattr(holder_for(ctx), "current_step_number", None)
+    step: int | str = "-" if raw_step is None else raw_step  # 0 là số bước HỢP LỆ, không phải "-"
     logger.info(metrics.log_line(step=step))
     metrics.emitted = True
     emit_structured(ctx, metrics)
