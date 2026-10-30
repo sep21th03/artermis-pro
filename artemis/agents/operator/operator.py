@@ -60,6 +60,12 @@ from artemis.utils.plan_grammar import (
 from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import get_active_subgoal_hashes
 from artemis.utils.visualization import format_minimal_list_with_elements
+#: Số lần progress watchdog đã nhắc cho **cùng một** (sub-goal, kế hoạch) trước khi leo thang thành
+#: **bounce**: chỉ tư vấn thì agent vẫn tiếp tục cuộn/tap như cũ (đo trên máy thật 30/10/2026,
+#: session ``d94158f5``: watchdog nhắc 2 lần mà plan không đổi và agent vẫn cuộn tiếp 6 lần).
+WATCHDOG_ESCALATE_AFTER = 2
+
+
 from artemis.utils.progress_watchdog import (
     observation_block,
     progress_streak,
@@ -562,7 +568,11 @@ class OperatorNode:
         except Exception as e:  # noqa: BLE001 - watchdog không được làm gãy lượt
             logger.info(f"progress-watchdog: không đọc được steps: {e}")
             steps = []
-        streak, kinds = progress_streak(steps, image_hash=self._ui_image_hash)
+        streak, kinds = progress_streak(
+            steps,
+            image_hash=self._ui_image_hash,
+            ui_hash_by_step=getattr(self.ctx, "ui_hash_by_step", None),
+        )
         try:
             from artemis.utils.plan_grammar import parse_plan
 
@@ -579,6 +589,7 @@ class OperatorNode:
                 f"progress-watchdog: sub-goal không tiến triển {streak} lượt ({dict(kinds)}) —"
                 " gửi yêu cầu quan sát lại cho Operator."
             )
+            self._note_watchdog_escalation(state, leaf)
             parts.append(block)
         return "\n\n".join(parts) if parts else None
 
@@ -1219,11 +1230,59 @@ class OperatorNode:
         except (AttributeError, OSError, TypeError, ValueError):
             return 4
 
+    def _note_watchdog_escalation(self, state: State, leaf: str) -> None:
+        """Đếm số lần watchdog nhắc cho **cùng** (sub-goal, kế hoạch) — cơ sở để leo thang thành bounce."""
+        try:
+            from artemis.utils.plan_grammar import plan_digest
+
+            key = (
+                " ".join((leaf or "").split())[:80],
+                plan_digest(getattr(state, "task_plan", "") or ""),
+            )
+        except Exception:  # noqa: BLE001 - đếm không được thì chỉ mất phần leo thang
+            return
+        previous = getattr(self.ctx, "watchdog_escalation", None)
+        count = int(previous[2]) + 1 if isinstance(previous, tuple) and previous[:2] == key else 1
+        try:
+            self.ctx.watchdog_escalation = (key[0], key[1], count)
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+    def _watchdog_escalation_bounce(self, task_plan: str) -> str | None:
+        """Watchdog đã nhắc nhiều lần mà kế hoạch **không đổi** ⇒ chặn action và buộc sửa kế hoạch.
+
+        Không tự đánh `[x]` và không bỏ tiêu chí: chỉ yêu cầu **đổi cách làm** (đổi sub-goal cho khớp
+        màn hình thật, hoặc ghi `[!]` kèm màn hình quan sát được).
+        """
+        state = getattr(self.ctx, "watchdog_escalation", None)
+        if not isinstance(state, tuple) or len(state) != 3:
+            return None
+        leaf, digest, count = state
+        if int(count) < WATCHDOG_ESCALATE_AFTER:
+            return None
+        try:
+            from artemis.utils.plan_grammar import plan_digest
+
+            if plan_digest(task_plan or "") != digest:
+                return None  # kế hoạch đã đổi ⇒ hết lý do leo thang
+        except Exception:  # noqa: BLE001
+            return None
+        return (
+            f"Not executed: the progress watchdog has already told you {count} times that"
+            f" «{leaf}» is not making progress, and `task_plan` has not changed. Update the plan"
+            " FIRST: either replace this sub-goal with the approach that matches what the screen"
+            " actually shows now, or mark it `[!]` with the exact screen you observe. Do not repeat"
+            " the same tap/swipe."
+        )
+
     def _plan_ledger_bounce_reason(self) -> str | None:
         """Bounce message when the (unchanged) ledger is broken or stale, else ``None``."""
         current = self._read_task_plan_text()
         if current is None:
             return None
+        escalation = self._watchdog_escalation_bounce(current)
+        if escalation:
+            return escalation
         return render_plan_ledger_bounce(
             current, self._turn_ledger_streak, self._plan_ledger_stale_turns()
         )

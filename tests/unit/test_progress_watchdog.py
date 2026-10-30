@@ -23,6 +23,7 @@ yêu cầu sai lượt.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from artemis.utils.progress_watchdog import (
     PROGRESS_WATCHDOG_TURNS,
@@ -155,3 +156,78 @@ def test_the_message_is_specific_and_never_auto_completes_or_drops_criteria():
     assert "KHÔNG tap lại toạ độ cũ" in message
     assert "Không tự đánh `[x]`" in message and "verify`/`assert" in message
     assert watchdog_message(1, Counter(), "x") is None
+
+
+# ── PHASE 4 (fix): tín hiệu UI từ hash ảnh **trước** của bước kế tiếp ────────────────────
+
+
+def test_ui_signal_from_step_hashes_needs_no_post_image():
+    """``post_image_name`` thường rỗng; dùng hash ảnh trước của bước này vs bước kế tiếp."""
+    changed = _step("dispatched", pre="", post="")
+    changed["step_number"] = 7
+    unchanged = _step("dispatched", pre="", post="")
+    unchanged["step_number"] = 8
+
+    assert classify_step(changed, ui_hash_by_step={7: "h1", 8: "h2"}) == UI_CHANGED
+    assert classify_step(changed, ui_hash_by_step={7: "h1", 8: "h1"}) == UI_UNCHANGED
+    # Không có hash cho bước kế tiếp ⇒ unknown, KHÔNG mặc định là tiến triển.
+    assert classify_step(changed, ui_hash_by_step={7: "h1"}) == UI_UNKNOWN
+
+
+def test_step_hash_signal_is_used_by_the_streak():
+    steps = []
+    for i in range(1, 5):
+        step = _step("dispatched", pre="", post="")
+        step["step_number"] = i
+        steps.append(step)
+
+    # Cuộn lên–xuống mà danh sách y nguyên ⇒ màn hình không đổi qua các bước.
+    streak, kinds = progress_streak(steps, ui_hash_by_step={1: "h", 2: "h", 3: "h", 4: "h", 5: "h"})
+    assert streak == 4 and kinds[UI_UNCHANGED] == 4
+
+    # Có một bước làm màn hình đổi ⇒ chuỗi đứt.
+    streak2, _ = progress_streak(steps, ui_hash_by_step={1: "h", 2: "h", 3: "h", 4: "h", 5: "x"})
+    assert streak2 == 0
+
+
+# ── PHASE 3 (fix): watchdog leo thang thành bounce khi plan không đổi ────────────────────
+
+
+def _operator_stub():
+    """Node Operator tối thiểu: chỉ cần ``ctx`` cho hai hàm đếm/leo thang."""
+    from artemis.agents.operator.operator import OperatorNode
+
+    node = OperatorNode.__new__(OperatorNode)
+    node.ctx = SimpleNamespace()
+    return node
+
+
+PLAN = "- [/] Đăng xuất\n  - [/] Cuộn xuống tìm và nhấn Đăng xuất\n"
+
+
+def test_watchdog_escalates_to_a_bounce_when_the_plan_does_not_change():
+    from artemis.agents.operator.operator import WATCHDOG_ESCALATE_AFTER
+
+    node = _operator_stub()
+    state = SimpleNamespace(task_plan=PLAN)
+
+    node._note_watchdog_escalation(state, "Cuộn xuống tìm và nhấn Đăng xuất")
+    assert node._watchdog_escalation_bounce(PLAN) is None, "1 lần nhắc thì chưa chặn"
+
+    for _ in range(WATCHDOG_ESCALATE_AFTER - 1):
+        node._note_watchdog_escalation(state, "Cuộn xuống tìm và nhấn Đăng xuất")
+
+    message = node._watchdog_escalation_bounce(PLAN)
+    assert message and message.startswith("Not executed:")
+    assert "Update the plan" in message and "Do not repeat" in message
+    # Không tự đánh [x]/không bỏ tiêu chí: chỉ yêu cầu đổi cách làm.
+    assert "[!]" in message and "`[x]`" not in message
+
+
+def test_escalation_clears_when_the_plan_changes():
+    node = _operator_stub()
+    state = SimpleNamespace(task_plan=PLAN)
+    for _ in range(2):
+        node._note_watchdog_escalation(state, "Cuộn xuống tìm và nhấn Đăng xuất")
+
+    assert node._watchdog_escalation_bounce(PLAN + "  - [ ] thử đường avatar\n") is None

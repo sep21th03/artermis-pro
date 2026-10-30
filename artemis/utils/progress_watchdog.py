@@ -68,7 +68,23 @@ def _execution_status(step: dict) -> str:
     return ""
 
 
-def classify_step(step: dict, *, image_hash=None) -> str:
+def _hash_for_step(ui_hash_by_step, step_number) -> str | None:
+    if not isinstance(ui_hash_by_step, dict) or step_number is None:
+        return None
+    return ui_hash_by_step.get(int(step_number))
+
+
+def _next_step_hash(ui_hash_by_step, step_number) -> str | None:
+    """Hash ảnh **trước** của bước kế tiếp — tín hiệu "màn hình có đổi sau hành động này"."""
+    if not isinstance(ui_hash_by_step, dict) or step_number is None:
+        return None
+    later = [k for k in ui_hash_by_step if k > int(step_number)]
+    if not later:
+        return None
+    return ui_hash_by_step[min(later)]
+
+
+def classify_step(step: dict, *, image_hash=None, ui_hash_by_step=None) -> str:
     """Phân loại một lượt đã ghi thành loại mà watchdog cần phân biệt.
 
     Trạng thái UI được quyết định bằng **hash nội dung ảnh** (``image_hash(tên_ảnh) -> hash|None``),
@@ -83,6 +99,14 @@ def classify_step(step: dict, *, image_hash=None) -> str:
         return "gate_blocked"  # bị gate ledger chặn: chưa từng tới thiết bị
     status = _execution_status(step)
     if status == "dispatched":
+        # Nguồn 1 (ưu tiên): hash ảnh **trước** của bước này so với bước kế tiếp — không cần ảnh sau
+        # (``post_image_name`` thường rỗng), vẫn đúng nghĩa "màn hình có đổi sau hành động".
+        step_number = step.get("step_number", step.get("step"))
+        current = _hash_for_step(ui_hash_by_step, step_number)
+        following = _next_step_hash(ui_hash_by_step, step_number)
+        if current and following:
+            return UI_CHANGED if current != following else UI_UNCHANGED
+        # Nguồn 2: hash nội dung hai ảnh trước/sau của chính bước đó.
         if image_hash is None:
             return UI_UNKNOWN
         try:
@@ -98,12 +122,16 @@ def classify_step(step: dict, *, image_hash=None) -> str:
     return "unknown"
 
 
-def progress_streak(steps: Iterable[dict], *, image_hash=None) -> tuple[int, Counter]:
+def progress_streak(
+    steps: Iterable[dict], *, image_hash=None, ui_hash_by_step=None
+) -> tuple[int, Counter]:
     """Đếm chuỗi lượt **không tiến triển thật** gần nhất (bỏ qua lượt trung tính)."""
     kinds: Counter = Counter()
     streak = 0
     for step in reversed(list(steps or [])):
-        kind = classify_step(step, image_hash=image_hash)
+        kind = classify_step(
+            step, image_hash=image_hash, ui_hash_by_step=ui_hash_by_step
+        )
         if kind in PROGRESS_KINDS:
             break
         if kind in NEUTRAL_KINDS:

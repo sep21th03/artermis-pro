@@ -281,6 +281,157 @@ def _request_recovery(ctx, fingerprint: str, failures: int, unknown_ui: bool) ->
         pass
 
 
+#: Hành động được guard theo **chu kỳ khứ hồi** (cuộn xuống rồi cuộn lên cùng một chỗ).
+#: Đo trên máy thật 30/10/2026 (session ``d94158f5``): agent cuộn **lên–xuống xen kẽ** 6 lần tại
+#: đúng hai điểm ``[432,1046] ↔ [432,489]`` để tìm mục 'Đăng xuất' (KB cũ nói nó ở cuối danh sách
+#: Menu, nhưng app đã chuyển nó vào trang chi tiết tài khoản) — guard cũ chỉ có ``tap``/``long_press``
+#: nên không chặn được, và kiểu khoá "N lần y hệt liên tiếp" không bắt được A→B→A→B.
+REPEAT_CYCLE_ACTIONS = frozenset({"swipe"})
+
+#: Số lần **đảo chiều** liên tiếp trên cùng một cặp đầu mút trước khi yêu cầu quan sát lại / chặn.
+#: 1 lần đảo chiều = cuộn xuống rồi cuộn lên (1 chu kỳ dở); chặn ở 2 lần đảo chiều = **2 chu kỳ**.
+REPEAT_CYCLE_OBSERVE_AFTER = 1
+REPEAT_CYCLE_BLOCK_AFTER = 2
+
+
+def swipe_cycle_key(action_item: dict) -> str | None:
+    """Khoá chu kỳ cuộn: **cặp đầu mút không phân biệt chiều** (A↔B là cùng một chỗ)."""
+    coords = action_item.get("coordinates") or []
+    if len(coords) < 4:
+        return None
+    try:
+        x1, y1, x2, y2 = (int(round(float(c) / 10.0)) * 10 for c in coords[:4])
+    except (TypeError, ValueError):
+        return None
+    (ax, ay), (bx, by) = sorted([(x1, y1), (x2, y2)])
+    return f"{ax},{ay}-{bx},{by}"
+
+
+def swipe_direction(action_item: dict) -> str | None:
+    """Chiều cuộn: ``up`` khi ngón tay đi lên (nội dung đi lên), ``down`` khi ngược lại."""
+    coords = action_item.get("coordinates") or []
+    if len(coords) < 4:
+        return None
+    try:
+        y1, y2 = float(coords[1]), float(coords[3])
+    except (TypeError, ValueError):
+        return None
+    if y2 < y1:
+        return "up"
+    if y2 > y1:
+        return "down"
+    return None
+
+
+def _note_step_ui_hash(node, state, ui_fingerprint: str | None) -> None:
+    """Ghi UI fingerprint của ảnh **trước** hành động theo số bước.
+
+    Vì sao: watchdog cần biết "sau hành động này màn hình có đổi không". ``post_image_name`` của
+    bước thường rỗng (đo trên máy thật 30/10/2026: cả 9 bước đều rỗng), nên tín hiệu rẻ nhất là so
+    hash ảnh **trước** của bước này với bước kế tiếp — đúng nghĩa "màn hình có đổi sau hành động".
+    """
+    ctx = getattr(node, "ctx", None)
+    if ctx is None:
+        return
+    try:
+        step_no = _current_step_number(ctx, state)
+    except Exception:  # noqa: BLE001
+        return
+    if step_no is None:
+        return
+    history = getattr(ctx, "ui_hash_by_step", None)
+    if not isinstance(history, dict):
+        history = {}
+        try:
+            ctx.ui_hash_by_step = history
+        except (AttributeError, TypeError, ValueError):
+            return
+    history[int(step_no)] = ui_fingerprint
+
+
+def _cycle_state(ctx) -> dict:
+    state = getattr(ctx, "action_cycle_state", None)
+    if not isinstance(state, dict):
+        state = {}
+        try:
+            ctx.action_cycle_state = state
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return state
+
+
+def swipe_cycle_verdict(node, cycle_key: str, *, ui_fingerprint, subgoal) -> str | None:
+    """Chặn khi cuộn **đảo chiều liên tiếp** đủ nhiều trên cùng một cặp đầu mút (dao động vô ích).
+
+    Cuộn **cùng một chiều** (đi tìm mục ở xa) không bao giờ bị chặn: số lần đảo chiều về 0.
+    """
+    ctx = getattr(node, "ctx", None)
+    if ctx is None:
+        return None
+    entry = _cycle_state(ctx).get(cycle_key)
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("ui") != ui_fingerprint or entry.get("subgoal") != subgoal:
+        return None
+    alternations = int(entry.get("alternations") or 0)
+    if alternations < REPEAT_CYCLE_OBSERVE_AFTER:
+        return None
+    if alternations >= REPEAT_CYCLE_BLOCK_AFTER:
+        limit = (
+            REPEAT_BLOCK_RECOVERY_TURNS_UNKNOWN_UI
+            if ui_fingerprint is None
+            else REPEAT_BLOCK_RECOVERY_TURNS
+        )
+        if int(entry.get("blocked_turns") or 0) >= limit:
+            _request_recovery(ctx, f"swipe|{cycle_key}", alternations, ui_fingerprint is None)
+            return None
+        return (
+            f"Cuộn **lên rồi xuống** {alternations} lần liên tiếp tại cùng một chỗ"
+            f" ({cycle_key}) mà màn hình không tiến triển. KHÔNG cuộn qua lại nữa: đọc lại màn hình,"
+            " xác định mục tiêu có thật trên màn hình này hay không, và cập nhật `task_plan` nếu mục"
+            " tiêu không còn ở đây."
+        )
+    try:
+        ctx.repeat_observation_request = (
+            f"Bạn vừa cuộn xuống rồi cuộn lên cùng một chỗ ({cycle_key}) mà không thấy mục tiêu."
+            " Quan sát lại màn hình trước khi cuộn tiếp: nếu mục tiêu không có trên màn hình này thì"
+            " đổi cách tiếp cận (màn hình khác/đường khác) và cập nhật `task_plan`."
+        )
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return None
+
+
+def note_swipe_cycle(
+    node, cycle_key: str | None, direction: str | None, *, ui_fingerprint, subgoal, progress: bool
+) -> int:
+    """Cập nhật số lần **đảo chiều liên tiếp** của chu kỳ cuộn; tiến triển thật ⇒ reset."""
+    ctx = getattr(node, "ctx", None)
+    if ctx is None or not cycle_key or not direction:
+        return 0
+    state = _cycle_state(ctx)
+    if progress:
+        state.pop(cycle_key, None)
+        return 0
+    entry = state.get(cycle_key)
+    if not isinstance(entry, dict) or entry.get("ui") != ui_fingerprint or entry.get("subgoal") != subgoal:
+        state[cycle_key] = {
+            "last_dir": direction,
+            "alternations": 0,
+            "ui": ui_fingerprint,
+            "subgoal": subgoal,
+        }
+        return 0
+    alternations = int(entry.get("alternations") or 0)
+    if entry.get("last_dir") and entry.get("last_dir") != direction:
+        alternations += 1
+    else:
+        alternations = 0  # cùng chiều ⇒ đang đi tìm, không phải dao động
+    entry["last_dir"] = direction
+    entry["alternations"] = alternations
+    return alternations
+
+
 #: Các loại kết quả một lần thử có thể có, theo đúng cách retry counter phải xử lý.
 OUTCOME_FAILED = "failed"  # dispatch lỗi hoặc safety net từ chối ⇒ **tăng** bộ đếm
 OUTCOME_PROGRESS = "progress"  # bằng chứng tiến triển thật (UI đổi/màn hình đã chuyển) ⇒ **reset**
@@ -500,9 +651,33 @@ async def _process_action(
     ui_fp: str | None = None
     subgoal = ""
     fingerprint = ""
+    cycle_key: str | None = None
+    cycle_dir: str | None = None
     if not burst:
         ui_fp = action_ui_fingerprint(pre_screenshot_b64)
         subgoal = active_subgoal_text(state)
+        _note_step_ui_hash(node, state, ui_fp)
+        # Guard **chu kỳ khứ hồi** cho hành động cuộn: cuộn xuống rồi cuộn lên cùng một chỗ, lặp
+        # lại, là dao động vô ích (đo được 6 lần ở session d94158f5). Cuộn cùng chiều không bị chặn.
+        if action_name in REPEAT_CYCLE_ACTIONS:
+            cycle_key = swipe_cycle_key(action_item)
+            cycle_dir = swipe_direction(action_item)
+            cycle_reason = swipe_cycle_verdict(
+                node, cycle_key or "", ui_fingerprint=ui_fp, subgoal=subgoal
+            )
+            if cycle_reason:
+                entry = _cycle_state(node.ctx).get(cycle_key or "")
+                if isinstance(entry, dict):
+                    entry["blocked_turns"] = int(entry.get("blocked_turns") or 0) + 1
+                outcome.success = False
+                outcome.intercepted = False
+                outcome.repeat_blocked = True
+                outcome.error_msg = cycle_reason
+                outcome.error_category = ValidationErrorCategory.REPEAT_LOOP
+                attempts_log.append(cycle_reason)
+                action_item["attempts"] = list(attempts_log)
+                logger.warning(f"Chặn cuộn qua lại vô ích: {cycle_reason}")
+                return outcome
         fingerprint = repeat_fingerprint(
             action_name, action_item, ui_fingerprint=ui_fp, subgoal=subgoal
         )
@@ -570,6 +745,18 @@ async def _process_action(
             action_name,
             attempts_log,
             max_local_retries=max_local_retries,
+        )
+
+    if not burst and cycle_key:
+        # Tiến triển thật (màn hình đã chuyển đúng hướng) ⇒ reset chu kỳ; ngược lại ghi nhận
+        # (đảo chiều thì tăng, cùng chiều thì về 0).
+        note_swipe_cycle(
+            node,
+            cycle_key,
+            cycle_dir,
+            ui_fingerprint=ui_fp,
+            subgoal=subgoal,
+            progress=bool(outcome.already_applied),
         )
 
     if not burst and fingerprint:

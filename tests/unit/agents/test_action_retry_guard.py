@@ -34,10 +34,15 @@ from artemis.agents.validator.execution_loop import (
     REPEAT_OBSERVE_AFTER,
     action_ui_fingerprint,
     active_subgoal_text,
+    REPEAT_CYCLE_OBSERVE_AFTER,
     note_action_outcome,
     note_blocked_attempt,
+    note_swipe_cycle,
     repeat_fingerprint,
     repeat_guard_verdict,
+    swipe_cycle_key,
+    swipe_cycle_verdict,
+    swipe_direction,
 )
 
 TAP = {"action": "tap", "coordinates": [110, 593], "target_text": "Dled"}
@@ -327,3 +332,93 @@ def test_blocked_turns_do_not_loop_forever():
             break  # đã mở chặn ⇒ hành động đi tiếp vào safety gate
 
     assert blocked_turns == REPEAT_BLOCK_RECOVERY_TURNS
+
+
+# ── PHASE 2 (fix): guard cho SWIPE theo chu kỳ khứ hồi ────────────────────────────────────
+#: Đúng ca đo được ở session d94158f5: cuộn lên–xuống xen kẽ 6 lần tại [432,1046] ↔ [432,489].
+SWIPE_DOWN = {"action": "swipe", "coordinates": [432, 1046, 432, 489]}
+SWIPE_UP = {"action": "swipe", "coordinates": [432, 489, 432, 1046]}
+SWIPE_DOWN_2 = {"action": "swipe", "coordinates": [432, 900, 432, 489]}
+
+
+def test_swipe_cycle_key_ignores_direction():
+    assert swipe_cycle_key(SWIPE_DOWN) == swipe_cycle_key(SWIPE_UP)
+    assert swipe_cycle_key(SWIPE_DOWN) != swipe_cycle_key(SWIPE_DOWN_2)
+    assert swipe_cycle_key({"action": "swipe"}) is None
+    assert swipe_direction(SWIPE_DOWN) == "up"  # ngón tay đi lên
+    assert swipe_direction(SWIPE_UP) == "down"
+
+
+def test_alternating_scroll_is_flagged_then_blocked():
+    node = _node()
+    key = swipe_cycle_key(SWIPE_DOWN)
+
+    # 1 chu kỳ dở (xuống rồi lên) ⇒ yêu cầu quan sát lại, chưa chặn.
+    note_swipe_cycle(node, key, "up", ui_fingerprint="ui-a", subgoal="Cuộn tìm Đăng xuất", progress=False)
+    assert (
+        note_swipe_cycle(
+            node, key, "down", ui_fingerprint="ui-a", subgoal="Cuộn tìm Đăng xuất", progress=False
+        )
+        == REPEAT_CYCLE_OBSERVE_AFTER
+    )
+    # Ở 1 lần đảo chiều: **chưa chặn** nhưng phải gửi yêu cầu quan sát lại.
+    assert swipe_cycle_verdict(node, key, ui_fingerprint="ui-a", subgoal="Cuộn tìm Đăng xuất") is None
+    assert "cuộn lên" in node.ctx.repeat_observation_request.lower()
+
+    # 2 chu kỳ ⇒ chặn.
+    note_swipe_cycle(node, key, "up", ui_fingerprint="ui-a", subgoal="Cuộn tìm Đăng xuất", progress=False)
+    note_swipe_cycle(node, key, "down", ui_fingerprint="ui-a", subgoal="Cuộn tìm Đăng xuất", progress=False)
+    reason = swipe_cycle_verdict(node, key, ui_fingerprint="ui-a", subgoal="Cuộn tìm Đăng xuất")
+    assert reason and "KHÔNG cuộn qua lại" in reason
+
+
+def test_scrolling_in_one_direction_is_never_blocked():
+    node = _node()
+    key = swipe_cycle_key(SWIPE_DOWN)
+
+    for _ in range(6):
+        note_swipe_cycle(
+            node, key, "up", ui_fingerprint="ui-a", subgoal="Cuộn tìm mục ở dưới", progress=False
+        )
+
+    assert swipe_cycle_verdict(node, key, ui_fingerprint="ui-a", subgoal="Cuộn tìm mục ở dưới") is None
+
+
+def test_progress_and_context_change_reset_the_cycle():
+    node = _node()
+    key = swipe_cycle_key(SWIPE_DOWN)
+    note_swipe_cycle(node, key, "up", ui_fingerprint="ui-a", subgoal="s", progress=False)
+    note_swipe_cycle(node, key, "down", ui_fingerprint="ui-a", subgoal="s", progress=False)
+
+    # UI đổi (màn hình khác) ⇒ chu kỳ bắt đầu lại.
+    assert note_swipe_cycle(node, key, "up", ui_fingerprint="ui-b", subgoal="s", progress=False) == 0
+    # Tiến triển thật ⇒ xoá hẳn.
+    note_swipe_cycle(node, key, "up", ui_fingerprint="ui-a", subgoal="s", progress=False)
+    assert note_swipe_cycle(node, key, "down", ui_fingerprint="ui-a", subgoal="s", progress=True) == 0
+    assert swipe_cycle_verdict(node, key, ui_fingerprint="ui-a", subgoal="s") is None
+
+
+def test_the_cycle_block_is_classified_as_repeat_blocked_not_failed():
+    from artemis.agents.validator import execution_loop
+
+    source = inspect.getsource(execution_loop._process_action)
+    cycle_at = source.index("swipe_cycle_verdict(")
+    gate_at = source.index("_run_precondition_gate(")
+    assert cycle_at < gate_at, "guard chu kỳ phải chạy trước safety gate"
+    branch = source[cycle_at:gate_at]
+    assert "outcome.repeat_blocked = True" in branch and "return outcome" in branch
+    assert "outcome.intercepted = True" not in branch
+
+
+def test_the_step_ui_hash_is_recorded_for_the_watchdog():
+    from artemis.agents.validator import execution_loop
+
+    node = _node()
+    node.ctx.data_engine = SimpleNamespace(get_step_number=lambda _sid: 3)
+    state = SimpleNamespace(
+        task_plan="- [/] A\n", current_step_id="11111111-2222-3333-4444-555555555555"
+    )
+
+    execution_loop._note_step_ui_hash(node, state, "hash-3")
+
+    assert node.ctx.ui_hash_by_step == {3: "hash-3"}
