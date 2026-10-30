@@ -172,7 +172,7 @@ async def _run_precondition_gate(
         try:
             from artemis.utils.step_metrics import add_validation
 
-            add_validation(state, total_ms=0.0, pixel_ms=(time.time() - started) * 1000.0)
+            add_validation(node.ctx, total_ms=0.0, pixel_ms=(time.time() - started) * 1000.0)
         except Exception:  # noqa: BLE001 - đo không được làm gãy lượt
             pass
         return verdict
@@ -191,7 +191,7 @@ async def _run_precondition_gate(
     try:
         from artemis.utils.step_metrics import add_validation
 
-        add_validation(state, total_ms=(time.time() - _gate_started) * 1000.0)
+        add_validation(node.ctx, total_ms=(time.time() - _gate_started) * 1000.0)
     except Exception:  # noqa: BLE001
         pass
 
@@ -598,7 +598,7 @@ async def run_validation_loop(node, state: State) -> dict:
         from artemis.utils.step_metrics import finish_execution
 
         finish_execution(
-            state,
+            node.ctx,
             dispatched=sum(1 for item in execution if item.get("attempts") == ["Dispatched"])
             or (1 if success else 0),
             already_applied=1 if already_applied else 0,

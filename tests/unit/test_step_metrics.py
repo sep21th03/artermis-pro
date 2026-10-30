@@ -29,11 +29,14 @@ from artemis.utils.step_metrics import (
     finish_execution,
     finish_operator_turn,
     metrics_for,
+    reset_turn,
 )
 
 
 def _state(**extra) -> SimpleNamespace:
-    return SimpleNamespace(step_metrics=None, **extra)
+    """Holder giả: bộ đếm sống trên **data engine** (dùng chung operator ↔ validator)."""
+    engine = SimpleNamespace(step_metrics=None, current_step_number=7, **extra)
+    return SimpleNamespace(data_engine=engine)
 
 
 def _response(input_tokens: int, output_tokens: int, cached: int = 0) -> SimpleNamespace:
@@ -52,10 +55,10 @@ def test_usage_is_counted_once_per_llm_response():
 
     add_llm_usage(state, _response(1000, 50, 400))
 
-    assert state.step_metrics.llm_calls == 1
-    assert state.step_metrics.input_tokens == 1000
-    assert state.step_metrics.output_tokens == 50
-    assert state.step_metrics.cached_tokens == 400
+    assert state.data_engine.step_metrics.llm_calls == 1
+    assert state.data_engine.step_metrics.input_tokens == 1000
+    assert state.data_engine.step_metrics.output_tokens == 50
+    assert state.data_engine.step_metrics.cached_tokens == 400
 
 
 def test_finishing_a_step_does_not_add_tokens_again():
@@ -65,10 +68,10 @@ def test_finishing_a_step_does_not_add_tokens_again():
     finish_execution(state, dispatched=1, already_applied=0, failed=0)
 
     # Chốt bước chỉ cộng **kết quả action**, không đụng token.
-    assert state.step_metrics.input_tokens == 1000
-    assert state.step_metrics.output_tokens == 50
-    assert state.step_metrics.cached_tokens == 400
-    assert state.step_metrics.llm_calls == 1
+    assert state.data_engine.step_metrics.input_tokens == 1000
+    assert state.data_engine.step_metrics.output_tokens == 50
+    assert state.data_engine.step_metrics.cached_tokens == 400
+    assert state.data_engine.step_metrics.llm_calls == 1
 
 
 def test_a_turn_with_many_llm_calls_sums_every_call():
@@ -77,7 +80,7 @@ def test_a_turn_with_many_llm_calls_sums_every_call():
     for _ in range(3):
         add_llm_usage(state, _response(17_000, 300, 14_000))
 
-    metrics = state.step_metrics
+    metrics = state.data_engine.step_metrics
     assert metrics.llm_calls == 3
     assert metrics.input_tokens == 51_000
     assert metrics.output_tokens == 900
@@ -89,8 +92,8 @@ def test_a_response_without_usage_metadata_still_counts_the_call():
 
     add_llm_usage(state, SimpleNamespace())
 
-    assert state.step_metrics.llm_calls == 1
-    assert state.step_metrics.input_tokens == 0
+    assert state.data_engine.step_metrics.llm_calls == 1
+    assert state.data_engine.step_metrics.input_tokens == 0
 
 
 # ── gate bounce / self-heal / phân loại action ──────────────────────────
@@ -102,7 +105,7 @@ def test_gate_bounce_and_self_heal_are_counted_separately():
     count_plan_self_heal(state)
     finish_operator_turn(state, action="blocked")
 
-    metrics = state.step_metrics
+    metrics = state.data_engine.step_metrics
     assert metrics.gate_bounces == 2
     assert metrics.actions_blocked_by_gate == 2
     assert metrics.plan_self_heals == 1
@@ -115,7 +118,7 @@ def test_already_applied_is_never_counted_as_failed():
 
     finish_execution(state, dispatched=0, already_applied=1, failed=0)
 
-    metrics = state.step_metrics
+    metrics = state.data_engine.step_metrics
     assert metrics.actions_already_applied == 1
     assert metrics.actions_failed == 0
     assert metrics.action == "already_applied"
@@ -127,8 +130,8 @@ def test_dispatched_action_is_progress():
 
     finish_execution(state, dispatched=1, already_applied=0, failed=0)
 
-    assert state.step_metrics.action == "dispatched"
-    assert state.step_metrics.no_progress is False
+    assert state.data_engine.step_metrics.action == "dispatched"
+    assert state.data_engine.step_metrics.no_progress is False
 
 
 def test_failed_action_is_reported_as_failed():
@@ -136,9 +139,9 @@ def test_failed_action_is_reported_as_failed():
 
     finish_execution(state, dispatched=0, already_applied=0, failed=1)
 
-    assert state.step_metrics.action == "failed"
-    assert state.step_metrics.actions_failed == 1
-    assert state.step_metrics.no_progress is True
+    assert state.data_engine.step_metrics.action == "failed"
+    assert state.data_engine.step_metrics.actions_failed == 1
+    assert state.data_engine.step_metrics.no_progress is True
 
 
 # ── an toàn: đo không được đổi hành vi ──────────────────────────────────
@@ -148,9 +151,9 @@ def test_metrics_never_raise_even_with_a_broken_engine():
             raise RuntimeError("engine down")
 
     ctx = SimpleNamespace(data_engine=Boom())
-    state = _state(current_step_id=None)
+    state = _state()
 
-    emit_structured(ctx, state)  # không được ném
+    emit_structured(ctx)  # không được ném
 
 
 def test_structured_event_carries_every_required_field():
@@ -162,11 +165,10 @@ def test_structured_event_carries_every_required_field():
             return "trace-id"
 
     ctx = SimpleNamespace(data_engine=Engine())
-    state = _state(current_step_id=None)
-    add_llm_usage(state, _response(1200, 30, 800))
-    count_gate_bounce(state)
+    add_llm_usage(ctx, _response(1200, 30, 800))
+    count_gate_bounce(ctx)
 
-    emit_structured(ctx, state)
+    emit_structured(ctx)
 
     assert captured["type"] == "metrics"
     assert captured["name"] == "step_metrics"
@@ -223,22 +225,22 @@ def test_metrics_object_is_per_turn():
     """Mỗi lượt một bộ đếm: `metrics_for` tạo mới khi state chưa có, giữ nguyên khi đã có."""
     state = _state()
 
-    first = metrics_for(state)
+    first = metrics_for(state.data_engine)
     add_llm_usage(state, _response(10, 1))
-    assert metrics_for(state) is first
+    assert metrics_for(state.data_engine) is first
 
-    state.step_metrics = StepMetrics()  # lượt mới
-    assert metrics_for(state).llm_calls == 0
+    reset_turn(state)  # lượt mới
+    assert metrics_for(state.data_engine).llm_calls == 0
 
 
 def test_a_bounced_turn_is_emitted_once_even_when_closed_early():
     """Lượt bị gate chặn thoát sớm: chốt tại chỗ chặn, và cuối lượt không phát lại lần hai."""
-    state = _state(current_step_number=7)
+    state = _state()
 
     count_gate_bounce(state)
     finish_operator_turn(state, action="blocked")  # tại chỗ chặn
     again = finish_operator_turn(state, action="blocked")  # cuối lượt: bỏ qua
 
     assert again.emitted is True
-    assert state.step_metrics.gate_bounces == 1
-    assert state.step_metrics.action == "blocked"
+    assert state.data_engine.step_metrics.gate_bounces == 1
+    assert state.data_engine.step_metrics.action == "blocked"

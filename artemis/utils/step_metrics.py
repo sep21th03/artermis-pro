@@ -106,67 +106,100 @@ class StepMetrics:
         )
 
 
-def metrics_for(state) -> StepMetrics:
+class _Fallback:
+    """Nơi giữ bộ đếm khi không có data engine (test/đường tắt) — vẫn cần sống qua nhiều lần gọi."""
+
+    step_metrics: StepMetrics | None = None
+    current_step_number: int | None = None
+
+
+_FALLBACK = _Fallback()
+
+
+def holder_for(ctx=None, state=None):
+    """Nơi giữ bộ đếm của lượt: **data engine**.
+
+    Vì sao không dùng ``state``: ``artemis.graph.state.State`` là **pydantic BaseModel** — set
+    attribute lạ sẽ bị từ chối (đã đo trên phiên thật: mọi bộ đếm cross-call về 0). Data engine là
+    đối tượng **dùng chung** giữa Operator và Validator trong cùng một lượt, và nó cũng biết
+    ``current_step_number`` nên dòng log có đúng số bước.
+    """
+    engine = getattr(ctx, "data_engine", None)
+    return engine if engine is not None else _FALLBACK
+
+
+def metrics_for(holder) -> StepMetrics:
     """Bộ đếm của lượt hiện tại (tạo mới nếu chưa có). Không bao giờ ném lỗi."""
-    current = getattr(state, "step_metrics", None)
-    if not isinstance(current, StepMetrics):
-        current = StepMetrics()
-        try:
-            state.step_metrics = current
-        except Exception:  # noqa: BLE001 - state lạ thì vẫn trả bộ đếm cục bộ
-            return current
+    current = getattr(holder, "step_metrics", None)
+    if isinstance(current, StepMetrics):
+        return current
+    current = StepMetrics()
+    try:
+        holder.step_metrics = current
+    except Exception:  # noqa: BLE001 - holder lạ thì vẫn trả bộ đếm cục bộ
+        return current
     return current
 
 
-def add_llm_usage(state, response) -> None:
+def reset_turn(ctx=None, state=None) -> StepMetrics:
+    """Bắt đầu lượt mới: bộ đếm về 0."""
+    holder = holder_for(ctx, state)
+    fresh = StepMetrics()
+    try:
+        holder.step_metrics = fresh
+    except Exception:  # noqa: BLE001
+        return fresh
+    return fresh
+
+
+def add_llm_usage(ctx, response) -> None:
     """Cộng một lượt gọi LLM vào bộ đếm của lượt hiện tại."""
-    metrics_for(state).add_llm_usage(response)
+    metrics_for(holder_for(ctx)).add_llm_usage(response)
 
 
-def count_gate_bounce(state, *, blocked: bool = True) -> None:
+def count_gate_bounce(ctx, *, blocked: bool = True) -> None:
     """Một lần gate chặn action (``blocked=False`` cho bounce của *state evidence*)."""
-    metrics = metrics_for(state)
+    metrics = metrics_for(holder_for(ctx))
     metrics.gate_bounces += 1
     if blocked:
         metrics.actions_blocked_by_gate += 1
 
 
-def count_plan_self_heal(state) -> None:
-    metrics_for(state).plan_self_heals += 1
+def count_plan_self_heal(ctx) -> None:
+    metrics_for(holder_for(ctx)).plan_self_heals += 1
 
 
-def add_validation(state, *, total_ms: float, pixel_ms: float = 0.0) -> None:
-    metrics_for(state).add_validation(total_ms=total_ms, pixel_ms=pixel_ms)
+def add_validation(ctx, *, total_ms: float, pixel_ms: float = 0.0) -> None:
+    metrics_for(holder_for(ctx)).add_validation(total_ms=total_ms, pixel_ms=pixel_ms)
 
 
-def finish_operator_turn(state, *, action: str, ctx=None, force: bool = False) -> StepMetrics:
-    """Chốt lượt Operator: ``wall_ms`` + loại action; phát log (+ event nếu có ``ctx``).
+def finish_operator_turn(ctx, *, action: str, force: bool = False) -> StepMetrics:
+    """Chốt lượt Operator: ``wall_ms`` + loại action; phát log + event.
 
     ``action`` ∈ ``dispatched`` | ``already_applied`` | ``failed`` | ``blocked`` | ``none``.
-    Lượt bị gate chặn **thoát sớm** (trước cuối lượt) nên phải gọi ở đúng chỗ chặn; ``emitted`` giữ
-    cho lượt chỉ được chốt **một lần** (không nhân đôi dòng log/event).
+    Lượt bị gate chặn **thoát sớm** nên phải gọi ngay tại chỗ chặn; ``emitted`` giữ cho lượt chỉ
+    được chốt **một lần** (không nhân đôi dòng log/event).
     """
-    metrics = metrics_for(state)
+    metrics = metrics_for(holder_for(ctx))
     if metrics.emitted and not force:
         return metrics
     metrics.phase = "operator"
     metrics.action = action
     metrics.wall_ms = (time.time() - metrics.started_at) * 1000.0
     metrics.no_progress = action in ("none", "blocked")
-    _emit(state, metrics, ctx=ctx)
+    _emit(ctx, metrics)
     return metrics
 
 
 def finish_execution(
-    state,
+    ctx,
     *,
     dispatched: int,
     already_applied: int,
     failed: int,
-    ctx=None,
 ) -> StepMetrics:
     """Chốt pha thực thi: cộng kết quả từng action rồi phát log/event (bản đầy đủ nhất)."""
-    metrics = metrics_for(state)
+    metrics = metrics_for(holder_for(ctx))
     metrics.phase = "execution"
     metrics.actions_dispatched += max(0, int(dispatched))
     metrics.actions_already_applied += max(0, int(already_applied))
@@ -183,33 +216,28 @@ def finish_execution(
     else:
         metrics.action = "none"
     metrics.no_progress = metrics.action != "dispatched"
-    _emit(state, metrics, ctx=ctx)
+    _emit(ctx, metrics)
     return metrics
 
 
-def _emit(state, metrics: StepMetrics, *, ctx=None) -> None:
+def _emit(ctx, metrics: StepMetrics) -> None:
     """Ghi một dòng log dễ đọc + một event có cấu trúc. Hỏng thì im lặng."""
-    step: int | str = "-"
-    try:
-        step = getattr(state, "current_step_number", None) or step
-    except Exception:  # noqa: BLE001
-        step = "-"
+    step = getattr(holder_for(ctx), "current_step_number", None) or "-"
     logger.info(metrics.log_line(step=step))
     metrics.emitted = True
-    if ctx is not None:
-        emit_structured(ctx, state, metrics)
+    emit_structured(ctx, metrics)
 
 
-def emit_structured(ctx, state, metrics: StepMetrics | None = None) -> None:
+def emit_structured(ctx, metrics: StepMetrics | None = None) -> None:
     """Ghi event có cấu trúc vào perf (``type="metrics"``). Tách riêng để test được."""
-    metrics = metrics or metrics_for(state)
+    metrics = metrics or metrics_for(holder_for(ctx))
     engine = getattr(ctx, "data_engine", None)
     if engine is None:
         return
     try:
         from uuid import UUID
 
-        raw_step = getattr(state, "current_step_id", None)
+        raw_step = getattr(engine, "current_step_id", None)
         step_id = UUID(str(raw_step)) if raw_step else None
         engine.record_trace(
             type="metrics",

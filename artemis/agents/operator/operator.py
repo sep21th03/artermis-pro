@@ -66,6 +66,7 @@ from artemis.utils.step_metrics import (
     count_plan_self_heal,
     finish_operator_turn,
     metrics_for,
+    reset_turn,
 )
 from third_party.mobile_use.utils.decorators import agent_lifecycle_logging
 from third_party.mobile_use.utils.logger import get_logger
@@ -575,7 +576,7 @@ class OperatorNode:
 
             bound_llm = base_llm.bind_tools(tools=traced_tools)
             response = await invoke_llm_with_timeout_message(acomplete(bound_llm, current_messages))
-            add_llm_usage(state, response)
+            add_llm_usage(self.ctx, response)
 
             usage = usage_from_message(response)
             # The ledger's compaction thresholds read the operator's own
@@ -836,7 +837,7 @@ class OperatorNode:
                         healed = self._try_plan_self_heal(state)
                         if healed:
                             logger.info(f"Plan ledger gate: tự mở `[/]` — {healed}")
-                            count_plan_self_heal(state)
+                            count_plan_self_heal(self.ctx)
                         else:
                             bounce = self._plan_ledger_bounce_reason()
                             current_plan = self._read_task_plan_text() or ""
@@ -861,10 +862,10 @@ class OperatorNode:
                 if bounce:
                     plan_gate_bounced = True
                     validation_errors = True
-                    count_gate_bounce(state)
+                    count_gate_bounce(self.ctx)
                     # Lượt này **thoát sớm** (action bị chặn) ⇒ chốt số đo ngay tại đây, nếu không
                     # sẽ mất dòng `action=blocked` của đúng loại lượt đáng đếm nhất.
-                    finish_operator_turn(state, action="blocked", ctx=self.ctx)
+                    finish_operator_turn(self.ctx, action="blocked")
                     logger.info(f"Plan ledger gate: bouncing action. {bounce}")
                     for tc in action_calls:
                         tool_outputs.append(
@@ -980,12 +981,7 @@ class OperatorNode:
         self._turn_plan_baseline = self._plan_ledger_baseline(task_plan)
         self._turn_ledger_streak = unwritten_action_streak(steps)
         # Số đo của lượt bắt đầu lại từ 0 (mỗi lượt một bộ đếm; validator đọc rồi chốt sau khi chạy).
-        try:
-            from artemis.utils.step_metrics import StepMetrics
-
-            state.step_metrics = StepMetrics()
-        except Exception as exc:  # noqa: BLE001 - đo hiệu năng không được làm hỏng lượt
-            logger.info(f"step-metrics: không khởi tạo được bộ đếm lượt: {exc}")
+        reset_turn(self.ctx)
 
         # 4. Format minimal list
 
@@ -1080,14 +1076,14 @@ class OperatorNode:
 
         # Số đo hiệu năng của lượt: chỉ cộng số đã có sẵn (không gọi thêm LLM, không đổi luồng).
         try:
-            _metrics = metrics_for(state)
+            _metrics = metrics_for(self.ctx.data_engine)
             if _metrics.actions_blocked_by_gate:
                 _turn_action = "blocked"
             elif structured_decisions:
                 _turn_action = "dispatched"
             else:
                 _turn_action = "none"
-            finish_operator_turn(state, action=_turn_action, ctx=self.ctx)
+            finish_operator_turn(self.ctx, action=_turn_action)
         except Exception as exc:  # noqa: BLE001 - đo hiệu năng không được làm hỏng lượt
             logger.info(f"step-metrics: không chốt được số đo lượt: {exc}")
 
