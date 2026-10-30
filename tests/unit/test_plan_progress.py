@@ -47,7 +47,7 @@ STUCK_PLAN = (
 
 
 def test_a_milestone_whose_sub_goals_are_all_done_is_settled():
-    settled_text, settled = settle_completed_milestones(STUCK_PLAN)
+    settled_text, settled, _ = settle_completed_milestones(STUCK_PLAN)
 
     assert settled == ('Switch active house to "Mesh Tạo 2"',)
     assert '- [x] Switch active house to "Mesh Tạo 2"' in settled_text
@@ -60,9 +60,9 @@ def test_a_milestone_whose_sub_goals_are_all_done_is_settled():
 
 
 def test_settling_is_idempotent():
-    settled_text, _ = settle_completed_milestones(STUCK_PLAN)
+    settled_text, _, _ = settle_completed_milestones(STUCK_PLAN)
 
-    again_text, again_settled = settle_completed_milestones(settled_text)
+    again_text, again_settled, _ = settle_completed_milestones(settled_text)
 
     assert again_settled == ()
     assert again_text == settled_text
@@ -71,7 +71,7 @@ def test_settling_is_idempotent():
 def test_milestones_without_sub_goals_are_never_settled():
     plan = "- [/] Đang làm gì đó chưa ghi bước\n- [ ] Việc sau\n"
 
-    settled_text, settled = settle_completed_milestones(plan)
+    settled_text, settled, _ = settle_completed_milestones(plan)
 
     assert settled == ()
     assert settled_text == plan
@@ -84,7 +84,7 @@ def test_a_loop_milestone_is_never_settled_automatically():
         "    - [x] Read the battery percentage\n"
     )
 
-    settled_text, settled = settle_completed_milestones(plan)
+    settled_text, settled, _ = settle_completed_milestones(plan)
 
     assert settled == ()
     assert settled_text == plan
@@ -114,7 +114,7 @@ def test_plan_with_progress_puts_the_line_above_the_checklist():
 
 
 def test_settled_plan_shifts_the_progress_line_to_the_next_stage():
-    settled_text, _ = settle_completed_milestones(STUCK_PLAN)
+    settled_text, _, _ = settle_completed_milestones(STUCK_PLAN)
 
     text = render_plan_progress(settled_text)
 
@@ -127,7 +127,7 @@ def test_settled_plan_shifts_the_progress_line_to_the_next_stage():
 
 
 def test_parsed_status_matches_the_rewritten_text():
-    settled_text, _ = settle_completed_milestones(STUCK_PLAN)
+    settled_text, _, _ = settle_completed_milestones(STUCK_PLAN)
 
     snapshot = parse_plan(settled_text)
 

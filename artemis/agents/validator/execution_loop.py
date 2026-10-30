@@ -209,10 +209,24 @@ async def _run_precondition_gate(
         f"Pre-execution XML-based validation failed: {validation_error}."
         " Attempting Pixel-based validation fallback..."
     )
-    pixel_passed, pixel_category, _pixel_error = await _pixel_check()
+    pixel_passed, pixel_category, pixel_error = await _pixel_check()
     if pixel_passed and pixel_category == ValidationErrorCategory.NONE:
         logger.success("Pixel validation confirmed the target after XML validation failed.")
         return True, ValidationErrorCategory.NONE, ""
+
+    # XML fail **không** được phép nuốt verdict của pixel fallback. Đo trên máy thật 30/10/2026
+    # (session 93882dc3, bước đăng xuất): XML báo "bị 'Quên mật khẩu' chiếm chỗ", pixel chứng minh
+    # ``target_state=already_applied`` (dialog đã đóng, màn Đăng nhập hiện ra) — nhưng vì hàm trả về
+    # category của XML nên action bị tính **failed + mở incident** dù nó đã thành công, và Operator
+    # có thể tap lại chính chỗ đó. Chỉ verdict ``PIXEL_ALREADY_APPLIED`` được truyền qua: mọi verdict
+    # còn lại (blocked / target biến mất / confidence thấp / ảnh không đổi) vẫn giữ nguyên thất bại
+    # của XML ⇒ **không nới lỏng** safety gate.
+    if pixel_category == ValidationErrorCategory.PIXEL_ALREADY_APPLIED:
+        logger.info(
+            "Pixel fallback proved the target was already applied;"
+            " propagating that verdict to execution."
+        )
+        return pixel_passed, pixel_category, pixel_error
 
     return validation_passed, validation_category, validation_error
 

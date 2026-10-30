@@ -250,7 +250,7 @@ class OperatorNode:
         phát hiện: agent ở lại màn hình cũ, lặp lại tap/vuốt, rồi hết ngân sách.  Chốt ngay
         trước khi dựng prompt để lượt kế tiếp của agent đọc đúng công đoạn hiện tại.
         """
-        settled_text, settled = settle_completed_milestones(task_plan)
+        settled_text, settled, _withheld = settle_completed_milestones(task_plan)
         if not settled:
             return task_plan
         try:

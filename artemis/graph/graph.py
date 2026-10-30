@@ -94,7 +94,11 @@ from artemis.utils.plan_grammar import (
     parse_plan,
     render_check_line,
     restore_missing_check_items,
+    milestone_evidence_gap,
+    normalize_check_text,
+    plan_digest,
     settle_completed_milestones,
+    verification_intent_items,
     subgoal_hash,
     unintended_milestone_edits,
 )
@@ -285,9 +289,52 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
     halted = bool(getattr(ctx, "assert_halt", False))
     max_attempts = int(getattr(setup, "final_check_max_attempts", 3) or 3) if setup else 3
 
-    verify_blocked = False
-    blocked_findings: list[str] = []
+    # Không kết thúc `success` khi công đoạn **tự khai xác minh** vẫn chưa có bằng chứng nào trong
+    # ledger. Đo trên máy thật 30/10/2026 (session 93882dc3): plan không có check item nào nên
+    # `run_outcome` **không hề được ghi** (điều kiện ghi cũ đòi check item/ledger/verify_blocked) và
+    # run được coi là thành công dù chưa hề xác minh nhà hiện tại trên Trang chủ.
+    unverified_milestones = _unverified_verification_milestones(snapshot, base_dir)
+    if unverified_milestones:
+        logger.warning(
+            "Verification criteria without evidence at exit: " + "; ".join(unverified_milestones)
+        )
+
+    verify_blocked = bool(unverified_milestones)
+    blocked_findings: list[str] = [f"[unverified] {text}" for text in unverified_milestones]
+
+    skip_final_review = False
     if final_check_enabled(ctx):
+        # Không gọi checker lặp khi không có bằng chứng mới: plan, số check item và bước hiện tại đều
+        # không đổi ⇒ một lần kiểm tra nữa trên đúng dữ liệu cũ chỉ tốn LLM mà không thể ra kết luận
+        # khác. Trường hợp này đi thẳng tới kết quả `blocked`, không sửa/hạ tiêu chí nào.
+        # Gồm cả số record ledger: một lần kiểm tra mới **luôn** thêm record, nên "không có bằng
+        # chứng mới" nghĩa là plan, check item, bước và ledger đều y nguyên.
+        fingerprint = (
+            f"{plan_digest(plan_text)}|{len(snapshot.all_check_items)}"
+            f"|{len(read_ledger(base_dir))}|{getattr(state, 'current_step_id', '') or ''}"
+        )
+        if getattr(ctx, "final_check_fingerprint", None) == fingerprint:
+            skip_final_review = True
+            verify_blocked = True
+            blocked_findings.append(
+                "[final check] bỏ qua lần kiểm tra lặp: không có bằng chứng mới kể từ lần trước"
+            )
+            logger.warning("Final review skipped: no new evidence since the previous review.")
+            publish_checker_event(
+                ctx,
+                {
+                    "event": "attempt_skipped",
+                    "phase": "final",
+                    "checkpoint_id": FINAL_CHECKPOINT_ID,
+                    "status": "skipped",
+                    "reason": "no_new_evidence",
+                    "verdicts": [],
+                },
+            )
+        else:
+            ctx.final_check_fingerprint = fingerprint
+
+    if final_check_enabled(ctx) and not skip_final_review:
         attempt_no = ctx.final_check_attempts + 1
         ctx.final_check_attempts = attempt_no
         final_attempt_id = f"final#{attempt_no}"
@@ -870,6 +917,75 @@ def wrap_update_note_tool(ctx: ArtemisContext, original_tool):
     )
 
 
+#: Số vòng liên tiếp một milestone bị **giữ lại vì thiếu bằng chứng** mà kế hoạch không đổi, trước
+#: khi hết ngân sách xác minh và phải kết thúc bằng ``blocked``. Không có chặn này thì gate sẽ
+#: ``continue`` mãi; có chặn này thì "thiếu bằng chứng" luôn kết thúc bằng một kết quả nói thật.
+VERIFY_WITHHELD_MAX_ROUNDS = 2
+
+
+def _verification_evidence(base_dir) -> tuple[set[str], set[str], set[str]]:
+    """Bằng chứng **đã có** trong ledger.
+
+    Trả ``(passed, judged, evidenced)``: check item đã ``passed`` · check item **đã được phán** (mọi
+    status kết thúc, cần cho ``assert`` vì assert fail là kết quả hợp lệ) · công đoạn có record
+    ``passed`` gắn với nó.
+    """
+    passed_items: set[str] = set()
+    judged_items: set[str] = set()
+    evidenced: set[str] = set()
+    try:
+        records = read_ledger(base_dir)
+    except Exception as e:  # noqa: BLE001 - thiếu ledger chỉ làm mất bằng chứng, không được gãy run
+        logger.warning(f"Could not read check ledger for verification evidence: {e}")
+        return passed_items, judged_items, evidenced
+    for record in records:
+        status = str(record.get("status") or "")
+        item_text = normalize_check_text(record.get("item_text"))
+        if item_text and status in ("passed", "failed", "inconclusive"):
+            judged_items.add(item_text)
+        if status != "passed":
+            continue
+        if item_text:
+            passed_items.add(item_text)
+        subgoal_text = normalize_check_text(record.get("subgoal_text"))
+        if subgoal_text:
+            evidenced.add(subgoal_text)
+    return passed_items, judged_items, evidenced
+
+
+def _verification_budget_exhausted(ctx, plan_text: str) -> bool:
+    """``True`` khi nhiều vòng liên tiếp bị giữ lại **mà kế hoạch không đổi** (không có bằng chứng mới)."""
+    digest = plan_digest(plan_text)
+    previous = getattr(ctx, "verify_withheld_state", None)
+    rounds = 1
+    if isinstance(previous, tuple) and len(previous) == 2 and previous[0] == digest:
+        rounds = int(previous[1]) + 1
+    ctx.verify_withheld_state = (digest, rounds)
+    return rounds > VERIFY_WITHHELD_MAX_ROUNDS
+
+
+def _unverified_verification_milestones(snapshot, base_dir) -> list[str]:
+    """Các công đoạn **tự khai xác minh nhưng không có bằng chứng nào** (lý do, để báo cáo)."""
+    # Chỉ áp dụng cho plan **không khai check item nào**: khi plan có check item, cơ chế ledger +
+    # final review hiện có đã phán chúng (và tự chốt ``blocked`` khi verify không đạt) — chặn thêm ở
+    # đây chỉ tạo kết quả sai cho những task vốn đã được kiểm chứng đúng cách.
+    if snapshot.all_check_items:
+        return []
+    passed_items, judged_items, evidenced = _verification_evidence(base_dir)
+    gaps: list[str] = []
+    for milestone in snapshot.top_level:
+        gap = milestone_evidence_gap(
+            snapshot,
+            milestone,
+            passed_check_items=passed_items,
+            judged_check_items=judged_items,
+            evidenced_milestones=evidenced,
+        )
+        if gap:
+            gaps.append(f"{milestone.text[:70]} — {gap}")
+    return gaps
+
+
 def convergence_gate(
     state: State, ctx: ArtemisContext
 ) -> Literal["continue", "exit_settlement", "end"]:
@@ -927,13 +1043,34 @@ def convergence_gate(
     # Chốt công đoạn đã xong bằng code trước khi đánh giá: nếu để nguyên, một milestone có mọi
     # sub-goal `[x]` vẫn nằm ở `[/]` thì cổng này không bao giờ thấy "đã xong" và lượt chạy
     # không kết thúc được dù việc đã làm xong.
-    task_plan_content, settled = settle_completed_milestones(task_plan_content)
+    passed_items, judged_items, evidenced = _verification_evidence(ctx.data_engine.base_dir)
+    task_plan_content, settled, withheld = settle_completed_milestones(
+        task_plan_content,
+        passed_check_items=passed_items,
+        judged_check_items=judged_items,
+        evidenced_milestones=evidenced,
+    )
     if settled:
         logger.info("Settled completed milestone(s): " + "; ".join(settled))
         try:
             file_path.write_text(task_plan_content, encoding="utf-8")
         except Exception as e:  # noqa: BLE001 - không được làm hỏng vòng lặp vì lỗi ghi note
             logger.warning(f"Could not persist settled task plan: {e}")
+
+    if withheld:
+        # Mọi dòng con đã `[x]` nhưng **thiếu bằng chứng xác minh**: không chốt công đoạn, không kết
+        # thúc run. Công đoạn vẫn là việc đang làm nên dòng tiến độ plan đưa Operator trở lại đúng
+        # việc xác minh đó; hết ngân sách thì kết thúc bằng `blocked` (không success).
+        logger.warning(
+            "Milestone(s) withheld for missing verification evidence: " + "; ".join(withheld)
+        )
+        if _verification_budget_exhausted(ctx, task_plan_content):
+            logger.warning(
+                "Verification budget exhausted with milestones still unverified;"
+                " ending with a blocked outcome instead of success."
+            )
+            return _terminal_route()
+        return "continue"
 
     snapshot = parse_plan(task_plan_content)
 

@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -315,7 +316,82 @@ def milestones_changed(before: PlanSnapshot, after: PlanSnapshot) -> bool:
     return before.milestone_texts != after.milestone_texts
 
 
-def settle_completed_milestones(content: str | None) -> tuple[str, tuple[str, ...]]:
+#: Từ khoá thể hiện **ý định xác minh** ngay trong văn bản của công đoạn/việc con.
+#: Đo trên máy thật 30/10/2026 (session 93882dc3): milestone
+#: "Verify current house via Home tab and switch to `Dled`" có mọi dòng con `[x]` nên
+#: ``settle_completed_milestones`` chốt nó **từ checkbox**, convergence gate kết thúc run, và không
+#: có bằng chứng nào cho việc xác minh trên Trang chủ — nhưng run vẫn được coi là thành công.
+_VERIFICATION_INTENT_RE = re.compile(
+    r"(?i)\b(verify|check|confirm|ensure|validate|assert|"
+    r"xác minh|kiểm tra|xác nhận|đối chiếu)\b"
+)
+
+
+def normalize_check_text(text: str | None) -> str:
+    """Chuẩn hoá văn bản check item để so khớp với ledger (khoảng trắng + hoa/thường)."""
+    return " ".join((text or "").split()).casefold()
+
+
+def verification_intent_items(snapshot: PlanSnapshot) -> tuple[PlanItem, ...]:
+    """Các dòng checkbox **tự khai là xác minh** — cần bằng chứng thật, không chỉ ``[x]``."""
+    return tuple(
+        item
+        for item in snapshot.items
+        if not item.is_loop and _VERIFICATION_INTENT_RE.search(item.text or "")
+    )
+
+
+def milestone_evidence_gap(
+    snapshot: PlanSnapshot,
+    milestone: PlanItem,
+    *,
+    passed_check_items: Collection[str] = (),
+    judged_check_items: Collection[str] = (),
+    evidenced_milestones: Collection[str] = (),
+) -> str | None:
+    """Lý do một milestone **chưa đủ bằng chứng** để chốt tự động; ``None`` khi đã đủ.
+
+    Hai điều kiện, đúng hai cách "nói dối" đã đo được trên máy thật:
+
+    1. Nhánh còn **check item chưa có verdict passed** ⇒ ``[x]`` của các dòng con không phải bằng
+       chứng cho ``verify``/``assert``.
+    2. Nhánh **tự khai xác minh** (``verify|check|confirm|ensure|xác minh|kiểm tra…``) mà **không có
+       bằng chứng nào** (không check item passed, không ledger record passed gắn với công đoạn) ⇒
+       chốt nó là kết thúc run bằng một lời tự khai.
+
+    Milestone không khai xác minh và không có check item ⇒ trả ``None`` (giữ nguyên hành vi cũ).
+    """
+    passed = {normalize_check_text(t) for t in passed_check_items}
+    judged = {normalize_check_text(t) for t in judged_check_items} | passed
+    evidenced = {normalize_check_text(t) for t in evidenced_milestones}
+    milestone_checks = snapshot.check_items_of(milestone)
+    for check in milestone_checks:
+        key = normalize_check_text(check.text)
+        # ``verify`` phải **passed** (tiêu chí nghiệm thu). ``assert`` chỉ cần **đã được phán**: một
+        # assert fail là kết quả test hợp lệ, không bao giờ được sửa ⇒ không được chặn ở đây.
+        if check.kind == "assert":
+            if key not in judged:
+                return f"assert «{_one_line(check.text, 70)}» chưa được phán"
+        elif key not in passed:
+            return f"check item «{_one_line(check.text, 70)}» chưa có verdict passed"
+    if milestone_checks:
+        return None
+    if normalize_check_text(milestone.text) in evidenced:
+        return None
+    for item in (milestone, *snapshot.children_of(milestone)):
+        if _VERIFICATION_INTENT_RE.search(item.text or ""):
+            return f"việc xác minh «{_one_line(item.text, 70)}» chưa có bằng chứng nào"
+    return None
+
+
+
+def settle_completed_milestones(
+    content: str | None,
+    *,
+    passed_check_items: Collection[str] = (),
+    judged_check_items: Collection[str] = (),
+    evidenced_milestones: Collection[str] = (),
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     """Chốt các công đoạn **đã xong** bằng code, và trả về tên những công đoạn vừa chốt.
 
     **Vì sao cần.**  ``convergence_gate`` chỉ đọc ``all_top_level_done`` — nghĩa là nó *hoàn
@@ -336,14 +412,28 @@ def settle_completed_milestones(content: str | None) -> tuple[str, tuple[str, ..
     text = content or ""
     snapshot = parse_plan(text)
     if not snapshot.has_top_level:
-        return text, ()
+        return text, (), ()
     lines = text.splitlines()
     settled: list[str] = []
+    withheld: list[str] = []
     for milestone in snapshot.top_level:
         if milestone.is_done or milestone.is_loop:
             continue
         children = snapshot.children_of(milestone)
         if not children or not all(child.is_done for child in children):
+            continue
+        gap = milestone_evidence_gap(
+            snapshot,
+            milestone,
+            passed_check_items=passed_check_items,
+            judged_check_items=judged_check_items,
+            evidenced_milestones=evidenced_milestones,
+        )
+        if gap:
+            # Mọi dòng con đã `[x]` nhưng **thiếu bằng chứng**: KHÔNG chốt. Giữ nguyên trạng thái để
+            # công đoạn vẫn là việc đang làm ⇒ dòng tiến độ plan đưa Operator trở lại đúng việc xác
+            # minh đó; hết ngân sách thì exit settlement chốt `blocked` (không success).
+            withheld.append(f"{_one_line(milestone.text, 70)} — {gap}")
             continue
         if milestone.line_no >= len(lines):
             continue
@@ -356,9 +446,9 @@ def settle_completed_milestones(content: str | None) -> tuple[str, tuple[str, ..
         )
         settled.append(milestone.text)
     if not settled:
-        return text, ()
+        return text, (), tuple(withheld)
     rewritten = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
-    return rewritten, tuple(settled)
+    return rewritten, tuple(settled), tuple(withheld)
 
 
 def render_plan_progress(content: str | None) -> str:
