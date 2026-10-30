@@ -603,7 +603,6 @@ async def run_validation_loop(node, state: State) -> dict:
             or (1 if success else 0),
             already_applied=1 if already_applied else 0,
             failed=0 if success or already_applied else 1,
-            ctx=ctx,
         )
     except Exception as exc:  # noqa: BLE001 - đo hiệu năng không được làm gãy lượt
         logger.info(f"step-metrics: không chốt được số đo bước: {exc}")
