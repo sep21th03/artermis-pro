@@ -332,6 +332,106 @@ def normalize_check_text(text: str | None) -> str:
     return " ".join((text or "").split()).casefold()
 
 
+#: Bề mặt màn hình mà một tiêu chí xác minh có thể nhắc tới, kèm token nhận diện.
+#: Đo trên máy thật 30/10/2026 (session 93882dc3): bằng chứng "Dled house card is still clearly
+#: visible" là **Quản lý nhà**, không chứng minh được yêu cầu "via Home tab" của milestone.
+_SURFACE_TOKENS: dict[str, tuple[str, ...]] = {
+    "home": ("home", "trang chủ"),
+    "menu": ("menu",),
+    "house_management": ("quản lý nhà", "house management"),
+    "login": ("đăng nhập", "login"),
+}
+
+
+def verification_surfaces(*texts: str | None) -> frozenset[str]:
+    """Các **màn hình** mà văn bản xác minh nhắc tới (rỗng ⇒ không ràng buộc màn hình)."""
+    joined = normalize_check_text(" ".join(t or "" for t in texts))
+    return frozenset(
+        surface for surface, tokens in _SURFACE_TOKENS.items() if any(t in joined for t in tokens)
+    )
+
+
+def evidence_matches_surfaces(evidence_text: str | None, required: Collection[str]) -> bool:
+    """Bằng chứng phải nhắc tới **đúng màn hình** mà tiêu chí yêu cầu.
+
+    Không ràng buộc màn hình ⇒ luôn đạt. Có ràng buộc ⇒ bằng chứng phải nhắc tới ít nhất một màn
+    hình trong đó; bằng chứng ở màn khác **không** tính (đây là lỗ đã đo: "Dled selected on Quản lý
+    nhà" không phải bằng chứng cho "Home tab hiển thị Dled").
+    """
+    required_set = {r for r in required if r}
+    if not required_set:
+        return True
+    return bool(verification_surfaces(evidence_text) & required_set)
+
+
+def milestone_verification_surfaces(
+    snapshot: PlanSnapshot, milestone: PlanItem
+) -> frozenset[str]:
+    """Màn hình mà công đoạn (và các việc xác minh con) yêu cầu phải được nhìn thấy."""
+    texts: list[str | None] = [milestone.text]
+    for item in snapshot.children_of(milestone):
+        if _VERIFICATION_INTENT_RE.search(item.text or ""):
+            texts.append(item.text)
+    return verification_surfaces(*texts)
+
+
+def verification_request_text(gap: str, milestone: PlanItem, surfaces: Collection[str]) -> str:
+    """Yêu cầu xác minh **cụ thể** để gửi Operator qua kênh ``- finding:`` của hệ thống.
+
+    Không phải thông báo chung: nó nêu đúng công đoạn, đúng lý do thiếu bằng chứng, và **đúng màn
+    hình** cần nhìn để lấy bằng chứng (``Home``/``Menu``/``Quản lý nhà``…).
+    """
+    surface_names = {
+        "home": "Trang chủ (Home tab)",
+        "menu": "tab Menu",
+        "house_management": "Quản lý nhà",
+        "login": "màn Đăng nhập",
+    }
+    where = ", ".join(surface_names.get(s, s) for s in sorted(surfaces))
+    requirement = (
+        f" Đọc trực tiếp trên {where} rồi ghi lại bằng chứng quan sát được."
+        if where
+        else " Ghi lại bằng chứng quan sát được (màn hình/giá trị cụ thể)."
+    )
+    return (
+        f"Chưa xác minh «{_one_line(milestone.text, 70)}»: {gap}.{requirement}"
+        " Chưa có bằng chứng thì **không** được coi công đoạn này là xong."
+    )
+
+
+def ensure_finding_line(content: str, milestone_key: str, text: str) -> tuple[str, bool]:
+    """Bảo đảm có **một** dòng ``- finding:`` dưới milestone; trả ``(nội dung, có thay đổi)``.
+
+    Khác :func:`apply_finding_lines` (xoá rồi chiếu lại toàn bộ finding do checker sở hữu), hàm này
+    chỉ **thêm khi chưa có** ⇒ không ghi đè kênh finding của checker.
+    """
+    body = (text or "").strip()
+    source = content or ""
+    snapshot = parse_plan(source)
+    if not body or not snapshot.has_top_level:
+        return source, False
+    milestone = next((item for item in snapshot.top_level if item.key == milestone_key), None)
+    if milestone is None:
+        return source, False
+    lines = source.splitlines()
+    if milestone.line_no >= len(lines):
+        return source, False
+    for candidate in snapshot.items:
+        if candidate.line_no <= milestone.line_no:
+            continue
+        if candidate.is_top_level:
+            break
+        if candidate.line_no >= len(lines):
+            continue
+        match = FINDING_LINE_RE.match(lines[candidate.line_no])
+        if match and normalize_check_text(match.group("text")) == normalize_check_text(body):
+            return source, False
+    lines.insert(milestone.line_no + 1, render_finding_line(body, indent=2))
+    rewritten = "\n".join(lines) + ("\n" if source.endswith("\n") else "")
+    return rewritten, True
+
+
+
 def verification_intent_items(snapshot: PlanSnapshot) -> tuple[PlanItem, ...]:
     """Các dòng checkbox **tự khai là xác minh** — cần bằng chứng thật, không chỉ ``[x]``."""
     return tuple(
@@ -367,13 +467,15 @@ def milestone_evidence_gap(
     milestone_checks = snapshot.check_items_of(milestone)
     for check in milestone_checks:
         key = normalize_check_text(check.text)
-        # ``verify`` phải **passed** (tiêu chí nghiệm thu). ``assert`` chỉ cần **đã được phán**: một
-        # assert fail là kết quả test hợp lệ, không bao giờ được sửa ⇒ không được chặn ở đây.
-        if check.kind == "assert":
-            if key not in judged:
-                return f"assert «{_one_line(check.text, 70)}» chưa được phán"
-        elif key not in passed:
-            return f"check item «{_one_line(check.text, 70)}» chưa có verdict passed"
+        # **Cả** ``verify`` **và** ``assert`` đều phải **passed**: một assert fail/inconclusive không
+        # phải bằng chứng rằng tiêu chí đã đạt, và `[x]` của dòng con cũng không. ``judged`` chỉ dùng
+        # để nói rõ trong thông điệp là "đã phán nhưng không đạt" hay "chưa hề được phán".
+        if key in passed:
+            continue
+        label = "verify" if check.kind == "verify" else "assert"
+        if key in judged:
+            return f"{label} «{_one_line(check.text, 70)}» đã được phán nhưng KHÔNG passed"
+        return f"{label} «{_one_line(check.text, 70)}» chưa có verdict passed"
     if milestone_checks:
         return None
     if normalize_check_text(milestone.text) in evidenced:

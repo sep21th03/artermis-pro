@@ -94,11 +94,16 @@ from artemis.utils.plan_grammar import (
     parse_plan,
     render_check_line,
     restore_missing_check_items,
+    ensure_finding_line,
+    evidence_matches_surfaces,
     milestone_evidence_gap,
+    milestone_verification_surfaces,
     normalize_check_text,
     plan_digest,
     settle_completed_milestones,
+    strip_finding_lines,
     verification_intent_items,
+    verification_request_text,
     subgoal_hash,
     unintended_milestone_edits,
 )
@@ -304,22 +309,26 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
 
     skip_final_review = False
     if final_check_enabled(ctx):
-        # Không gọi checker lặp khi không có bằng chứng mới: plan, số check item và bước hiện tại đều
-        # không đổi ⇒ một lần kiểm tra nữa trên đúng dữ liệu cũ chỉ tốn LLM mà không thể ra kết luận
-        # khác. Trường hợp này đi thẳng tới kết quả `blocked`, không sửa/hạ tiêu chí nào.
-        # Gồm cả số record ledger: một lần kiểm tra mới **luôn** thêm record, nên "không có bằng
-        # chứng mới" nghĩa là plan, check item, bước và ledger đều y nguyên.
-        fingerprint = (
-            f"{plan_digest(plan_text)}|{len(snapshot.all_check_items)}"
-            f"|{len(read_ledger(base_dir))}|{getattr(state, 'current_step_id', '') or ''}"
-        )
+        # Không gọi checker lặp khi **thực sự** không có gì mới. Bốn tín hiệu đều phải y nguyên:
+        #   1. nội dung plan + số check item (tiêu chí không đổi),
+        #   2. **bước** hiện tại (mỗi lượt Operator là một bước mới),
+        #   3. **ảnh/UI** quan sát được gần nhất (`state.latest_screenshot`) — UI đổi mà step_id giữ
+        #      nguyên thì vẫn phải chạy lại review,
+        #   4. **số record ledger** — có bằng chứng mới (passed/failed) thì luôn chạy lại.
+        # Nếu thiếu bất kỳ tín hiệu nào thay đổi ⇒ KHÔNG bỏ qua. Đây là "không tái dùng report cũ khi
+        # bằng chứng thực tế đã thay đổi", không phải bỏ bước kiểm tra.
+        ledger_records = read_ledger(base_dir)
+        fingerprint = _final_review_fingerprint(state, plan_text, snapshot, base_dir, ledger_records)
         if getattr(ctx, "final_check_fingerprint", None) == fingerprint:
             skip_final_review = True
             verify_blocked = True
             blocked_findings.append(
                 "[final check] bỏ qua lần kiểm tra lặp: không có bằng chứng mới kể từ lần trước"
             )
-            logger.warning("Final review skipped: no new evidence since the previous review.")
+            logger.warning(
+                "Final review skipped: no new evidence since the previous review"
+                " (same plan, step, screen and ledger)."
+            )
             publish_checker_event(
                 ctx,
                 {
@@ -922,13 +931,24 @@ def wrap_update_note_tool(ctx: ArtemisContext, original_tool):
 #: ``continue`` mãi; có chặn này thì "thiếu bằng chứng" luôn kết thúc bằng một kết quả nói thật.
 VERIFY_WITHHELD_MAX_ROUNDS = 2
 
+#: Trần **tuyệt đối** cho tổng số vòng bị giữ lại, kể cả khi kế hoạch có đổi mỗi vòng — bảo đảm
+#: không có vòng lặp vô hạn khi bằng chứng mãi không xuất hiện.
+VERIFY_WITHHELD_MAX_TOTAL = 4
 
-def _verification_evidence(base_dir) -> tuple[set[str], set[str], set[str]]:
-    """Bằng chứng **đã có** trong ledger.
 
-    Trả ``(passed, judged, evidenced)``: check item đã ``passed`` · check item **đã được phán** (mọi
-    status kết thúc, cần cho ``assert`` vì assert fail là kết quả hợp lệ) · công đoạn có record
-    ``passed`` gắn với nó.
+def _verification_evidence(
+    base_dir, snapshot=None
+) -> tuple[set[str], set[str], set[str]]:
+    """Bằng chứng **đã có** trong ledger, đã kiểm khớp tiêu chí / công đoạn / màn hình.
+
+    Trả ``(passed, judged, evidenced)``:
+      * ``passed`` — văn bản check item đã ``passed`` (verify **và** assert).
+      * ``judged`` — văn bản check item **đã được phán** (mọi status kết thúc); chỉ dùng để nói rõ
+        trong thông điệp là "đã phán nhưng không đạt" hay "chưa hề được phán".
+      * ``evidenced`` — công đoạn có bằng chứng **đủ điều kiện**: record ``passed``, ``kind=verify``,
+        ``subgoal_text`` khớp đúng công đoạn, có văn bản bằng chứng, và bằng chứng nhắc tới **đúng
+        màn hình** mà tiêu chí yêu cầu. Một record passed không liên quan (khác công đoạn, khác màn
+        hình, hoặc là ``assert``) **không** được dùng để chốt công đoạn.
     """
     passed_items: set[str] = set()
     judged_items: set[str] = set()
@@ -938,6 +958,11 @@ def _verification_evidence(base_dir) -> tuple[set[str], set[str], set[str]]:
     except Exception as e:  # noqa: BLE001 - thiếu ledger chỉ làm mất bằng chứng, không được gãy run
         logger.warning(f"Could not read check ledger for verification evidence: {e}")
         return passed_items, judged_items, evidenced
+
+    milestones = {}
+    if snapshot is not None:
+        milestones = {normalize_check_text(item.text): item for item in snapshot.top_level}
+
     for record in records:
         status = str(record.get("status") or "")
         item_text = normalize_check_text(record.get("item_text"))
@@ -948,20 +973,94 @@ def _verification_evidence(base_dir) -> tuple[set[str], set[str], set[str]]:
         if item_text:
             passed_items.add(item_text)
         subgoal_text = normalize_check_text(record.get("subgoal_text"))
-        if subgoal_text:
+        if not subgoal_text:
+            continue
+        if snapshot is None:
             evidenced.add(subgoal_text)
+            continue
+        milestone = milestones.get(subgoal_text)
+        if milestone is None:
+            continue  # bằng chứng gắn với công đoạn không còn tồn tại ⇒ không tính
+        if str(record.get("kind") or "") != "verify":
+            continue  # ``assert`` không phải bằng chứng nghiệm thu công đoạn
+        evidence_text = str(record.get("evidence") or "").strip()
+        if not evidence_text:
+            continue  # không có mô tả quan sát ⇒ không phải bằng chứng
+        required = milestone_verification_surfaces(snapshot, milestone)
+        # Xét **văn bản bằng chứng**, KHÔNG xét ``item_text``: item_text là tiêu chí do agent khai nên
+        # nó luôn nhắc tới màn hình yêu cầu — dùng nó để khớp là tự lừa mình.
+        if not evidence_matches_surfaces(evidence_text, required):
+            logger.info(
+                "Verification evidence ignored: it does not mention the screen the criterion"
+                f" requires ({sorted(required)}) for «{milestone.text[:60]}»."
+            )
+            continue
+        evidenced.add(subgoal_text)
     return passed_items, judged_items, evidenced
+
+
+def _final_review_fingerprint(state, plan_text: str, snapshot, base_dir, ledger_records) -> str:
+    """Dấu vân tay của **bằng chứng thực tế** tại thời điểm xét duyệt cuối.
+
+    Gồm bốn tín hiệu: nội dung plan · số check item · bước hiện tại · **ảnh/UI** quan sát gần nhất ·
+    số record ledger. Chỉ khi **cả năm** y nguyên thì lần kiểm tra trước mới còn giá trị; đổi ảnh/UI
+    mà ``step_id`` giữ nguyên, hoặc có record ledger mới, đều làm vân tay khác đi ⇒ review chạy lại.
+    """
+    latest_screenshot = str(getattr(state, "latest_screenshot", "") or "")
+    return (
+        f"{plan_digest(plan_text)}|{len(snapshot.all_check_items)}"
+        f"|{getattr(state, 'current_step_id', '') or ''}|{latest_screenshot}"
+        f"|{len(ledger_records)}"
+    )
+
+
+def _request_specific_verification(snapshot, withheld: list[str], plan_path, base_dir) -> None:
+    """Ghi yêu cầu xác minh cụ thể cho từng công đoạn bị giữ lại (kênh ``- finding:`` của hệ thống)."""
+    if not withheld:
+        return
+    try:
+        content = plan_path.read_text(encoding="utf-8")
+    except Exception as e:  # noqa: BLE001 - không ghi được yêu cầu thì vẫn phải giữ gate
+        logger.warning(f"Could not read task plan to request verification: {e}")
+        return
+    passed_items, judged_items, evidenced = _verification_evidence(base_dir, snapshot)
+    updated = content
+    for milestone in snapshot.top_level:
+        if milestone.is_done or milestone.is_loop:
+            continue
+        gap = milestone_evidence_gap(
+            snapshot,
+            milestone,
+            passed_check_items=passed_items,
+            judged_check_items=judged_items,
+            evidenced_milestones=evidenced,
+        )
+        if not gap:
+            continue
+        request = verification_request_text(
+            gap, milestone, milestone_verification_surfaces(snapshot, milestone)
+        )
+        updated, changed = ensure_finding_line(updated, milestone.key, request)
+        if changed:
+            logger.info(f"Verification requested from the Operator: {request}")
+    if updated != content:
+        try:
+            plan_path.write_text(updated, encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not persist verification request: {e}")
 
 
 def _verification_budget_exhausted(ctx, plan_text: str) -> bool:
     """``True`` khi nhiều vòng liên tiếp bị giữ lại **mà kế hoạch không đổi** (không có bằng chứng mới)."""
-    digest = plan_digest(plan_text)
+    digest = plan_digest(strip_finding_lines(plan_text))
     previous = getattr(ctx, "verify_withheld_state", None)
     rounds = 1
     if isinstance(previous, tuple) and len(previous) == 2 and previous[0] == digest:
         rounds = int(previous[1]) + 1
     ctx.verify_withheld_state = (digest, rounds)
-    return rounds > VERIFY_WITHHELD_MAX_ROUNDS
+    total = int(getattr(ctx, "verify_withheld_total", 0) or 0) + 1
+    ctx.verify_withheld_total = total
+    return rounds > VERIFY_WITHHELD_MAX_ROUNDS or total > VERIFY_WITHHELD_MAX_TOTAL
 
 
 def _unverified_verification_milestones(snapshot, base_dir) -> list[str]:
@@ -971,7 +1070,7 @@ def _unverified_verification_milestones(snapshot, base_dir) -> list[str]:
     # đây chỉ tạo kết quả sai cho những task vốn đã được kiểm chứng đúng cách.
     if snapshot.all_check_items:
         return []
-    passed_items, judged_items, evidenced = _verification_evidence(base_dir)
+    passed_items, judged_items, evidenced = _verification_evidence(base_dir, snapshot)
     gaps: list[str] = []
     for milestone in snapshot.top_level:
         gap = milestone_evidence_gap(
@@ -1043,7 +1142,10 @@ def convergence_gate(
     # Chốt công đoạn đã xong bằng code trước khi đánh giá: nếu để nguyên, một milestone có mọi
     # sub-goal `[x]` vẫn nằm ở `[/]` thì cổng này không bao giờ thấy "đã xong" và lượt chạy
     # không kết thúc được dù việc đã làm xong.
-    passed_items, judged_items, evidenced = _verification_evidence(ctx.data_engine.base_dir)
+    gate_snapshot = parse_plan(task_plan_content)
+    passed_items, judged_items, evidenced = _verification_evidence(
+        ctx.data_engine.base_dir, gate_snapshot
+    )
     task_plan_content, settled, withheld = settle_completed_milestones(
         task_plan_content,
         passed_check_items=passed_items,
@@ -1063,6 +1165,12 @@ def convergence_gate(
         # việc xác minh đó; hết ngân sách thì kết thúc bằng `blocked` (không success).
         logger.warning(
             "Milestone(s) withheld for missing verification evidence: " + "; ".join(withheld)
+        )
+        # Yêu cầu xác minh **cụ thể** (đúng công đoạn, đúng lý do, đúng màn hình) gửi qua kênh
+        # `- finding:` do hệ thống sở hữu — không phải một thông báo chung, và Operator đã được dạy
+        # đọc kênh này. Chỉ **thêm khi chưa có** nên không ghi đè finding của checker.
+        _request_specific_verification(
+            parse_plan(task_plan_content), withheld, file_path, ctx.data_engine.base_dir
         )
         if _verification_budget_exhausted(ctx, task_plan_content):
             logger.warning(

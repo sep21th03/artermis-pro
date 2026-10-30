@@ -243,8 +243,252 @@ def test_verification_evidence_reads_only_passed_records(tmp_path):
     assert graph_module.normalize_check_text("Verify current house") not in evidenced
 
 
-def test_final_review_is_not_repeated_without_new_evidence(tmp_path, monkeypatch):
-    """Cùng plan + cùng bước ⇒ lần kiểm tra thứ hai bị bỏ qua (không tốn LLM vô ích)."""
+# ── siết 30/10: assert phải passed; bằng chứng phải khớp công đoạn + MÀN HÌNH ──────────
+
+
+def test_an_assert_that_failed_does_not_count_as_evidence():
+    """Assert fail là kết quả test hợp lệ, nhưng **không** phải bằng chứng đã đạt tiêu chí."""
+    plan = "- [ ] Switch to `Dled`\n  - [x] Tap the Dled card\n  - assert@end: Trang chủ hiển thị nhà `Dled`\n"
+
+    _, settled, withheld = settle_completed_milestones(
+        plan, judged_check_items=["Trang chủ hiển thị nhà `Dled`"]  # đã phán (failed)
+    )
+
+    assert settled == () and len(withheld) == 1
+    assert "đã được phán nhưng KHÔNG passed" in withheld[0]
+
+
+def test_only_passed_check_items_let_a_milestone_settle():
+    plan = "- [ ] Switch to `Dled`\n  - [x] Tap the Dled card\n  - verify@end: Trang chủ hiển thị nhà `Dled`\n"
+
+    assert settle_completed_milestones(plan)[1] == ()
+    assert settle_completed_milestones(plan, passed_check_items=["khác"])[1] == ()
+    assert settle_completed_milestones(
+        plan, passed_check_items=["Trang chủ hiển thị nhà `Dled`"]
+    )[1] == ("Switch to `Dled`",)
+
+
+def _dled_evidence_env(tmp_path, record: dict):
+    from artemis.graph import graph as graph_module
+
+    base = tmp_path / "traces"
+    (base / "notes").mkdir(parents=True, exist_ok=True)
+    (base / "notes" / "task_plan.md").write_text(DLED_PLAN, encoding="utf-8")
+    graph_module.append_ledger_record(base, record)
+    ctx = SimpleNamespace(
+        data_engine=SimpleNamespace(base_dir=str(base)),
+        assert_halt=False,
+        checkpoint_tasks=None,
+        pending_checkpoints=None,
+    )
+    state = SimpleNamespace(user_stop_requested=False, current_step_id=None)
+    return graph_module, ctx, state, base
+
+
+def _dled_record(evidence: str, *, kind: str = "verify", subgoal: str = HOUSE_MILESTONE) -> dict:
+    return {
+        "attempt_id": "final#1",
+        "checkpoint_id": "final",
+        "subgoal_text": subgoal,
+        "item_text": "Trang chủ hiển thị nhà `Dled`",
+        "kind": kind,
+        "when": "at_end",
+        "status": "passed",
+        "evidence": evidence,
+    }
+
+
+@pytest.mark.parametrize(
+    "evidence, expected",
+    [
+        ("Dled card visible on Quản lý nhà", False),  # đủ để thấy, KHÔNG đủ để xác minh Trang chủ
+        ("Dled selected/active on Quản lý nhà", False),  # chứng minh thao tác chọn, chưa chứng minh Home
+        ("Trang chủ hiển thị nhà `Dled` ở góc trên bên trái", True),  # đúng màn hình ⇒ đủ
+    ],
+)
+def test_evidence_must_be_on_the_screen_the_criterion_names(tmp_path, evidence, expected):
+    graph_module, ctx, state, base = _dled_evidence_env(tmp_path, _dled_record(evidence))
+
+    _, _, evidenced = graph_module._verification_evidence(str(base), parse_plan(DLED_PLAN))
+
+    assert (graph_module.normalize_check_text(HOUSE_MILESTONE) in evidenced) is expected
+
+
+def test_the_gate_only_ends_the_run_when_the_evidence_is_on_the_right_screen(tmp_path, monkeypatch):
+    """Chỉ bằng chứng trên Trang chủ mới cho phép chốt công đoạn 'via Home tab'."""
+    graph_module, ctx, state, base = _dled_evidence_env(
+        tmp_path, _dled_record("Dled selected/active on Quản lý nhà")
+    )
+    monkeypatch.setattr(graph_module, "final_check_enabled", lambda _ctx: False)
+
+    assert graph_module.convergence_gate(state, ctx) == "continue"
+
+    # Bằng chứng mới, đúng màn hình ⇒ chốt được.
+    graph_module.append_ledger_record(
+        base, _dled_record("Home tab hiển thị nhà `Dled` ở góc trên bên trái")
+    )
+    assert graph_module.convergence_gate(state, ctx) in ("exit_settlement", "end")
+
+
+@pytest.mark.parametrize("kind", ["assert", "verify"])
+def test_a_passed_record_for_another_criterion_or_milestone_is_not_evidence(tmp_path, kind):
+    graph_module, ctx, state, base = _dled_evidence_env(
+        tmp_path,
+        _dled_record("Home tab hiển thị nhà `Dled`", kind=kind, subgoal="Verify something else"),
+    )
+
+    _, _, evidenced = graph_module._verification_evidence(str(base), parse_plan(DLED_PLAN))
+
+    assert graph_module.normalize_check_text(HOUSE_MILESTONE) not in evidenced
+
+
+def test_an_assert_record_cannot_complete_a_milestone(tmp_path):
+    graph_module, ctx, state, base = _dled_evidence_env(
+        tmp_path, _dled_record("Home tab hiển thị nhà `Dled`", kind="assert")
+    )
+
+    _, _, evidenced = graph_module._verification_evidence(str(base), parse_plan(DLED_PLAN))
+
+    assert evidenced == set()
+
+
+# ── item 3: fingerprint phải nhạy với ảnh/UI và ledger evidence ─────────────────────────
+
+
+def _fp(state, plan_text, base, graph_module):
+    from artemis.graph.checkpoints import read_ledger
+
+    return graph_module._final_review_fingerprint(
+        state, plan_text, parse_plan(plan_text), str(base), read_ledger(base)
+    )
+
+
+def test_fingerprint_changes_when_the_screen_changes_even_with_the_same_step(tmp_path):
+    from artemis.graph import graph as graph_module
+
+    base = tmp_path / "traces"
+    base.mkdir(parents=True, exist_ok=True)
+    state = SimpleNamespace(current_step_id="step-1", latest_screenshot="a.jpg")
+
+    before = _fp(state, DLED_PLAN, base, graph_module)
+    state.latest_screenshot = "b.jpg"  # UI đổi, step_id GIỮ NGUYÊN
+    after = _fp(state, DLED_PLAN, base, graph_module)
+
+    assert before != after, "UI đổi mà step không đổi vẫn phải chạy lại review"
+
+
+def test_fingerprint_changes_when_ledger_evidence_changes(tmp_path):
+    from artemis.graph import graph as graph_module
+
+    base = tmp_path / "traces"
+    base.mkdir(parents=True, exist_ok=True)
+    state = SimpleNamespace(current_step_id="step-1", latest_screenshot="a.jpg")
+
+    before = _fp(state, DLED_PLAN, base, graph_module)
+    graph_module.append_ledger_record(base, _dled_record("Home tab hiển thị nhà `Dled`"))
+    after = _fp(state, DLED_PLAN, base, graph_module)
+
+    assert before != after, "có bằng chứng mới ⇒ checker phải chạy lại"
+
+
+def test_fingerprint_is_stable_when_nothing_changed(tmp_path):
+    from artemis.graph import graph as graph_module
+
+    base = tmp_path / "traces"
+    base.mkdir(parents=True, exist_ok=True)
+    state = SimpleNamespace(current_step_id="step-1", latest_screenshot="a.jpg")
+
+    assert _fp(state, DLED_PLAN, base, graph_module) == _fp(state, DLED_PLAN, base, graph_module)
+
+
+# ── item 4: withholding — tối đa 2 lượt, yêu cầu cụ thể, không success khi hết budget ───
+
+
+def test_withholding_stops_after_two_rounds_with_an_unchanged_plan(tmp_path, monkeypatch):
+    graph_module, ctx, state, _ = _gate_env(tmp_path, DLED_PLAN)
+    monkeypatch.setattr(graph_module, "final_check_enabled", lambda _ctx: False)
+
+    routes = [graph_module.convergence_gate(state, ctx) for _ in range(3)]
+
+    assert routes[:2] == ["continue", "continue"], routes
+    assert routes[2] in ("exit_settlement", "end"), "không được continue mãi"
+
+
+def test_an_absolute_bound_stops_the_loop_even_when_the_plan_keeps_changing(tmp_path, monkeypatch):
+    """Kế hoạch đổi mỗi vòng (digest khác) vẫn phải dừng: trần tổng, không vòng lặp vô hạn."""
+    graph_module, ctx, state, base = _gate_env(tmp_path, DLED_PLAN)
+    monkeypatch.setattr(graph_module, "final_check_enabled", lambda _ctx: False)
+    plan_path = base / "notes" / "task_plan.md"
+
+    routes = []
+    for i in range(8):
+        plan_path.write_text(DLED_PLAN + f"  - [x] việc phụ {i}\n", encoding="utf-8")
+        routes.append(graph_module.convergence_gate(state, ctx))
+
+    assert routes[-1] in ("exit_settlement", "end"), routes
+    assert routes.count("continue") <= graph_module.VERIFY_WITHHELD_MAX_TOTAL
+
+
+def test_the_operator_gets_a_specific_verification_request(tmp_path, monkeypatch):
+    """Còn budget ⇒ Operator phải nhận yêu cầu **cụ thể** (đúng công đoạn + đúng màn hình)."""
+    graph_module, ctx, state, base = _gate_env(tmp_path, DLED_PLAN)
+    monkeypatch.setattr(graph_module, "final_check_enabled", lambda _ctx: False)
+
+    assert graph_module.convergence_gate(state, ctx) == "continue"
+
+    plan = (base / "notes" / "task_plan.md").read_text(encoding="utf-8")
+    assert "- finding:" in plan, plan
+    finding = [line for line in plan.splitlines() if "- finding:" in line][0]
+    assert "Trang chủ" in finding and "chưa có bằng chứng" in finding
+
+
+def test_withholding_never_marks_the_milestone_done(tmp_path, monkeypatch):
+    graph_module, ctx, state, base = _gate_env(tmp_path, DLED_PLAN)
+    monkeypatch.setattr(graph_module, "final_check_enabled", lambda _ctx: False)
+
+    for _ in range(3):
+        graph_module.convergence_gate(state, ctx)
+
+    plan = (base / "notes" / "task_plan.md").read_text(encoding="utf-8")
+    assert "- [x] Verify current house" not in plan
+    assert "- [ ] Verify current house" in plan
+
+
+def test_a_done_plan_without_evidence_still_cannot_be_success(tmp_path):
+    """Mọi milestone `[x]` (agent tự khai) mà thiếu bằng chứng ⇒ exit chốt blocked, không success."""
+    from artemis.graph import graph as graph_module
+    from artemis.graph.checkpoints import compute_run_outcome
+
+    base = tmp_path / "traces"
+    base.mkdir(parents=True, exist_ok=True)
+    snapshot = parse_plan(DLED_PLAN.replace("- [ ]", "- [x]"))
+
+    gaps = graph_module._unverified_verification_milestones(snapshot, str(base))
+    assert gaps, "phải phát hiện công đoạn xác minh thiếu bằng chứng"
+
+    outcome = compute_run_outcome(snapshot, [], verify_blocked=bool(gaps))
+    assert outcome.task_status == "blocked"
+
+
+# ── item 5: bất biến gate ledger không cho action vượt qua khi plan không hợp lệ ────────
+
+
+def test_withheld_plan_still_has_no_active_item_for_the_ledger_gate(tmp_path, monkeypatch):
+    """Sau khi bị giữ lại, plan **không** có `[/]` nào ⇒ gate ledger vẫn có việc để bounce."""
+    from artemis.utils.plan_grammar import plan_ledger_candidates, repeat_bounce_message
+
+    graph_module, ctx, state, base = _gate_env(tmp_path, DLED_PLAN)
+    monkeypatch.setattr(graph_module, "final_check_enabled", lambda _ctx: False)
+    graph_module.convergence_gate(state, ctx)
+
+    plan = (base / "notes" / "task_plan.md").read_text(encoding="utf-8")
+
+    assert plan_ledger_candidates(plan), "gate ledger vẫn phải nêu được ứng viên"
+    assert repeat_bounce_message(plan).startswith("Not executed:")
+
+
+def test_final_review_skip_is_wired_in_the_exit_node():
+    """Bảo vệ bất biến: đường bỏ qua review phải còn tồn tại và gắn với fingerprint."""
     import inspect
 
     from artemis.graph import graph as graph_module
@@ -253,4 +497,6 @@ def test_final_review_is_not_repeated_without_new_evidence(tmp_path, monkeypatch
     assert "final_check_fingerprint" in source
     assert "skip_final_review" in source
     assert "attempt_skipped" in source
+    assert "_final_review_fingerprint" in source
+
 
