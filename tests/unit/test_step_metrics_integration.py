@@ -148,41 +148,115 @@ def test_reset_turn_clears_counters_without_losing_previous_lines(tmp_path, capl
     assert "in_tok=1000" in lines[0] and "in_tok=2000" in lines[1]
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG P1-4b đã đo được: record_trace(type=metrics, name=step_metrics) không hạ cánh trong"
-        " perf_events.jsonl — phiên thật d6a68202 có 82 dòng [step-metrics] nhưng 0 event metrics"
-        " trong 740 event. Dòng log người-đọc được vẫn đúng; kênh có cấu trúc thì chưa. Test này sẽ"
-        " XPASS khi kênh đó được nối."
-    ),
-    strict=False,
-)
-def test_structured_event_lands_in_the_perf_file(tmp_path):
-    from artemis.perf import recorder as perf_recorder
+class _Recorder:
+    """Cài perf recorder thật vào đúng file của test, gỡ ra khi xong."""
 
-    if not perf_recorder.perf_enabled():
-        pytest.skip("perf đang tắt trong môi trường test (ARTEMIS_PERF_LEVEL)")
+    def __init__(self, tmp_path: Path):
+        from artemis.perf import PerfRecorder
+
+        self.path = tmp_path / "perf" / "perf_events.jsonl"
+        self.recorder = PerfRecorder(session_id="metrics-test", path=self.path, enabled=True)
+
+    def __enter__(self):
+        from artemis.perf import set_recorder
+
+        set_recorder(self.recorder)
+        return self
+
+    def __exit__(self, *_exc):
+        from artemis.perf import set_recorder
+
+        self.recorder.close()
+        set_recorder(None)
+
+    def rows(self) -> list[dict]:
+        if not self.path.exists():
+            return []
+        return [json.loads(line) for line in self.path.read_text().splitlines() if line.strip()]
+
+    def named(self, name: str) -> list[dict]:
+        return [r for r in self.rows() if r.get("event_name") == name]
+
+
+REQUIRED_FIELDS = (
+    "wall_ms",
+    "llm_calls",
+    "input_tokens",
+    "output_tokens",
+    "cached_tokens",
+    "gate_bounces",
+    "plan_self_heals",
+    "validation_ms",
+    "pixel_validation_ms",
+    "actions_dispatched",
+    "actions_already_applied",
+    "actions_failed",
+    "no_progress",
+    "action",
+)
+
+
+def test_metrics_event_lands_in_perf_with_full_payload(tmp_path):
+    """Event ``step_metrics`` phải **thực sự** có trong ``perf_events.jsonl`` (bug P1-4b)."""
+    ctx, engine = _live_engine(tmp_path)
+    engine.current_step_id = "11111111-2222-3333-4444-555555555555"
+
+    with _Recorder(tmp_path) as rec:
+        reset_turn(ctx)
+        for _ in range(3):
+            add_llm_usage(ctx, _response(17_000, 300, 14_000))
+        add_validation(ctx, total_ms=1200.0, pixel_ms=800.0)
+        finish_execution(ctx, dispatched=1, already_applied=0, failed=0)
+
+        summaries = rec.named("step_metrics")
+        assert len(summaries) == 1, "mỗi bước đúng MỘT event tổng hợp"
+        row = summaries[0]
+        assert row["detail"]["type"] == "metrics"
+        for field in REQUIRED_FIELDS:
+            assert field in row["detail"], field
+        assert row["detail"]["llm_calls"] == 3
+        assert row["detail"]["input_tokens"] == 51_000
+        assert row["detail"]["cached_tokens"] == 42_000
+        assert row["detail"]["validation_ms"] == 1200.0
+        assert row["detail"]["actions_dispatched"] == 1
+        assert row["step_id"] == "11111111-2222-3333-4444-555555555555"
+        assert row["iteration"] == engine.current_step_number  # số bước đúng
+        assert row["duration_ms"] is not None and row["duration_ms"] >= 0  # wall_ms có đo
+        assert row["stage"] == "agent" and row["status"] == "success"
+
+
+def test_a_blocked_turn_still_writes_the_summary_event(tmp_path):
     ctx, engine = _live_engine(tmp_path)
 
-    reset_turn(ctx)
-    add_llm_usage(ctx, _response(1200, 30, 800))
-    finish_execution(ctx, dispatched=1, already_applied=0, failed=0)
-    rec = perf_recorder.get_recorder()
-    if rec is None:
-        # Recorder chỉ được cài khi app/console chạy. Đường gọi `record_trace` đã được unit test
-        # phủ (test_structured_event_carries_every_required_field); ở đây chỉ kiểm bản ghi thật.
-        pytest.skip("không có perf recorder trong môi trường test")
-    rec.close()
+    with _Recorder(tmp_path) as rec:
+        reset_turn(ctx)
+        count_gate_bounce(ctx)
+        finish_operator_turn(ctx, action="blocked")
+        finish_operator_turn(ctx, action="blocked")  # không nhân đôi
 
-    perf = _perf_text(engine)
-    assert "step_metrics" in perf
-    payloads = [
-        json.loads(line)["detail"]
-        for line in perf.splitlines()
-        if line.strip() and "step_metrics" in line and '"detail"' in line
-    ]
-    assert payloads, "event step_metrics phải có payload cấu trúc"
-    assert any(p.get("llm_calls") == 1 and p.get("cached_tokens") == 800 for p in payloads)
+        summaries = rec.named("step_metrics")
+        assert len(summaries) == 1
+        assert summaries[0]["detail"]["action"] == "blocked"
+        assert summaries[0]["detail"]["gate_bounces"] == 1
+        assert summaries[0]["detail"]["no_progress"] is True
+        assert rec.named("step_metrics_turn") == []
+
+
+def test_one_summary_event_per_turn_with_a_partial_turn_event(tmp_path):
+    """Lượt chạy tới pha thực thi: 1 bản rời ``step_metrics_turn`` + 1 bản tổng hợp."""
+    ctx, engine = _live_engine(tmp_path)
+
+    with _Recorder(tmp_path) as rec:
+        reset_turn(ctx)
+        add_llm_usage(ctx, _response(1000, 10, 0))
+        finish_operator_turn(ctx, action="dispatched")
+        finish_execution(ctx, dispatched=1, already_applied=0, failed=0)
+
+        assert len(rec.named("step_metrics")) == 1
+        assert len(rec.named("step_metrics_turn")) == 1
+        summary = rec.named("step_metrics")[0]
+        assert summary["detail"]["action"] == "dispatched"
+        assert summary["detail"]["llm_calls"] == 1  # cùng bộ đếm, không mất số của pha operator
 
 
 def test_metrics_init_failure_is_logged_not_swallowed(caplog):

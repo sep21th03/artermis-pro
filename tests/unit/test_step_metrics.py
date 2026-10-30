@@ -145,34 +145,40 @@ def test_failed_action_is_reported_as_failed():
 
 
 # ── an toàn: đo không được đổi hành vi ──────────────────────────────────
-def test_metrics_never_raise_even_with_a_broken_engine():
-    class Boom:
-        def record_trace(self, **_kwargs):
-            raise RuntimeError("engine down")
+def test_metrics_never_raise_even_when_the_perf_recorder_explodes(monkeypatch):
+    import artemis.perf as perf
 
-    ctx = SimpleNamespace(data_engine=Boom())
-    state = _state()
+    def boom(*_a, **_k):
+        raise RuntimeError("recorder down")
+
+    monkeypatch.setattr(perf, "record_event", boom)
+    ctx = _state()
 
     emit_structured(ctx)  # không được ném
 
 
-def test_structured_event_carries_every_required_field():
+def test_structured_event_carries_every_required_field(monkeypatch):
+    """Đường ghi đúng: ``artemis.perf.record_event`` → PerfRecorder → perf_events.jsonl."""
     captured: dict = {}
+    import artemis.perf as perf
 
-    class Engine:
-        def record_trace(self, **kwargs):
-            captured.update(kwargs)
-            return "trace-id"
+    def fake(stage, event_name, **fields):
+        captured["stage"] = str(stage)
+        captured["event_name"] = event_name
+        captured.update(fields)
 
-    ctx = SimpleNamespace(data_engine=Engine())
+    monkeypatch.setattr(perf, "record_event", fake)
+    ctx = _state()
     add_llm_usage(ctx, _response(1200, 30, 800))
     count_gate_bounce(ctx)
 
     emit_structured(ctx)
 
-    assert captured["type"] == "metrics"
-    assert captured["name"] == "step_metrics"
-    payload = captured["payload"]
+    assert captured["event_name"] == "step_metrics"
+    assert captured["stage"] == "agent"
+    assert captured["iteration"] == 7  # số bước từ holder
+    payload = captured["detail"]
+    assert payload["type"] == "metrics"
     for field in (
         "wall_ms",
         "llm_calls",

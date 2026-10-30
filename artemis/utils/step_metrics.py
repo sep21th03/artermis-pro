@@ -39,6 +39,9 @@ logger = get_logger(__name__)
 #: Tên event có cấu trúc ghi vào perf.
 METRICS_EVENT_NAME = "step_metrics"
 
+#: Bản rời của pha operator (một bước có thể có bản rời + đúng một bản tổng hợp).
+METRICS_TURN_EVENT_NAME = "step_metrics_turn"
+
 
 @dataclass
 class StepMetrics:
@@ -194,7 +197,8 @@ def finish_operator_turn(ctx, *, action: str, force: bool = False) -> StepMetric
     metrics.action = action
     metrics.wall_ms = (time.time() - metrics.started_at) * 1000.0
     metrics.no_progress = action in ("none", "blocked")
-    _emit(ctx, metrics)
+    # Lượt bị gate chặn kết thúc luôn ở pha operator ⇒ bản này **là** bản tổng hợp của bước.
+    _emit(ctx, metrics, summary=action == "blocked")
     return metrics
 
 
@@ -223,36 +227,64 @@ def finish_execution(
     else:
         metrics.action = "none"
     metrics.no_progress = metrics.action != "dispatched"
-    _emit(ctx, metrics)
+    _emit(ctx, metrics, summary=True)
     return metrics
 
 
-def _emit(ctx, metrics: StepMetrics) -> None:
-    """Ghi một dòng log dễ đọc + một event có cấu trúc. Hỏng thì im lặng."""
-    raw_step = getattr(holder_for(ctx), "current_step_number", None)
+def _emit(ctx, metrics: StepMetrics, *, summary: bool) -> None:
+    """Ghi một dòng log dễ đọc + **một** event perf. Hỏng thì im lặng (chỉ cảnh báo)."""
+    holder = holder_for(ctx)
+    raw_step = getattr(holder, "current_step_number", None)
     step: int | str = "-" if raw_step is None else raw_step  # 0 là số bước HỢP LỆ, không phải "-"
     logger.info(metrics.log_line(step=step))
     metrics.emitted = True
-    emit_structured(ctx, metrics)
+    # Mỗi bước đúng **một** event tổng hợp ``step_metrics``: lượt Operator chỉ ghi bản rời
+    # ``step_metrics_turn``, trừ lượt bị gate chặn (kết thúc luôn ở pha operator nên bản đó là
+    # bản tổng hợp của bước).
+    emit_structured(
+        ctx,
+        metrics,
+        event_name=METRICS_EVENT_NAME if summary else METRICS_TURN_EVENT_NAME,
+        step=step,
+    )
 
 
-def emit_structured(ctx, metrics: StepMetrics | None = None) -> None:
-    """Ghi event có cấu trúc vào perf (``type="metrics"``). Tách riêng để test được."""
-    metrics = metrics or metrics_for(holder_for(ctx))
+def emit_structured(
+    ctx,
+    metrics: StepMetrics | None = None,
+    *,
+    event_name: str = METRICS_EVENT_NAME,
+    step: int | str | None = None,
+) -> None:
+    """Ghi event có cấu trúc vào ``perf_events.jsonl`` qua **perf recorder của hệ thống**.
+
+    Vì sao không dùng ``DataEngine.record_trace``: hàm đó chỉ ghi bảng SQLite ``traces`` và publish
+    sự kiện IPC — nó **không** đi tới ``perf_events.jsonl`` (đã đo: phiên d6a68202 có 82 dòng
+    ``[step-metrics]`` nhưng 0 event trong 740 dòng perf). Đường ghi đúng là
+    ``artemis.perf.spans.record_event`` → ``PerfRecorder`` (không tạo cơ chế ghi file song song).
+    """
+    holder = holder_for(ctx)
+    metrics = metrics or metrics_for(holder)
     engine = getattr(ctx, "data_engine", None)
-    if engine is None:
-        return
+    if step is None:
+        raw_step = getattr(holder, "current_step_number", None)
+        step = "-" if raw_step is None else raw_step
     try:
-        from uuid import UUID
+        from artemis.perf import PerfStage, record_event
 
-        raw_step = getattr(engine, "current_step_id", None)
-        step_id = UUID(str(raw_step)) if raw_step else None
-        engine.record_trace(
-            type="metrics",
-            name=METRICS_EVENT_NAME,
-            payload=metrics.as_detail(),
-            step_id=step_id,
+        raw_step_id = getattr(engine, "current_step_id", None)
+        detail = metrics.as_detail()
+        detail["type"] = "metrics"
+        if step is not None:
+            detail["step"] = step
+        record_event(
+            PerfStage.AGENT,
+            event_name,
+            duration_ms=metrics.wall_ms or None,
             status="success",
+            step_id=str(raw_step_id) if raw_step_id else None,
+            iteration=int(step) if isinstance(step, int) else None,
+            detail=detail,
         )
     except Exception as exc:  # noqa: BLE001 - metrics không được làm gãy lượt chạy
-        logger.info(f"step-metrics: không ghi được event có cấu trúc: {exc}")
+        logger.warning(f"step-metrics: không ghi được event có cấu trúc ({event_name}): {exc}")
