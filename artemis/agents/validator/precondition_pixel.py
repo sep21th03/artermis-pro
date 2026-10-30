@@ -248,11 +248,12 @@ async def _run_attempt(
     # Target không còn ở toạ độ cũ. Hai nguyên nhân rất khác nhau, và bản cũ gộp cả hai thành
     # "Action failed" — đó là 3 lần báo oan đo được ở session d110b1ef (Đăng xuất, caret, Quản lý nhà).
     if target_state == _STATE_ALREADY_APPLIED and confidence >= 0.7:
-        # Chỉ nhận "đã áp dụng" khi có **bằng chứng trước/sau**: ảnh quyết định và ảnh hiện tại phải
-        # khác nhau đủ nhiều. Ảnh y hệt ⇒ không có chuyển trạng thái ⇒ vẫn là thất bại (không nới
-        # lỏng kiểm tra an toàn).
-        if _screens_differ(pre_screenshot_b64, live_screenshot_b64):
-            detail = transition or reasoning or "the screen already shows the expected change"
+        # Hai điều kiện, không phải một: (1) VLM nói mục tiêu biến mất **vì** màn hình đã chuyển
+        # đúng hướng, và (2) có **bằng chứng trước/sau** — ảnh khác nhau đủ nhiều **và** VLM mô tả
+        # được chuyển trạng thái đó. Chỉ dHash thì không đủ (mọi thay đổi nhỏ đều đổi hash), và chỉ
+        # lời VLM cũng không đủ (có thể là mục tiêu bị che).
+        detail = transition or reasoning
+        if detail and _screens_differ(pre_screenshot_b64, live_screenshot_b64):
             message = (
                 "Not executed: the target is gone because the screen already moved to the expected"
                 f" state ({detail}). Re-observe the current screen and continue from there; do not"
@@ -261,8 +262,8 @@ async def _run_attempt(
             logger.info(f"Pixel validation: target already applied — {detail}")
             return False, ValidationErrorCategory.PIXEL_ALREADY_APPLIED, message
         logger.info(
-            "Pixel validation: model said already_applied but before/after images are identical;"
-            " treating as a real failure."
+            "Pixel validation: already_applied not proven (need a described transition AND a"
+            " changed before/after screen); treating as a real failure."
         )
 
     # Target not present: fail or bypass based on confidence without retry!

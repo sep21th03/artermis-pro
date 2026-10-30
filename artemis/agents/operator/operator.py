@@ -53,12 +53,20 @@ from artemis.utils.plan_grammar import (
     plan_digest,
     plan_self_heal_candidate,
     plan_with_progress,
+    repeat_bounce_message,
     repeat_bounce_suppressed,
     settle_completed_milestones,
 )
 from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import get_active_subgoal_hashes
 from artemis.utils.visualization import format_minimal_list_with_elements
+from artemis.utils.step_metrics import (
+    add_llm_usage,
+    count_gate_bounce,
+    count_plan_self_heal,
+    finish_operator_turn,
+    metrics_for,
+)
 from third_party.mobile_use.utils.decorators import agent_lifecycle_logging
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -567,6 +575,7 @@ class OperatorNode:
 
             bound_llm = base_llm.bind_tools(tools=traced_tools)
             response = await invoke_llm_with_timeout_message(acomplete(bound_llm, current_messages))
+            add_llm_usage(state, response)
 
             usage = usage_from_message(response)
             # The ledger's compaction thresholds read the operator's own
@@ -827,19 +836,22 @@ class OperatorNode:
                         healed = self._try_plan_self_heal(state)
                         if healed:
                             logger.info(f"Plan ledger gate: tự mở `[/]` — {healed}")
+                            count_plan_self_heal(state)
                         else:
                             bounce = self._plan_ledger_bounce_reason()
                             current_plan = self._read_task_plan_text() or ""
                             if bounce and repeat_bounce_suppressed(
                                 self._last_gate_bounce, current_plan
                             ):
-                                # Cùng lý do, kế hoạch không đổi ⇒ không bounce lặp (mỗi lần bounce là
-                                # một lượt LLM vô ích). Cho action chạy và ghi cảnh báo để còn dấu vết.
+                                # Cùng lý do + kế hoạch không đổi: KHÔNG lặp lại câu cũ (mỗi lần bounce
+                                # là một lượt LLM vô ích) — nhưng **cũng không cho action vượt gate**
+                                # khi kế hoạch vẫn không hợp lệ. Thay vào đó nói rõ các ứng viên đang
+                                # mở để agent chọn: thông tin mới, không phải bản lặp.
+                                bounce = repeat_bounce_message(current_plan)
                                 logger.warning(
-                                    "Plan ledger gate: bỏ qua bounce lặp (kế hoạch không đổi kể từ"
-                                    f" lần bounce trước): {bounce}"
+                                    "Plan ledger gate: cùng lý do, kế hoạch không đổi — nêu ứng viên"
+                                    " cụ thể thay vì bounce lặp (action vẫn bị chặn)."
                                 )
-                                bounce = None
                             elif bounce:
                                 self._last_gate_bounce = (bounce, plan_digest(current_plan))
                     if bounce is None:
@@ -849,6 +861,7 @@ class OperatorNode:
                 if bounce:
                     plan_gate_bounced = True
                     validation_errors = True
+                    count_gate_bounce(state)
                     logger.info(f"Plan ledger gate: bouncing action. {bounce}")
                     for tc in action_calls:
                         tool_outputs.append(
@@ -963,6 +976,13 @@ class OperatorNode:
         steps, task_plan = self._get_history_and_plan()
         self._turn_plan_baseline = self._plan_ledger_baseline(task_plan)
         self._turn_ledger_streak = unwritten_action_streak(steps)
+        # Số đo của lượt bắt đầu lại từ 0 (mỗi lượt một bộ đếm; validator đọc rồi chốt sau khi chạy).
+        try:
+            from artemis.utils.step_metrics import StepMetrics
+
+            state.step_metrics = StepMetrics()
+        except Exception as exc:  # noqa: BLE001 - đo hiệu năng không được làm hỏng lượt
+            logger.info(f"step-metrics: không khởi tạo được bộ đếm lượt: {exc}")
 
         # 4. Format minimal list
 
@@ -1054,6 +1074,19 @@ class OperatorNode:
 
         # 9. Update State
         structured_decisions = json.dumps(action_result) if action_result else None
+
+        # Số đo hiệu năng của lượt: chỉ cộng số đã có sẵn (không gọi thêm LLM, không đổi luồng).
+        try:
+            _metrics = metrics_for(state)
+            if _metrics.actions_blocked_by_gate:
+                _turn_action = "blocked"
+            elif structured_decisions:
+                _turn_action = "dispatched"
+            else:
+                _turn_action = "none"
+            finish_operator_turn(state, action=_turn_action, ctx=self.ctx)
+        except Exception as exc:  # noqa: BLE001 - đo hiệu năng không được làm hỏng lượt
+            logger.info(f"step-metrics: không chốt được số đo lượt: {exc}")
 
         # Trạng thái công đoạn **do code dựng** (không phải lời agent tự khai): đi vào graph state để
         # lượt sau và các node khác (convergence gate, exit settlement) đọc được "công đoạn nào đã

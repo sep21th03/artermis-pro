@@ -188,3 +188,20 @@ def test_old_model_answer_without_target_state_keeps_old_behaviour():
     )
 
     assert verdict[1] == ValidationErrorCategory.PIXEL_TARGET_DISAPPEARED
+
+
+def test_already_applied_needs_a_described_transition_not_only_a_changed_screen():
+    """Bất biến: dHash khác **không đủ**. Phải có mô tả chuyển trạng thái (transition/reasoning)."""
+    verdict = _verdict(
+        {
+            "reasoning": "",
+            "is_present": False,
+            "confidence": 1.0,
+            "target_state": "already_applied",
+            "transition": "",
+        },
+        pre=_png(1),
+        live=_png(200),  # ảnh ĐỔI — nhưng không ai nói đổi vì cái gì ⇒ vẫn là thất bại
+    )
+
+    assert verdict[1] == ValidationErrorCategory.PIXEL_TARGET_DISAPPEARED

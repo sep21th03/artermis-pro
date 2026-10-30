@@ -25,6 +25,7 @@ Ca thật (session ``d110b1ef`` / task ``1371db04``): kế hoạch bị nhân b�
 from artemis.utils.plan_grammar import (
     plan_digest,
     plan_self_heal_candidate,
+    repeat_bounce_message,
     repeat_bounce_suppressed,
 )
 
@@ -97,3 +98,18 @@ def test_a_repeat_bounce_with_an_unchanged_plan_is_suppressed():
     assert repeat_bounce_suppressed(previous, plan + "- [x] C\n") is False
     # Chưa từng bounce ⇒ không chặn gì.
     assert repeat_bounce_suppressed(None, plan) is False
+
+
+def test_a_repeat_bounce_still_blocks_the_action_and_names_the_candidates():
+    """Bất biến P0: bounce lặp **không** được cho action vượt gate khi kế hoạch vẫn không hợp lệ.
+
+    Thay vì lặp câu cũ (tốn một lượt LLM mà không thêm thông tin), gate nói **rõ các ứng viên đang
+    mở** để agent chọn — nhưng vẫn là câu ``Not executed: …`` (action vẫn bị chặn).
+    """
+    plan = "- [x] A\n- [ ] B\n- [ ] C\n"
+
+    message = repeat_bounce_message(plan)
+
+    assert message.startswith("Not executed:")
+    assert "B" in message and "C" in message  # nêu đúng các ứng viên đang mở
+    assert "[/]" in message

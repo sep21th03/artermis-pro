@@ -719,6 +719,37 @@ def plan_digest(plan_text: str) -> str:
     return _plan_digest(plan_text)
 
 
+def plan_ledger_candidates(task_plan: str) -> list[str]:
+    """Các ứng viên còn mơ hồ của ledger (để gate nói **rõ** agent phải chọn cái nào).
+
+    Dùng khi tự chữa không được: thay vì lặp lại cùng một câu "hãy mở `[/]`", gate liệt kê đúng các
+    milestone/dòng con đang mở ⇒ lượt sau là thông tin **mới**, không phải bản lặp.
+    """
+    snapshot = parse_plan(task_plan or "")
+    if not snapshot.has_top_level:
+        return []
+    milestone = snapshot.active_milestone()
+    if milestone is None:
+        return [item.text for item in snapshot.top_level if not item.is_done]
+    children = [item.text for item in snapshot.children_of(milestone) if not item.is_done]
+    return children or [milestone.text]
+
+
+def repeat_bounce_message(plan_text: str) -> str:
+    """Thông điệp cho lần bounce **lặp** (kế hoạch không đổi): nêu **ứng viên cụ thể**, không lặp câu cũ.
+
+    Bất biến quan trọng: hàm này luôn trả một câu **chặn** action (``Not executed: …``) — không bao
+    giờ trả chuỗi rỗng để nơi gọi vô tình cho action vượt gate khi kế hoạch vẫn không hợp lệ.
+    """
+    candidates = plan_ledger_candidates(plan_text)
+    listed = "; ".join(f"«{text[:70]}»" for text in candidates[:4]) or "«(không đọc được mục nào)»"
+    return (
+        "Not executed: the plan ledger is still invalid (no milestone or sub-goal marked `[/]`)."
+        " Pick exactly one of the open items and open it with update_note (key task_plan):"
+        f" {listed}."
+    )
+
+
 def repeat_bounce_suppressed(previous: tuple[str, str] | None, plan_text: str) -> bool:
     """Đã từng bounce vì **đúng kế hoạch này** chưa? (⇒ lần này không bounce lại).
 

@@ -78,6 +78,23 @@ def test_distinct_milestones_are_left_alone():
     assert text == plan
 
 
+def test_milestones_with_similar_but_different_purposes_are_not_merged():
+    """Bất biến: chỉ gộp khi **giống nhau sau khi bỏ trạng thái** — khác mục đích thì giữ cả hai."""
+    plan = (
+        "- [x] Chuyển sang nhà Dled\n"
+        "- [ ] Chuyển sang nhà Dled (phòng khách)\n"
+        "- [ ] Chuyển sang nhà khác\n"
+        "- [x] Chuyển sang nhà Dled\n"  # chỉ dòng này mới là bản trùng của dòng 1
+    )
+
+    text, removed = collapse_duplicate_plan_blocks(plan)
+
+    assert removed == 1
+    assert text.count("Chuyển sang nhà Dled\n") == 1
+    assert "Chuyển sang nhà Dled (phòng khách)" in text
+    assert "Chuyển sang nhà khác" in text
+
+
 def test_a_plan_without_duplicates_is_byte_identical():
     plan = "- [x] A\n  - verify: done\n- [ ] B\n"
 

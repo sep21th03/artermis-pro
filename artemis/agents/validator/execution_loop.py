@@ -164,20 +164,36 @@ async def _run_precondition_gate(
     )
 
     async def _pixel_check() -> tuple[bool, ValidationErrorCategory, str]:
-        return await node._validate_action_precondition_pixel(
+        started = time.time()
+        verdict = await node._validate_action_precondition_pixel(
             session, action_item, pre_screenshot_b64, original_coords, state=state
         )
+        # Số đo: thời gian pixel check (chỉ cộng số, không đổi luồng).
+        try:
+            from artemis.utils.step_metrics import add_validation
+
+            add_validation(state, total_ms=0.0, pixel_ms=(time.time() - started) * 1000.0)
+        except Exception:  # noqa: BLE001 - đo không được làm gãy lượt
+            pass
+        return verdict
 
     if not has_index_metadata:
         # Pure coordinate/non-index interactions: pixel-based validation is the only gate.
         return await _pixel_check()
 
     # Index-based validation is fastest and safest when metadata is present
+    _gate_started = time.time()
     (
         validation_passed,
         validation_category,
         validation_error,
     ) = await node._validate_action_precondition(session, action_item, state=state)
+    try:
+        from artemis.utils.step_metrics import add_validation
+
+        add_validation(state, total_ms=(time.time() - _gate_started) * 1000.0)
+    except Exception:  # noqa: BLE001
+        pass
 
     if validation_passed:
         return validation_passed, validation_category, validation_error
@@ -576,6 +592,21 @@ async def run_validation_loop(node, state: State) -> dict:
         "burst": burst,
         "incident": incident,
     }
+
+    # Số đo của bước: phân loại rõ dispatched / already_applied / failed / blocked (không gọi LLM).
+    try:
+        from artemis.utils.step_metrics import finish_execution
+
+        finish_execution(
+            state,
+            dispatched=sum(1 for item in execution if item.get("attempts") == ["Dispatched"])
+            or (1 if success else 0),
+            already_applied=1 if already_applied else 0,
+            failed=0 if success or already_applied else 1,
+            ctx=ctx,
+        )
+    except Exception as exc:  # noqa: BLE001 - đo hiệu năng không được làm gãy lượt
+        logger.info(f"step-metrics: không chốt được số đo bước: {exc}")
 
     # Determine if a distinct post-action screenshot was captured
     distinct_post_image_name = (
