@@ -61,6 +61,7 @@ class StepMetrics:
     no_progress: bool = False
     action: str = "none"
     phase: str = "operator"
+    emitted: bool = False
     started_at: float = field(default_factory=time.time)
 
     def add_llm_usage(self, response) -> None:
@@ -138,12 +139,16 @@ def add_validation(state, *, total_ms: float, pixel_ms: float = 0.0) -> None:
     metrics_for(state).add_validation(total_ms=total_ms, pixel_ms=pixel_ms)
 
 
-def finish_operator_turn(state, *, action: str, ctx=None) -> StepMetrics:
+def finish_operator_turn(state, *, action: str, ctx=None, force: bool = False) -> StepMetrics:
     """Chốt lượt Operator: ``wall_ms`` + loại action; phát log (+ event nếu có ``ctx``).
 
     ``action`` ∈ ``dispatched`` | ``already_applied`` | ``failed`` | ``blocked`` | ``none``.
+    Lượt bị gate chặn **thoát sớm** (trước cuối lượt) nên phải gọi ở đúng chỗ chặn; ``emitted`` giữ
+    cho lượt chỉ được chốt **một lần** (không nhân đôi dòng log/event).
     """
     metrics = metrics_for(state)
+    if metrics.emitted and not force:
+        return metrics
     metrics.phase = "operator"
     metrics.action = action
     metrics.wall_ms = (time.time() - metrics.started_at) * 1000.0
@@ -190,6 +195,7 @@ def _emit(state, metrics: StepMetrics, *, ctx=None) -> None:
     except Exception:  # noqa: BLE001
         step = "-"
     logger.info(metrics.log_line(step=step))
+    metrics.emitted = True
     if ctx is not None:
         emit_structured(ctx, state, metrics)
 

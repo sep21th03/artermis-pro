@@ -862,6 +862,9 @@ class OperatorNode:
                     plan_gate_bounced = True
                     validation_errors = True
                     count_gate_bounce(state)
+                    # Lượt này **thoát sớm** (action bị chặn) ⇒ chốt số đo ngay tại đây, nếu không
+                    # sẽ mất dòng `action=blocked` của đúng loại lượt đáng đếm nhất.
+                    finish_operator_turn(state, action="blocked", ctx=self.ctx)
                     logger.info(f"Plan ledger gate: bouncing action. {bounce}")
                     for tc in action_calls:
                         tool_outputs.append(

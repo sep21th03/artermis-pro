@@ -229,3 +229,16 @@ def test_metrics_object_is_per_turn():
 
     state.step_metrics = StepMetrics()  # lượt mới
     assert metrics_for(state).llm_calls == 0
+
+
+def test_a_bounced_turn_is_emitted_once_even_when_closed_early():
+    """Lượt bị gate chặn thoát sớm: chốt tại chỗ chặn, và cuối lượt không phát lại lần hai."""
+    state = _state(current_step_number=7)
+
+    count_gate_bounce(state)
+    finish_operator_turn(state, action="blocked")  # tại chỗ chặn
+    again = finish_operator_turn(state, action="blocked")  # cuối lượt: bỏ qua
+
+    assert again.emitted is True
+    assert state.step_metrics.gate_bounces == 1
+    assert state.step_metrics.action == "blocked"
