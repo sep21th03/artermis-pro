@@ -48,7 +48,14 @@ from artemis.utils.coordinates import (
     parse_swipe_parameters,
 )
 from artemis.utils.notes import get_note_file_path
-from artemis.utils.plan_grammar import parse_plan, plan_with_progress, settle_completed_milestones
+from artemis.utils.plan_grammar import (
+    parse_plan,
+    plan_digest,
+    plan_self_heal_candidate,
+    plan_with_progress,
+    repeat_bounce_suppressed,
+    settle_completed_milestones,
+)
 from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import get_active_subgoal_hashes
 from artemis.utils.visualization import format_minimal_list_with_elements
@@ -155,6 +162,9 @@ class OperatorNode:
         self._transcript_turn_base: int | None = None
         self._turn_plan_baseline: str | None = None
         self._turn_ledger_streak: int = 0
+        #: Lần bounce gate gần nhất: ``(lý do, vân tay kế hoạch)`` — để không bounce lặp cùng lý do
+        #: khi kế hoạch không đổi (đo được 10 lần bounce liên tiếp ở session d110b1ef).
+        self._last_gate_bounce: tuple[str, str] | None = None
         #: Định danh (số điện thoại/email) đã **thật sự** xuất hiện trên màn hình — bằng chứng
         #: cho các giá trị trạng thái phải xác minh (xem ``render_state_evidence_bounce``).
         self._observed_identifiers: set[str] = set()
@@ -811,7 +821,27 @@ class OperatorNode:
                     and not getattr(state, "open_incident", None)
                 ):
                     if self._plan_changed_this_turn() is False:
-                        bounce = self._plan_ledger_bounce_reason()
+                        # Trước khi bounce: thử **tự chữa** ledger. Chỉ khi duy nhất một ứng viên
+                        # (một milestone chưa xong, hoặc một dòng con chưa xong dưới milestone đang
+                        # làm) — mơ hồ thì giữ gate và nói rõ lý do, không đoán.
+                        healed = self._try_plan_self_heal(state)
+                        if healed:
+                            logger.info(f"Plan ledger gate: tự mở `[/]` — {healed}")
+                        else:
+                            bounce = self._plan_ledger_bounce_reason()
+                            current_plan = self._read_task_plan_text() or ""
+                            if bounce and repeat_bounce_suppressed(
+                                self._last_gate_bounce, current_plan
+                            ):
+                                # Cùng lý do, kế hoạch không đổi ⇒ không bounce lặp (mỗi lần bounce là
+                                # một lượt LLM vô ích). Cho action chạy và ghi cảnh báo để còn dấu vết.
+                                logger.warning(
+                                    "Plan ledger gate: bỏ qua bounce lặp (kế hoạch không đổi kể từ"
+                                    f" lần bounce trước): {bounce}"
+                                )
+                                bounce = None
+                            elif bounce:
+                                self._last_gate_bounce = (bounce, plan_digest(current_plan))
                     if bounce is None:
                         # Code kiểm bằng chứng trước: một giá trị trạng thái (tài khoản/nhà…)
                         # chỉ được coi là đã xác minh khi chuỗi đó đã từng thấy trên màn hình.
@@ -1098,6 +1128,50 @@ class OperatorNode:
         return render_plan_ledger_bounce(
             current, self._turn_ledger_streak, self._plan_ledger_stale_turns()
         )
+
+    def _try_plan_self_heal(self, state: State) -> str | None:
+        """Tự mở ``[/]`` trong note kế hoạch khi **duy nhất một** ứng viên; trả lý do, hoặc ``None``.
+
+        Vì sao: mỗi lần gate bounce là một lượt LLM vô ích (đo được **10 lần** ở session
+        ``d110b1ef``). Khi ExecutionState + kế hoạch hiện tại chỉ ra **đúng một** sub-goal hợp lệ thì
+        việc sửa là xác định, không cần hỏi model. Mơ hồ (nhiều milestone/dòng con chưa xong) thì
+        trả ``None`` để gate giữ nguyên và nói rõ lý do.
+
+        Chỉ **ký tự trạng thái** bị đổi; nội dung, ``verify``/``assert`` giữ nguyên từng ký tự.
+        """
+        engine = getattr(self.ctx, "data_engine", None)
+        current = self._read_task_plan_text()
+        if current is None or engine is None:
+            return None
+
+        prefer = ""
+        try:
+            from artemis.utils.execution_state import build_execution_state
+
+            exec_state = build_execution_state(
+                current,
+                getattr(state, "initial_goal", "") or "",
+                " ".join(sorted(self._observed_identifiers)),
+            )
+            active = exec_state.active() if exec_state is not None else None
+            prefer = getattr(active, "text", "") or ""
+        except Exception as exc:  # noqa: BLE001 - không dựng được state thì vẫn thử chữa theo plan
+            logger.info(f"Plan ledger gate: không dựng được ExecutionState để chữa ledger: {exc}")
+
+        candidate = plan_self_heal_candidate(current, prefer=prefer)
+        if candidate is None:
+            return None
+        healed_text, reason = candidate
+        if healed_text == current:
+            return None
+        try:
+            from artemis.utils.notes import save_note_content
+
+            save_note_content(engine.base_dir, "task_plan", healed_text)
+        except Exception as exc:  # noqa: BLE001 - ghi hỏng thì để gate xử lý như cũ
+            logger.warning(f"Plan ledger gate: tự chữa ledger không ghi được: {exc}")
+            return None
+        return reason
 
     def _state_evidence_bounce_reason(self, state: State) -> str | None:
         """Bounce khi agent chốt một giá trị trạng thái **chưa từng thấy** trên màn hình.

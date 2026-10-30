@@ -35,6 +35,7 @@ from artemis.context import ArtemisContext
 from artemis.graph.state import State
 from artemis.services.llm import acomplete_structured
 from artemis.utils import visualization
+from artemis.utils.image_hash import dhash_hex
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -52,6 +53,33 @@ PIXEL_VALIDATED_ACTIONS = (
 
 _MAX_ATTEMPTS = 3
 _RETRY_DELAY_SECONDS = 0.3
+
+#: ``target_state`` do VLM trả về khi target biến mất **vì màn hình đã chuyển đúng hướng** hành động.
+_STATE_ALREADY_APPLIED = "already_applied"
+
+#: Ngưỡng khác biệt dHash (bit/64) để coi là "màn hình đã đổi". Đặt cao hơn nhiễu nhỏ (đồng hồ
+#: trên status bar, icon pin) nhưng thấp hơn hẳn một lần chuyển màn hình thật.
+_SCREEN_CHANGE_BITS = 6
+
+
+def _screens_differ(pre_screenshot_b64: str, live_screenshot_b64: str) -> bool:
+    """Bằng chứng trước/sau: hai ảnh có khác nhau đủ nhiều để coi là đã chuyển trạng thái?
+
+    Dùng dHash (64 bit) + khoảng cách Hamming. Không đọc được ảnh ⇒ trả ``False`` (không đủ bằng
+    chứng, nên KHÔNG được nới lỏng kết luận an toàn).
+    """
+    try:
+        before = dhash_hex(base64.b64decode(pre_screenshot_b64))
+        after = dhash_hex(base64.b64decode(live_screenshot_b64))
+    except Exception:  # noqa: BLE001 - thiếu bằng chứng thì coi như không đổi
+        return False
+    if not before or not after:
+        return False
+    try:
+        distance = bin(int(before, 16) ^ int(after, 16)).count("1")
+    except ValueError:
+        return False
+    return distance >= _SCREEN_CHANGE_BITS
 
 
 def _init_llm_and_prompt(ctx: ArtemisContext, get_llm_fn):
@@ -161,6 +189,8 @@ async def _run_attempt(
     action_item: dict,
     state: State | None,
     attempt: int,
+    *,
+    pre_screenshot_b64: str = "",
 ) -> tuple[bool, ValidationErrorCategory, str] | None:
     """Runs one pixel validation attempt.
 
@@ -201,16 +231,39 @@ async def _run_attempt(
     reasoning = res_json.get("reasoning", "")
     is_present = res_json.get("is_present", True)
     confidence = res_json.get("confidence", 1.0)
+    target_state = str(res_json.get("target_state") or "").strip().lower()
+    transition = str(res_json.get("transition") or "").strip()
 
     logger.info(
         f"Pixel validation attempt {attempt}/{_MAX_ATTEMPTS} result:"
-        f" is_present={is_present}, confidence={confidence:.2f}, reasoning={reasoning}"
+        f" is_present={is_present}, target_state={target_state or '-'}, confidence={confidence:.2f},"
+        f" reasoning={reasoning}"
     )
 
     # E. Branching based on outcome
     if is_present:
         logger.info(f"Pixel validation SUCCESS on attempt {attempt}/{_MAX_ATTEMPTS}.")
         return True, ValidationErrorCategory.NONE, ""
+
+    # Target không còn ở toạ độ cũ. Hai nguyên nhân rất khác nhau, và bản cũ gộp cả hai thành
+    # "Action failed" — đó là 3 lần báo oan đo được ở session d110b1ef (Đăng xuất, caret, Quản lý nhà).
+    if target_state == _STATE_ALREADY_APPLIED and confidence >= 0.7:
+        # Chỉ nhận "đã áp dụng" khi có **bằng chứng trước/sau**: ảnh quyết định và ảnh hiện tại phải
+        # khác nhau đủ nhiều. Ảnh y hệt ⇒ không có chuyển trạng thái ⇒ vẫn là thất bại (không nới
+        # lỏng kiểm tra an toàn).
+        if _screens_differ(pre_screenshot_b64, live_screenshot_b64):
+            detail = transition or reasoning or "the screen already shows the expected change"
+            message = (
+                "Not executed: the target is gone because the screen already moved to the expected"
+                f" state ({detail}). Re-observe the current screen and continue from there; do not"
+                " repeat this tap."
+            )
+            logger.info(f"Pixel validation: target already applied — {detail}")
+            return False, ValidationErrorCategory.PIXEL_ALREADY_APPLIED, message
+        logger.info(
+            "Pixel validation: model said already_applied but before/after images are identical;"
+            " treating as a real failure."
+        )
 
     # Target not present: fail or bypass based on confidence without retry!
     if confidence >= 0.7:
@@ -299,6 +352,7 @@ async def validate_action_precondition_pixel(
                 action_item,
                 state,
                 attempt,
+                pre_screenshot_b64=pre_screenshot_b64,
             )
             if verdict is not None:
                 return verdict

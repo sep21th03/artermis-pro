@@ -28,6 +28,12 @@ class ValidationErrorCategory(StrEnum):
     TARGET_SHIFTED = "target_shifted"
     TARGET_OCCUPIED = "target_occupied"
     PIXEL_TARGET_DISAPPEARED = "pixel_target_disappeared"
+    #: Target đã biến mất **vì màn hình đã chuyển sang trạng thái mà hành động nhắm tới** (dialog
+    #: đóng, sang màn mới, picker mở). Không phải lỗi: hành động **không được thực thi** (toạ độ cũ
+    #: không còn ý nghĩa) nhưng cũng **không** tính là thất bại ⇒ không mở incident, không đẩy agent
+    #: vào vòng thử lại. Đo trên session ``d110b1ef``: 3 lần bị báo "Action failed" oan vì lý do này
+    #: (nút xác nhận Đăng xuất, caret chọn tài khoản, "Quản lý nhà").
+    PIXEL_ALREADY_APPLIED = "pixel_already_applied"
     PIXEL_BYPASSED = "pixel_bypassed"
     XML_BYPASSED = "xml_bypassed"
     GENERAL = "general"

@@ -12,4 +12,11 @@ Rules
 
 Output
 Return EXACTLY this raw JSON and nothing else. Keep reasoning strictly under 35 words.
-{"reasoning": "brief explanation", "is_present": boolean, "confidence": float}
+{"reasoning": "brief explanation", "is_present": boolean, "confidence": float, "target_state": "present|already_applied|blocked", "transition": "short description of the screen change, or empty"}
+
+target_state — why the target is or is not usable:
+- present: the target control is still visible at the red dot (same value as is_present true).
+- already_applied: the control is gone **because the screen already moved to the state the action was meant to produce** — the dialog closed, the page advanced, the list/picker opened, the logout/login screen appeared. Put what changed in the transition field (e.g. "logout dialog closed, login screen shown").
+- blocked: the control is gone, covered, or the screen did not move at all. This is a real failure: the tap would land on nothing useful.
+
+When is_present is false, target_state MUST say which of the two it is. Use Image 1 vs Image 2 as before/after evidence: if Image 2 is essentially the same screen as Image 1, the answer is blocked, not already_applied.

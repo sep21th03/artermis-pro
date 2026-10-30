@@ -25,6 +25,20 @@ from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+#: Dòng checkbox của kế hoạch (cùng cú pháp với ``artemis.utils.plan_grammar``): giữ cả nhóm
+#: ``indent`` và ``status`` để gộp khối mà **không** làm mất trạng thái đã đạt.
+_PLAN_LINE_RE = re.compile(r"^(?P<indent>\s*)-\s*\[(?P<status>[ x/!])\]\s*(?P<text>.*)$")
+
+#: Mức "đã đi xa" của trạng thái — khi gộp hai bản trùng thì giữ mức xa nhất.
+_PLAN_STATUS_RANK = {" ": 0, "!": 1, "/": 2, "x": 3}
+
+#: Câu cảnh báo trả cho agent khi note ``task_plan`` bị gộp bản trùng lúc ghi.
+PLAN_DEDUP_WARNING = (
+    "Ghi chú: kế hoạch có {count} khối milestone trùng nhau (do lần sửa trước chèn lại cả kế"
+    " hoạch) nên đã được gộp tại chỗ; trạng thái checkbox xa nhất và mọi dòng verify/assert được"
+    " giữ. Hãy đọc lại note trước khi sửa tiếp."
+)
+
 # Centralized Description and Documentation Constants (Single Source of Truth)
 READ_NOTE_DOCSTRING = (
     "[NOTE] Reads a previously saved note from persistent memory by its"
@@ -161,6 +175,13 @@ def save_note_content(base_dir: str | Path, key: str, content: str) -> None:
                 " rename tracking will be skipped for this save: %s",
                 file_path,
                 exc,
+            )
+
+    if key == "task_plan":
+        content, collapsed = collapse_duplicate_plan_blocks(content)
+        if collapsed:
+            logger.warning(
+                f"task_plan: gộp {collapsed} khối milestone trùng trước khi ghi (save_note)"
             )
 
     file_path.write_text(content, encoding="utf-8")
@@ -351,6 +372,14 @@ def update_note_content(
 
     # Phase 4: Write and Return, or Not Found Error
     if new_content_to_write is not None:
+        if key == "task_plan":
+            new_content_to_write, collapsed = collapse_duplicate_plan_blocks(new_content_to_write)
+            if collapsed:
+                logger.warning(
+                    f"task_plan: gộp {collapsed} khối milestone trùng trước khi ghi (update_note)"
+                )
+                dedup_note = PLAN_DEDUP_WARNING.format(count=collapsed)
+                warning = f"{warning} {dedup_note}".strip() if warning else dedup_note
         file_path.write_text(new_content_to_write, encoding="utf-8")
         if key == "task_plan":
             try:
@@ -368,6 +397,134 @@ def update_note_content(
 
 
 # Shared Formatting Functions for Tool Outputs
+
+
+def _plan_block_key(text: str) -> str:
+    """Khoá so trùng của một dòng kế hoạch: bỏ trạng thái checkbox, gộp khoảng trắng, hạ chữ."""
+    match = _PLAN_LINE_RE.match(text)
+    body = match.group("text") if match else text
+    return re.sub(r"\s+", " ", body).strip().lower()
+
+
+def _plan_status_rank(status: str) -> int:
+    """Mức "đã đi xa" của một trạng thái checkbox — dùng khi gộp hai bản trùng."""
+    return _PLAN_STATUS_RANK.get(status, 0)
+
+
+def _split_plan_blocks(content: str) -> tuple[list[str], list[list[str]], list[str]]:
+    """Tách note kế hoạch thành ``(đầu, các khối cấp cao nhất, đuôi)``.
+
+    Một khối = dòng checkbox ở **mức thụt nhỏ nhất** + mọi dòng theo sau nó (dòng con, ``verify``/
+    ``assert``, dòng trống) cho tới khi gặp khối kế tiếp. Giữ nguyên văn từng dòng để không mất
+    định dạng của agent.
+    """
+    lines = content.splitlines()
+    indent = None
+    for line in lines:
+        match = _PLAN_LINE_RE.match(line)
+        if match:
+            depth = len(match.group("indent"))
+            indent = depth if indent is None else min(indent, depth)
+    if indent is None:
+        return lines, [], []
+
+    head: list[str] = []
+    blocks: list[list[str]] = []
+    tail: list[str] = []
+    current: list[str] | None = None
+    for line in lines:
+        match = _PLAN_LINE_RE.match(line)
+        is_top = bool(match) and len(match.group("indent")) == indent
+        if is_top:
+            if current is not None:
+                blocks.append(current)
+            current = [line]
+        elif current is not None:
+            current.append(line)
+        elif blocks:
+            tail.append(line)
+        else:
+            head.append(line)
+    if current is not None:
+        blocks.append(current)
+    return head, blocks, tail
+
+
+def _merge_plan_blocks(blocks: list[list[str]]) -> tuple[list[list[str]], int]:
+    """Gộp các khối trùng nhau, giữ trạng thái xa nhất và hợp các dòng con/kiểm tra."""
+    merged: list[list[str]] = []
+    index_of: dict[str, int] = {}
+    removed = 0
+    for block in blocks:
+        key = _plan_block_key(block[0])
+        if key and key in index_of:
+            target = merged[index_of[key]]
+            target[0] = _merge_plan_line(target[0], block[0])
+            seen_children = {_plan_block_key(line) for line in target[1:] if line.strip()}
+            for line in block[1:]:
+                child_key = _plan_block_key(line)
+                if not child_key:
+                    continue
+                if child_key in seen_children:
+                    # Dòng con đã có: nếu là checkbox thì nâng trạng thái tại chỗ (giữ tiến độ).
+                    if _PLAN_LINE_RE.match(line):
+                        for idx, existing in enumerate(target[1:], start=1):
+                            if _plan_block_key(existing) == child_key:
+                                target[idx] = _merge_plan_line(existing, line)
+                                break
+                    continue
+                target.append(line)
+                seen_children.add(child_key)
+            removed += 1
+            continue
+        if key:
+            index_of[key] = len(merged)
+        merged.append(list(block))
+    return merged, removed
+
+
+def _merge_plan_line(first: str, second: str) -> str:
+    """Giữ dòng ``first`` nhưng nâng trạng thái checkbox lên mức xa nhất của hai dòng."""
+    a = _PLAN_LINE_RE.match(first)
+    b = _PLAN_LINE_RE.match(second)
+    if not a or not b:
+        return first
+    if _plan_status_rank(b.group("status")) <= _plan_status_rank(a.group("status")):
+        return first
+    return first[: a.start("status")] + b.group("status") + first[a.end("status") :]
+
+
+def collapse_duplicate_plan_blocks(content: str) -> tuple[str, int]:
+    """Gộp các khối milestone **trùng nhau** trong một note ``task_plan``; trả ``(text, số gộp)``.
+
+    **Vì sao cần** (đo trên session ``d110b1ef``, task ``1371db04``): agent gọi ``update_note`` với
+    ``target`` chỉ khớp **một phần** kế hoạch nhưng ``replacement`` là **cả kế hoạch**, nên mỗi lần
+    sửa lại chèn thêm một bản của các milestone còn lại ⇒ ``task_plan.md`` có cùng 4 milestone lặp
+    **4 lần**. Hậu quả đo được: gate ledger bounce **10 lần**, checker khai **6 tiêu chí với 4 bản
+    trùng**, prompt phình và lượt LLM vô ích.
+
+    Sửa **tại nguồn ghi** (không phải dedup lúc đọc): gộp theo vị trí khối cấp cao nhất, giữ
+
+    * vị trí xuất hiện **đầu tiên** (thứ tự kế hoạch không đổi);
+    * trạng thái checkbox **xa nhất** (``x`` > ``/`` > ``!`` > `` ``) ⇒ không mất tiến độ;
+    * hợp các dòng con và các dòng ``verify``/``assert`` ⇒ **không mất tiêu chí kiểm**.
+
+    Chỉ gộp khi hai khối giống nhau **sau khi bỏ trạng thái**; khối khác nội dung giữ nguyên.
+    """
+    head, blocks, tail = _split_plan_blocks(content)
+    if len(blocks) < 2:
+        return content, 0
+    merged, removed = _merge_plan_blocks(blocks)
+    if not removed:
+        return content, 0
+    lines = [*head]
+    for block in merged:
+        lines.extend(block)
+    lines.extend(tail)
+    text = "\n".join(lines)
+    if content.endswith("\n") and not text.endswith("\n"):
+        text += "\n"
+    return text, removed
 
 
 def format_read_note_success(

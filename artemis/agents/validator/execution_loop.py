@@ -140,6 +140,10 @@ class _ActionOutcome:
     error_msg: str = ""
     error_category: ValidationErrorCategory = ValidationErrorCategory.GENERAL
     intercepted: bool = False
+    #: Target biến mất vì màn hình **đã chuyển đúng hướng** hành động (dialog đóng, sang màn mới).
+    #: Hành động không được thực thi nhưng **không** phải thất bại: không mở incident, không đếm vào
+    #: chuỗi lỗi, và thông điệp cho Operator là hướng dẫn quan sát lại (xem session d110b1ef).
+    already_applied: bool = False
     post_screenshot_b64: str | None = None
 
 
@@ -278,11 +282,23 @@ async def _process_action(
             node, session, action_item, state, pre_screenshot_b64, original_coords
         )
         if not validation_passed:
-            outcome.success = False
-            outcome.intercepted = True
-            outcome.error_msg = f"Pre-execution validation failed: {validation_error}"
-            outcome.error_category = validation_category
-            attempts_log.append(outcome.error_msg)
+            if validation_category == ValidationErrorCategory.PIXEL_ALREADY_APPLIED:
+                # Target biến mất vì màn hình đã chuyển đúng hướng hành động: **không thực thi**
+                # (toạ độ cũ vô nghĩa) nhưng cũng **không** báo thất bại — nếu báo thất bại, agent sẽ
+                # lặp lại chính cú tap đó (đo được: 3 lần trong session d110b1ef).
+                outcome.success = False
+                outcome.intercepted = False
+                outcome.already_applied = True
+                outcome.error_msg = validation_error
+                outcome.error_category = validation_category
+                attempts_log.append(validation_error)
+                logger.info(f"Hành động không cần thiết (màn hình đã đổi): {validation_error}")
+            else:
+                outcome.success = False
+                outcome.intercepted = True
+                outcome.error_msg = f"Pre-execution validation failed: {validation_error}"
+                outcome.error_category = validation_category
+                attempts_log.append(outcome.error_msg)
 
     if validation_passed:
         # 2. Local execution: a vetted action gets a short retry loop, a burst
@@ -300,7 +316,7 @@ async def _process_action(
             max_local_retries=max_local_retries,
         )
 
-    if not outcome.success:
+    if not outcome.success and not outcome.already_applied:
         logger.info("Action failed, capturing failure screenshot...")
         outcome.post_screenshot_b64 = await _capture_live_screenshot(session, "failure screenshot")
 
@@ -367,8 +383,13 @@ def _record_action_end(
                 "timestamp": time.time(),
                 "relative_time": relative_time,
                 "burst": burst,
+                "already_applied": outcome.already_applied,
             },
-            status="success" if outcome.success else "failed",
+            status=(
+                "success"
+                if outcome.success
+                else ("already_applied" if outcome.already_applied else "failed")
+            ),
             duration=duration,
             parent_trace_id=parent_id,
             step_id=step_id,
@@ -481,6 +502,7 @@ async def run_validation_loop(node, state: State) -> dict:
 
     incident: dict | None = None
     success = False
+    already_applied = False
     index = 0
 
     while actions_to_execute:
@@ -524,6 +546,12 @@ async def run_validation_loop(node, state: State) -> dict:
         finally:
             CURRENT_TRACE_ID.reset(token)
 
+        if outcome.already_applied:
+            # Không phải thất bại: màn hình đã tự chuyển tới trạng thái mà hành động nhắm tới. Không
+            # mở incident, không đếm vào chuỗi lỗi — chỉ ghi nhận để Operator quan sát lại.
+            already_applied = True
+            index += 1
+            continue
         if not success:
             incident = _build_incident(ctx, state, outcome, index=index, total=total_actions)
             logger.warning(
@@ -542,7 +570,9 @@ async def run_validation_loop(node, state: State) -> dict:
 
     report = {
         "execution": execution,
-        "status": "dispatched" if success else "failed",
+        "status": (
+            "dispatched" if success else ("already_applied" if already_applied else "failed")
+        ),
         "burst": burst,
         "incident": incident,
     }

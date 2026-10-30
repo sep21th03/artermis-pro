@@ -640,3 +640,93 @@ def render_plan_grammar_spec(
 #: Backward-compatible module constant: the base grammar without the check
 #: extension. Prompt injection sites use :func:`render_plan_grammar_spec`.
 PLAN_GRAMMAR_SPEC = _PLAN_GRAMMAR_BASE
+
+
+def _with_status(line: str, status: str) -> str:
+    """Đổi **duy nhất** ký tự trạng thái checkbox của một dòng, giữ nguyên phần còn lại."""
+    match = CHECKBOX_LINE_RE.match(line)
+    if not match:
+        return line
+    return f"{line[: match.start('status')]}{status}{line[match.end('status') :]}"
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip().lower()
+
+
+def plan_self_heal_candidate(task_plan: str, *, prefer: str = "") -> tuple[str, str] | None:
+    """Kế hoạch **tự mở** ``[/]`` khi chỉ có **một** ứng viên hợp lệ; ``None`` khi mơ hồ.
+
+    Vì sao cần (session ``d110b1ef``, task ``1371db04``): khi kế hoạch không còn dòng ``[/]`` nào,
+    gate ledger **bounce** hành động và bắt agent tự sửa — đo được **10 lần bounce**, mỗi lần tốn một
+    lượt LLM. Phần lớn các lần đó việc phải làm là **xác định duy nhất**: chỉ một milestone chưa xong,
+    hoặc một dòng con chưa xong dưới milestone đang làm. Code tự mở ``[/]`` trong đúng trường hợp đó,
+    và **giữ nguyên gate** (kèm lý do) khi có nhiều hơn một ứng viên — không đoán.
+
+    Trả ``(kế hoạch đã sửa, lý do)``. Chỉ **ký tự trạng thái** của (các) dòng được mở bị đổi; mọi
+    dòng khác — kể cả ``verify``/``assert`` — giữ nguyên từng ký tự. ``prefer`` là văn bản công đoạn
+    đang làm (từ ``ExecutionState``) dùng để phá thế mơ hồ khi nó khớp **đúng một** ứng viên.
+    """
+    snapshot = parse_plan(task_plan or "")
+    if not snapshot.has_top_level:
+        return None
+
+    lines = task_plan.split("\n")
+    reasons: list[str] = []
+
+    milestone = snapshot.active_milestone()
+    if milestone is None:
+        candidates = [item for item in snapshot.top_level if not item.is_done]
+        if len(candidates) != 1:
+            return None
+        milestone = candidates[0]
+    else:
+        other_open = [
+            item for item in snapshot.top_level if not item.is_done and item.key != milestone.key
+        ]
+        if other_open:
+            return None  # còn milestone khác chưa xong ⇒ mơ hồ, để agent tự quyết
+
+    if not milestone.is_active:
+        lines[milestone.line_no] = _with_status(lines[milestone.line_no], STATUS_ACTIVE)
+        reasons.append(f'mở milestone «{milestone.text[:60]}»')
+
+    children = [item for item in snapshot.children_of(milestone) if not item.is_done]
+    if snapshot.active_leaf(milestone) is None and children:
+        hint = _normalize_text(prefer)
+        hinted = [item for item in children if hint and hint == _normalize_text(item.text)]
+        if len(hinted) == 1:
+            children = hinted
+        if len(children) != 1:
+            return None
+        leaf = children[0]
+        lines[leaf.line_no] = _with_status(lines[leaf.line_no], STATUS_ACTIVE)
+        reasons.append(f'mở sub-goal «{leaf.text[:60]}»')
+
+    if not reasons:
+        return None
+    return "\n".join(lines), "; ".join(reasons)
+
+
+def _plan_digest(plan_text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256((plan_text or "").encode("utf-8")).hexdigest()
+
+
+def plan_digest(plan_text: str) -> str:
+    """Vân tay nội dung kế hoạch — dùng để biết "trạng thái có đổi không"."""
+    return _plan_digest(plan_text)
+
+
+def repeat_bounce_suppressed(previous: tuple[str, str] | None, plan_text: str) -> bool:
+    """Đã từng bounce vì **đúng kế hoạch này** chưa? (⇒ lần này không bounce lại).
+
+    Yêu cầu "không bounce lặp cùng một lý do nếu không có thay đổi trạng thái": lý do bounce sinh ra
+    từ chính nội dung kế hoạch, nên **kế hoạch không đổi** nghĩa là cùng một lý do. Trả ``False`` khi
+    chưa từng bounce, hoặc khi kế hoạch đã đổi (có tiến triển ⇒ được phép nhắc lại).
+    """
+    if previous is None:
+        return False
+    _reason, digest = previous
+    return digest == _plan_digest(plan_text)
