@@ -39,6 +39,15 @@ logger = get_logger(__name__)
 #: Tên event có cấu trúc ghi vào perf.
 METRICS_EVENT_NAME = "step_metrics"
 
+#: **Phạm vi** của ``llm_calls`` / token trong payload: số **response LLM mà các lượt Operator tiêu
+#: thụ** (mỗi vòng tool-calling trong một lượt là một response). Đây KHÁC với kênh perf ``llm_call``
+#: (một span cho mỗi lượt gọi provider **đã hoàn tất của mọi vai trò**: planner/operator/khác) — và
+#: các lần thử lại nằm ở event ``llm_retry`` (``retry_count`` + ``retry_wait_ms``). Ghi rõ phạm vi để
+#: hai kênh không bị đọc như cùng một phép đếm (đo trên máy thật 30/10/2026: 148 response của lượt
+#: Operator vs 103 span ``llm_call`` trong cùng một phiên).
+LLM_COUNT_SCOPE = "operator_turn_responses"
+TOKEN_COUNT_SCOPE = "operator_turn_responses"
+
 #: Bản rời của pha operator (một bước có thể có bản rời + đúng một bản tổng hợp).
 METRICS_TURN_EVENT_NAME = "step_metrics_turn"
 
@@ -61,6 +70,8 @@ class StepMetrics:
     actions_already_applied: int = 0
     actions_failed: int = 0
     actions_blocked_by_gate: int = 0
+    #: Bị **retry guard** chặn vì lặp lại hành động đã thất bại thật (không phải failed).
+    actions_repeat_blocked: int = 0
     no_progress: bool = False
     action: str = "none"
     phase: str = "operator"
@@ -93,6 +104,8 @@ class StepMetrics:
         data["wall_ms"] = round(self.wall_ms, 1)
         data["validation_ms"] = round(self.validation_ms, 1)
         data["pixel_validation_ms"] = round(self.pixel_validation_ms, 1)
+        data["llm_calls_scope"] = LLM_COUNT_SCOPE
+        data["tokens_scope"] = TOKEN_COUNT_SCOPE
         return data
 
     def log_line(self, step: int | str = "-") -> str:
@@ -104,7 +117,8 @@ class StepMetrics:
             f"self_heals={self.plan_self_heals} validation_ms={self.validation_ms:.0f} "
             f"pixel_ms={self.pixel_validation_ms:.0f} dispatched={self.actions_dispatched} "
             f"already_applied={self.actions_already_applied} failed={self.actions_failed} "
-            f"blocked={self.actions_blocked_by_gate} action={self.action} "
+            f"blocked={self.actions_blocked_by_gate} repeat_blocked={self.actions_repeat_blocked} "
+            f"action={self.action} "
             f"no_progress={int(self.no_progress)}"
         )
 
@@ -208,6 +222,7 @@ def finish_execution(
     dispatched: int,
     already_applied: int,
     failed: int,
+    repeat_blocked: int = 0,
 ) -> StepMetrics:
     """Chốt pha thực thi: cộng kết quả từng action rồi phát log/event (bản đầy đủ nhất)."""
     metrics = metrics_for(holder_for(ctx))
@@ -215,11 +230,14 @@ def finish_execution(
     metrics.actions_dispatched += max(0, int(dispatched))
     metrics.actions_already_applied += max(0, int(already_applied))
     metrics.actions_failed += max(0, int(failed))
+    metrics.actions_repeat_blocked += max(0, int(repeat_blocked))
     metrics.wall_ms = (time.time() - metrics.started_at) * 1000.0
     if metrics.actions_dispatched:
         metrics.action = "dispatched"
     elif metrics.actions_already_applied:
         metrics.action = "already_applied"
+    elif metrics.actions_repeat_blocked:
+        metrics.action = "repeat_blocked"
     elif metrics.actions_failed:
         metrics.action = "failed"
     elif metrics.actions_blocked_by_gate:

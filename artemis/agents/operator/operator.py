@@ -16,7 +16,7 @@ import json
 from typing import Any
 from uuid import uuid4
 
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 from artemis.core.tool_failure import is_tool_failure
@@ -60,6 +60,10 @@ from artemis.utils.plan_grammar import (
 from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import get_active_subgoal_hashes
 from artemis.utils.visualization import format_minimal_list_with_elements
+from artemis.utils.progress_watchdog import (
+    progress_streak,
+    watchdog_message,
+)
 from artemis.utils.step_metrics import (
     add_llm_usage,
     count_gate_bounce,
@@ -543,6 +547,41 @@ class OperatorNode:
         except Exception as e:
             logger.error(f"Failed to stage transcript turn: {e}")
 
+    def _progress_watchdog_block(self, state) -> str | None:
+        """Khối văn bản yêu cầu Operator quan sát lại: từ retry guard + watchdog tiến triển."""
+        parts: list[str] = []
+        request = getattr(self.ctx, "repeat_observation_request", None)
+        if request:
+            parts.append(str(request))
+            try:
+                self.ctx.repeat_observation_request = None  # chỉ gửi một lần
+            except (AttributeError, TypeError, ValueError):
+                pass
+        try:
+            steps = self.ctx.data_engine.get_agent_friendly_steps()
+        except Exception as e:  # noqa: BLE001 - watchdog không được làm gãy lượt
+            logger.info(f"progress-watchdog: không đọc được steps: {e}")
+            steps = []
+        streak, kinds = progress_streak(steps)
+        try:
+            from artemis.utils.plan_grammar import parse_plan
+
+            snapshot = parse_plan(getattr(state, "task_plan", "") or "")
+            milestone = snapshot.active_milestone()
+            leaf = ""
+            if milestone is not None:
+                leaf = (snapshot.active_leaf(milestone) or milestone).text
+        except Exception:  # noqa: BLE001
+            leaf = ""
+        message = watchdog_message(streak, kinds, leaf)
+        if message:
+            logger.warning(
+                f"progress-watchdog: sub-goal không tiến triển {streak} lượt ({dict(kinds)}) —"
+                " gửi yêu cầu quan sát lại cho Operator."
+            )
+            parts.append(message)
+        return "\n\n".join(parts) if parts else None
+
     async def _invoke_llm_loop(
         self,
         base_llm,
@@ -552,6 +591,11 @@ class OperatorNode:
         state: State,
     ) -> tuple[list[dict] | None, str | None, str | None, bool]:
         max_iterations = OPERATOR_MAX_TOOL_ITERATIONS
+        # PHASE A/B: yêu cầu quan sát lại (retry guard) + watchdog tiến triển. Chỉ **thêm văn bản**
+        # vào lượt này — không chặn, không tự chốt `[x]`, không bỏ tiêu chí nào.
+        watchdog_block = self._progress_watchdog_block(state)
+        if watchdog_block:
+            current_messages.append(HumanMessage(content=watchdog_block))
         action_result = None
         raw_thoughts = []
         native_thoughts = []

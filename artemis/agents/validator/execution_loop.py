@@ -127,6 +127,149 @@ def repeat_loop_reason(node, action_name: str, action_item: dict) -> str | None:
     )
 
 
+#: Số lần **thất bại thật** tương đương (cùng fingerprint, UI không đổi) trước khi hệ thống yêu cầu
+#: Operator quan sát lại màn hình.
+REPEAT_OBSERVE_AFTER = 2
+
+#: Số lần thất bại thật tương đương trước khi **chặn hẳn** hành động đó. Chặn là sticky theo
+#: fingerprint: UI, target hoặc sub-goal đổi ⇒ fingerprint đổi ⇒ được phép thử lại.
+REPEAT_BLOCK_AFTER = 3
+
+
+def _b64_bytes(data: str | None) -> bytes | None:
+    if not data:
+        return None
+    try:
+        import base64
+
+        return base64.b64decode(data, validate=False)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def action_ui_fingerprint(pre_screenshot_b64: str | None) -> str | None:
+    """dHash của ảnh **trước** hành động — "UI fingerprint" của retry guard."""
+    try:
+        from artemis.utils.image_hash import dhash_hex
+
+        return dhash_hex(_b64_bytes(pre_screenshot_b64))
+    except Exception:  # noqa: BLE001 - thiếu hash chỉ làm guard kém nhạy, không được gãy run
+        return None
+
+
+def active_subgoal_text(state) -> str:
+    """Văn bản sub-goal đang ``[/]`` trong ``task_plan`` (rỗng khi không đọc được)."""
+    try:
+        from artemis.utils.plan_grammar import parse_plan
+
+        snapshot = parse_plan(getattr(state, "task_plan", "") or "")
+        milestone = snapshot.active_milestone()
+        if milestone is None:
+            return ""
+        leaf = snapshot.active_leaf(milestone)
+        return " ".join((leaf or milestone).text.split())
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def repeat_fingerprint(
+    action_name: str,
+    action_item: dict,
+    *,
+    ui_fingerprint: str | None = None,
+    subgoal: str = "",
+) -> str:
+    """Khoá nhận dạng "cùng một hành động trong cùng một ngữ cảnh".
+
+    Gồm: loại action · văn bản target / id phần tử · toạ độ (làm tròn 10 px) · **UI fingerprint** ·
+    **sub-goal đang làm**. Nhờ hai thành phần sau, cùng một cú tap trên màn hình **đã đổi** hoặc ở
+    sub-goal khác được coi là hành động **mới** — không chặn oan.
+    """
+    parts = [action_name]
+    target = action_item.get("target_text") or action_item.get("target_resource_id")
+    if target:
+        parts.append(" ".join(str(target).split())[:60])
+    coords = action_item.get("coordinates") or []
+    if coords:
+        try:
+            parts.append(",".join(str(int(round(float(c) / 10.0)) * 10) for c in list(coords)[:2]))
+        except (TypeError, ValueError):
+            pass
+    parts.append(f"ui={ui_fingerprint or '-'}")
+    parts.append(f"sg={' '.join(subgoal.split())[:60]}")
+    return "|".join(parts)
+
+
+def _repeat_guard_state(ctx) -> dict:
+    guard_state = getattr(ctx, "action_retry_state", None)
+    if not isinstance(guard_state, dict):
+        guard_state = {}
+        try:
+            ctx.action_retry_state = guard_state
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return guard_state
+
+
+def repeat_guard_verdict(node, fingerprint: str, *, ui_fingerprint, subgoal) -> str | None:
+    """Lý do **chặn** (sticky) khi fingerprint này đã thất bại thật đủ nhiều lần trên cùng UI/sub-goal."""
+    ctx = getattr(node, "ctx", None)
+    if ctx is None:
+        return None
+    entry = _repeat_guard_state(ctx).get(fingerprint)
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("ui") != ui_fingerprint or entry.get("subgoal") != subgoal:
+        return None  # UI/sub-goal đã đổi ⇒ coi như hành động mới
+    failures = int(entry.get("failures") or 0)
+    if failures < REPEAT_BLOCK_AFTER:
+        return None
+    return (
+        f"Hành động này đã **thất bại thật {failures} lần** ở cùng một chỗ mà màn hình không đổi."
+        " KHÔNG chạy lại: đọc lại màn hình hiện tại, xác định phần tử/mục tiêu khác, cập nhật"
+        " `task_plan` nếu UI khác kỳ vọng, rồi chọn hành động mới."
+    )
+
+
+def note_action_outcome(
+    node, fingerprint: str, *, failed: bool, ui_fingerprint, subgoal
+) -> int:
+    """Ghi kết quả **thật** của một lần thử; trả về số thất bại thật tích luỹ của fingerprint.
+
+    Chỉ gọi với lần thử thực sự: ``failed=True`` cho dispatch lỗi hoặc bị safety net từ chối.
+    ``already_applied`` / bị gate ledger chặn / burst bỏ qua / chặn lặp ⇒ ``failed=False`` (không
+    phải thất bại, và đó là tiến triển ⇒ xoá bộ đếm).
+    """
+    ctx = getattr(node, "ctx", None)
+    if ctx is None:
+        return 0
+    guard_state = _repeat_guard_state(ctx)
+    if not failed:
+        guard_state.pop(fingerprint, None)
+        return 0
+    entry = guard_state.get(fingerprint)
+    same_context = (
+        isinstance(entry, dict)
+        and entry.get("ui") == ui_fingerprint
+        and entry.get("subgoal") == subgoal
+    )
+    failures = (int(entry.get("failures") or 0) + 1) if same_context else 1
+    guard_state[fingerprint] = {"failures": failures, "ui": ui_fingerprint, "subgoal": subgoal}
+    if failures >= REPEAT_OBSERVE_AFTER:
+        # Yêu cầu quan sát lại — Operator đọc ở lượt kế tiếp (kênh của progress watchdog).
+        try:
+            ctx.repeat_observation_request = (
+                f"Hành động `{fingerprint.split('|')[0]}` đã **thất bại thật {failures} lần liên tiếp**"
+                " trên cùng một màn hình. Quan sát lại UI trước khi chọn hành động tiếp theo: đọc các"
+                " phần tử đang có, xác định mục tiêu mới, cập nhật `task_plan` nếu UI khác kỳ vọng."
+                " KHÔNG tap lại cùng toạ độ."
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return failures
+
+
+
 #: ``attempts`` marker for actions a burst never reached.
 BURST_SKIPPED_MARKER = "Skipped (burst aborted)"
 
@@ -144,6 +287,9 @@ class _ActionOutcome:
     #: Hành động không được thực thi nhưng **không** phải thất bại: không mở incident, không đếm vào
     #: chuỗi lỗi, và thông điệp cho Operator là hướng dẫn quan sát lại (xem session d110b1ef).
     already_applied: bool = False
+    #: Bị **retry guard** chặn vì cùng hành động đã thất bại thật nhiều lần trên cùng màn hình.
+    #: Không phải thất bại và không phải safety net: không mở incident, không tính vào chuỗi lỗi.
+    repeat_blocked: bool = False
     post_screenshot_b64: str | None = None
 
 
@@ -288,16 +434,30 @@ async def _process_action(
     # 0. Chặn vòng lặp: cùng một hành động chạy y hệt ở cùng một chỗ, lặp mãi mà màn
     #    hình không đổi. Không áp cho burst — burst là chuỗi hành động liên tiếp có
     #    chủ đích, cắt giữa chuỗi sẽ phá timing của nó.
+    ui_fp: str | None = None
+    subgoal = ""
+    fingerprint = ""
     if not burst:
-        repeat_reason = repeat_loop_reason(node, action_name, action_item)
+        ui_fp = action_ui_fingerprint(pre_screenshot_b64)
+        subgoal = active_subgoal_text(state)
+        fingerprint = repeat_fingerprint(
+            action_name, action_item, ui_fingerprint=ui_fp, subgoal=subgoal
+        )
+        repeat_reason = repeat_guard_verdict(
+            node, fingerprint, ui_fingerprint=ui_fp, subgoal=subgoal
+        )
         if repeat_reason:
+            # **Chặn** (không dispatch) nhưng KHÔNG phải thất bại: không mở incident, không đếm vào
+            # chuỗi lỗi. Guard chạy trước safety gate và chỉ chặn — không bao giờ cho action đi qua
+            # gate, nên không nới lỏng an toàn.
             outcome.success = False
-            outcome.intercepted = True
+            outcome.intercepted = False
+            outcome.repeat_blocked = True
             outcome.error_msg = repeat_reason
             outcome.error_category = ValidationErrorCategory.REPEAT_LOOP
             attempts_log.append(repeat_reason)
             action_item["attempts"] = list(attempts_log)
-            logger.warning(f"Chặn hành động lặp vô ích: {repeat_reason}")
+            logger.warning(f"Chặn hành động lặp vô ích (sticky): {repeat_reason}")
             return outcome
 
     validation_passed = True
@@ -346,7 +506,17 @@ async def _process_action(
             max_local_retries=max_local_retries,
         )
 
-    if not outcome.success and not outcome.already_applied:
+    if not burst and fingerprint:
+        # Chỉ **thất bại thật** mới tính vào retry guard: dispatch lỗi hoặc bị safety net từ chối.
+        # ``already_applied``/bị gate chặn/không dispatch = không phải thất bại (và là tiến triển).
+        real_failure = (
+            not outcome.success and not outcome.already_applied and not outcome.repeat_blocked
+        )
+        note_action_outcome(
+            node, fingerprint, failed=real_failure, ui_fingerprint=ui_fp, subgoal=subgoal
+        )
+
+    if not outcome.success and not outcome.already_applied and not outcome.repeat_blocked:
         logger.info("Action failed, capturing failure screenshot...")
         outcome.post_screenshot_b64 = await _capture_live_screenshot(session, "failure screenshot")
 
@@ -533,6 +703,7 @@ async def run_validation_loop(node, state: State) -> dict:
     incident: dict | None = None
     success = False
     already_applied = False
+    repeat_blocked = False
     index = 0
 
     while actions_to_execute:
@@ -582,6 +753,12 @@ async def run_validation_loop(node, state: State) -> dict:
             already_applied = True
             index += 1
             continue
+        if outcome.repeat_blocked:
+            # Retry guard chặn: không dispatch, KHÔNG mở incident và không tính là failed. Operator đã
+            # nhận yêu cầu quan sát lại ở lượt kế tiếp.
+            repeat_blocked = True
+            index += 1
+            continue
         if not success:
             incident = _build_incident(ctx, state, outcome, index=index, total=total_actions)
             logger.warning(
@@ -601,7 +778,9 @@ async def run_validation_loop(node, state: State) -> dict:
     report = {
         "execution": execution,
         "status": (
-            "dispatched" if success else ("already_applied" if already_applied else "failed")
+            "dispatched"
+            if success
+            else ("already_applied" if already_applied else ("repeat_blocked" if repeat_blocked else "failed"))
         ),
         "burst": burst,
         "incident": incident,
@@ -616,7 +795,8 @@ async def run_validation_loop(node, state: State) -> dict:
             dispatched=sum(1 for item in execution if item.get("attempts") == ["Dispatched"])
             or (1 if success else 0),
             already_applied=1 if already_applied else 0,
-            failed=0 if success or already_applied else 1,
+            failed=0 if success or already_applied or repeat_blocked else 1,
+            repeat_blocked=1 if repeat_blocked else 0,
         )
     except Exception as exc:  # noqa: BLE001 - đo hiệu năng không được làm gãy lượt
         logger.info(f"step-metrics: không chốt được số đo bước: {exc}")

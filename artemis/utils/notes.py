@@ -20,7 +20,7 @@ import re
 
 from artemis.core.tool_failure import ToolFailure
 from artemis.data_engine.engine import _CURRENT_DATA_ENGINE
-from artemis.utils.plan_grammar import parse_plan
+from artemis.utils.plan_grammar import collapse_duplicate_check_lines, parse_plan
 from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -179,10 +179,16 @@ def save_note_content(base_dir: str | Path, key: str, content: str) -> None:
 
     if key == "task_plan":
         content, collapsed = collapse_duplicate_plan_blocks(content)
+        content, collapsed_checks = collapse_duplicate_check_lines(content)
         if collapsed:
             logger.warning(
                 f"task_plan: gộp {collapsed} khối milestone trùng trước khi ghi (save_note)"
             )
+        if collapsed_checks:
+            logger.warning(
+                f"task_plan: bỏ {collapsed_checks} dòng verify/assert trùng trước khi ghi (save_note)"
+            )
+        collapsed += collapsed_checks
 
     file_path.write_text(content, encoding="utf-8")
 
@@ -374,10 +380,20 @@ def update_note_content(
     if new_content_to_write is not None:
         if key == "task_plan":
             new_content_to_write, collapsed = collapse_duplicate_plan_blocks(new_content_to_write)
+            new_content_to_write, collapsed_checks = collapse_duplicate_check_lines(
+                new_content_to_write
+            )
             if collapsed:
                 logger.warning(
                     f"task_plan: gộp {collapsed} khối milestone trùng trước khi ghi (update_note)"
                 )
+            if collapsed_checks:
+                logger.warning(
+                    f"task_plan: bỏ {collapsed_checks} dòng verify/assert trùng trước khi ghi"
+                    " (update_note)"
+                )
+            collapsed += collapsed_checks
+            if collapsed:
                 dedup_note = PLAN_DEDUP_WARNING.format(count=collapsed)
                 warning = f"{warning} {dedup_note}".strip() if warning else dedup_note
         file_path.write_text(new_content_to_write, encoding="utf-8")

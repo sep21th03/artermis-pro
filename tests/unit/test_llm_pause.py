@@ -111,6 +111,9 @@ def test_provider_sdk_retry_is_persisted_and_published(monkeypatch):
         "source": "provider_sdk",
         "recoverable": True,
         "request_id": "request-1",
+        # Số lần thử lại được **đếm tại lớp provider retry** (giữ trên ngữ cảnh của lượt gọi), không
+        # suy từ wall time — nên bản ghi retry đầu tiên của một request là attempt 1.
+        "attempt": 1,
         "scheduled_at": engine.trace_kwargs["payload"]["scheduled_at"],
     }
     event_type, payload = engine.published

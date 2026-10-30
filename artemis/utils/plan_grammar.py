@@ -487,6 +487,53 @@ def milestone_evidence_gap(
 
 
 
+def collapse_duplicate_check_lines(content: str | None) -> tuple[str, int]:
+    """Bỏ các dòng ``- verify:`` / ``- assert:`` **giống hệt nhau trong cùng một phạm vi**.
+
+    Phạm vi = milestone cha (dòng kiểm tra thụt lề) hoặc cấp task (dòng không thụt lề) — đúng cách
+    ``parse_plan`` gán ``parent_key``. Giữ **lần xuất hiện đầu tiên** và giữ nguyên thứ tự; chỉ bỏ
+    bản sao **trùng cả loại, mốc phán, phạm vi và văn bản**; mọi tiêu chí khác nhau giữ nguyên.
+
+    **Vì sao cần** (máy thật 30/10/2026, session ``4806881d``): plan có **hai** dòng
+    ``- verify@end: Current logged-in account is 0972842548 and current house is Dled`` giống hệt
+    nhau ⇒ checker phán cùng một tiêu chí hai lần và bảng tiêu chí bị phồng.
+    """
+    text = content or ""
+    if not text:
+        return text, 0
+    lines = text.splitlines()
+    seen: set[tuple[str, str, str | None, str]] = set()
+    kept: list[str] = []
+    removed = 0
+    current_top: str | None = None
+    for line in lines:
+        checkbox = CHECKBOX_LINE_RE.match(line)
+        if checkbox:
+            if not checkbox.group("indent"):
+                current_top = normalize_check_text(checkbox.group("text"))
+            kept.append(line)
+            continue
+        check = CHECK_LINE_RE.match(line)
+        if check:
+            # Dòng thụt lề thuộc milestone đang mở; dòng ở cột 0 là tiêu chí cấp task (parent None).
+            scope = current_top if check.group("indent") else None
+            key = (
+                check.group("kind"),
+                check.group("at_end") or "",
+                scope,
+                normalize_check_text(check.group("text")),
+            )
+            if key in seen:
+                removed += 1
+                continue
+            seen.add(key)
+        kept.append(line)
+    if not removed:
+        return text, 0
+    rewritten = "\n".join(kept) + ("\n" if text.endswith("\n") else "")
+    return rewritten, removed
+
+
 def settle_completed_milestones(
     content: str | None,
     *,

@@ -250,6 +250,8 @@ def _record_llm_retry(
         status=STATUS_RETRY,
         provider=provider,
         retry_count=attempt,
+        # Thời gian backoff **đo được** của lần thử lại này (không suy đoán từ wall time).
+        retry_wait_ms=round(float(delay) * 1000.0, 3),
         error_type=str(error)[:120],
         request_id=request_id,
         detail={"source": source, "max_retries": max_retries},
@@ -393,9 +395,17 @@ class _ProviderRetryTelemetryHandler(logging.Handler):
             error_match = self._ERROR_PATTERN.search(message)
             delay = float(delay_match.group("delay")) if delay_match else 0.0
             error = error_match.group("error").strip() if error_match else message
+            # Số lần thử lại **đếm tại đúng lớp provider retry** (giữ trên ngữ cảnh của lượt gọi),
+            # không suy từ wall time: mỗi bản ghi retry của SDK là một lần thử lại thật.
+            attempt = int(request.get("retry_count") or 0) + 1
+            try:
+                request["retry_count"] = attempt
+            except (TypeError, ValueError):
+                attempt = None
             _record_llm_retry(
                 error,
                 delay,
+                attempt=attempt,
                 provider=request["provider"],
                 source="provider_sdk",
             )
