@@ -61,8 +61,8 @@ from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import get_active_subgoal_hashes
 from artemis.utils.visualization import format_minimal_list_with_elements
 from artemis.utils.progress_watchdog import (
+    observation_block,
     progress_streak,
-    watchdog_message,
 )
 from artemis.utils.step_metrics import (
     add_llm_usage,
@@ -562,7 +562,7 @@ class OperatorNode:
         except Exception as e:  # noqa: BLE001 - watchdog không được làm gãy lượt
             logger.info(f"progress-watchdog: không đọc được steps: {e}")
             steps = []
-        streak, kinds = progress_streak(steps)
+        streak, kinds = progress_streak(steps, image_hash=self._ui_image_hash)
         try:
             from artemis.utils.plan_grammar import parse_plan
 
@@ -573,14 +573,37 @@ class OperatorNode:
                 leaf = (snapshot.active_leaf(milestone) or milestone).text
         except Exception:  # noqa: BLE001
             leaf = ""
-        message = watchdog_message(streak, kinds, leaf)
-        if message:
+        block = observation_block(None, streak, kinds, leaf)
+        if block:
             logger.warning(
                 f"progress-watchdog: sub-goal không tiến triển {streak} lượt ({dict(kinds)}) —"
                 " gửi yêu cầu quan sát lại cho Operator."
             )
-            parts.append(message)
+            parts.append(block)
         return "\n\n".join(parts) if parts else None
+
+    def _ui_image_hash(self, image_name: str | None) -> str | None:
+        """dHash **nội dung** ảnh theo tên file (``None`` khi không đọc/hash được).
+
+        Dùng hash nội dung chứ **không** so tên file: hai ảnh khác tên mà cùng nội dung là
+        *unchanged*, và thiếu ảnh là *unknown* — không bao giờ mặc định là tiến triển.
+        """
+        if not image_name:
+            return None
+        try:
+            from pathlib import Path
+
+            from artemis.utils.image_hash import dhash_hex
+
+            base = Path(self.ctx.data_engine.base_dir)
+            for folder in (base.parent / "images", base / "images"):
+                for ext in (".jpg", ".png", ".jpeg"):
+                    path = folder / f"{image_name}{ext}"
+                    if path.exists():
+                        return dhash_hex(path.read_bytes())
+        except Exception as e:  # noqa: BLE001 - thiếu hash chỉ làm trạng thái thành unknown
+            logger.info(f"progress-watchdog: không hash được ảnh {image_name}: {e}")
+        return None
 
     async def _invoke_llm_loop(
         self,

@@ -39,11 +39,17 @@ from collections.abc import Iterable
 #: Số lượt "không tiến triển thật" liên tiếp trước khi gửi yêu cầu quan sát lại.
 PROGRESS_WATCHDOG_TURNS = 3
 
-#: Lượt **không tiến triển** (tính vào chuỗi).
-NO_PROGRESS_KINDS = frozenset({"repeat_blocked", "failed", "dispatched_ui_unchanged"})
+#: Ba trạng thái UI sau một lần dispatch — xác định bằng **hash nội dung ảnh**, không bằng tên file.
+UI_CHANGED = "dispatched_ui_changed"
+UI_UNCHANGED = "dispatched_ui_unchanged"
+UI_UNKNOWN = "dispatched_ui_unknown"
+
+#: Lượt **không tiến triển** (tính vào chuỗi). ``ui_unknown`` nằm ở đây vì **thiếu ảnh/không hash
+#: được KHÔNG được mặc định là tiến triển**.
+NO_PROGRESS_KINDS = frozenset({"repeat_blocked", "failed", UI_UNCHANGED, UI_UNKNOWN})
 
 #: Lượt **có tiến triển thật** (đặt lại chuỗi).
-PROGRESS_KINDS = frozenset({"dispatched_ui_changed", "already_applied"})
+PROGRESS_KINDS = frozenset({UI_CHANGED, "already_applied"})
 
 #: Lượt **trung tính**: không tính vào chuỗi, cũng không đặt lại (ví dụ chỉ chờ retry 429).
 NEUTRAL_KINDS = frozenset({"no_action", "gate_blocked", "unknown"})
@@ -62,8 +68,13 @@ def _execution_status(step: dict) -> str:
     return ""
 
 
-def classify_step(step: dict) -> str:
-    """Phân loại một lượt đã ghi thành loại mà watchdog cần phân biệt."""
+def classify_step(step: dict, *, image_hash=None) -> str:
+    """Phân loại một lượt đã ghi thành loại mà watchdog cần phân biệt.
+
+    Trạng thái UI được quyết định bằng **hash nội dung ảnh** (``image_hash(tên_ảnh) -> hash|None``),
+    KHÔNG bằng so sánh tên file: hai ảnh khác tên nhưng cùng nội dung là **unchanged**, và thiếu ảnh
+    (hoặc không hash được) là **``ui_unknown``** — không bao giờ mặc định là tiến triển.
+    """
     if not step.get("action_taken"):
         return "no_action"  # gồm cả lượt chỉ chờ retry 429 (không phát action nào)
     raw = step.get("last_execution_result")
@@ -72,22 +83,27 @@ def classify_step(step: dict) -> str:
         return "gate_blocked"  # bị gate ledger chặn: chưa từng tới thiết bị
     status = _execution_status(step)
     if status == "dispatched":
-        pre = step.get("pre_image_name")
-        post = step.get("post_image_name")
-        if pre and post and pre != post:
-            return "dispatched_ui_changed"
-        return "dispatched_ui_unchanged"
+        if image_hash is None:
+            return UI_UNKNOWN
+        try:
+            pre = image_hash(step.get("pre_image_name"))
+            post = image_hash(step.get("post_image_name"))
+        except Exception:  # noqa: BLE001 - lỗi đọc ảnh chỉ làm trạng thái thành unknown
+            return UI_UNKNOWN
+        if not pre or not post:
+            return UI_UNKNOWN
+        return UI_CHANGED if pre != post else UI_UNCHANGED
     if status in ("repeat_blocked", "already_applied", "failed"):
         return status
     return "unknown"
 
 
-def progress_streak(steps: Iterable[dict]) -> tuple[int, Counter]:
+def progress_streak(steps: Iterable[dict], *, image_hash=None) -> tuple[int, Counter]:
     """Đếm chuỗi lượt **không tiến triển thật** gần nhất (bỏ qua lượt trung tính)."""
     kinds: Counter = Counter()
     streak = 0
     for step in reversed(list(steps or [])):
-        kind = classify_step(step)
+        kind = classify_step(step, image_hash=image_hash)
         if kind in PROGRESS_KINDS:
             break
         if kind in NEUTRAL_KINDS:
@@ -124,3 +140,24 @@ def watchdog_message(
         "3. Nếu UI khác kỳ vọng: cập nhật `task_plan` (đổi sub-goal hoặc ghi lại kết quả thật).\n"
         "4. Không tự đánh `[x]` khi chưa có bằng chứng; không bỏ tiêu chí `verify`/`assert`."
     )
+
+
+def observation_block(
+    request: str | None,
+    streak: int,
+    kinds: Counter,
+    leaf_text: str | None,
+    *,
+    threshold: int = PROGRESS_WATCHDOG_TURNS,
+) -> str | None:
+    """Ghép khối yêu cầu gửi Operator: chỉ dẫn phục hồi của retry guard + watchdog tiến triển.
+
+    Tách thành hàm thuần để kiểm được nội dung mà không cần dựng OperatorNode.
+    """
+    parts: list[str] = []
+    if request and str(request).strip():
+        parts.append(str(request).strip())
+    message = watchdog_message(streak, kinds, leaf_text, threshold=threshold)
+    if message:
+        parts.append(message)
+    return "\n\n".join(parts) if parts else None

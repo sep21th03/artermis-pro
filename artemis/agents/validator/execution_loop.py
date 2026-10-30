@@ -131,9 +131,19 @@ def repeat_loop_reason(node, action_name: str, action_item: dict) -> str | None:
 #: Operator quan sát lại màn hình.
 REPEAT_OBSERVE_AFTER = 2
 
-#: Số lần thất bại thật tương đương trước khi **chặn hẳn** hành động đó. Chặn là sticky theo
-#: fingerprint: UI, target hoặc sub-goal đổi ⇒ fingerprint đổi ⇒ được phép thử lại.
+#: Số lần thất bại thật tương đương trước khi **chặn** hành động đó. Chặn là sticky theo fingerprint:
+#: UI, target hoặc sub-goal đổi ⇒ fingerprint đổi ⇒ được phép thử lại. Ngưỡng 3 nghĩa là **lần thử
+#: thứ 3** bị chặn (2 thất bại thật ⇒ lần thử kế tiếp không được dispatch).
 REPEAT_BLOCK_AFTER = 3
+
+#: Số lượt liên tiếp bị chặn mà Operator **không** thay đổi gì trước khi hệ thống tự mở chặn để phục
+#: hồi. Đây **không** phải "mở khoá theo thời gian": mở chặn chỉ để hành động đi tiếp vào **safety
+#: gate không đổi** (gate vẫn có thể từ chối), và mục đích là chặn vòng lặp chỉ toàn `repeat_blocked`.
+REPEAT_BLOCK_RECOVERY_TURNS = 2
+
+#: Cùng ngữ nghĩa trên nhưng khi **không xác định được UI fingerprint** (thiếu/không hash được ảnh):
+#: bằng chứng yếu hơn ⇒ phục hồi sớm hơn, không giữ chặn lâu mà không có căn cứ.
+REPEAT_BLOCK_RECOVERY_TURNS_UNKNOWN_UI = 1
 
 
 def _b64_bytes(data: str | None) -> bytes | None:
@@ -222,7 +232,18 @@ def repeat_guard_verdict(node, fingerprint: str, *, ui_fingerprint, subgoal) -> 
     if entry.get("ui") != ui_fingerprint or entry.get("subgoal") != subgoal:
         return None  # UI/sub-goal đã đổi ⇒ coi như hành động mới
     failures = int(entry.get("failures") or 0)
-    if failures < REPEAT_BLOCK_AFTER:
+    if failures + 1 < REPEAT_BLOCK_AFTER:
+        return None  # lần thử này chưa phải lần thứ ``REPEAT_BLOCK_AFTER``
+    # Phục hồi an toàn: nếu Operator đã bị chặn liên tiếp mà **không đổi gì**, mở chặn để hành động
+    # đi tiếp vào **safety gate không đổi** (gate vẫn có thể từ chối). Nhờ vậy không có vòng lặp chỉ
+    # toàn `repeat_blocked`, và việc mở chặn dựa trên *số lượt bị chặn bỏ qua*, không dựa trên thời gian.
+    limit = (
+        REPEAT_BLOCK_RECOVERY_TURNS_UNKNOWN_UI
+        if ui_fingerprint is None
+        else REPEAT_BLOCK_RECOVERY_TURNS
+    )
+    if int(entry.get("blocked_turns") or 0) >= limit:
+        _request_recovery(ctx, fingerprint, failures, ui_fingerprint is None)
         return None
     return (
         f"Hành động này đã **thất bại thật {failures} lần** ở cùng một chỗ mà màn hình không đổi."
@@ -231,22 +252,64 @@ def repeat_guard_verdict(node, fingerprint: str, *, ui_fingerprint, subgoal) -> 
     )
 
 
+def note_blocked_attempt(node, fingerprint: str, *, ui_fingerprint, subgoal) -> int:
+    """Ghi một lượt **bị chặn** (không dispatch) cho fingerprint này; trả về số lượt đã bị chặn."""
+    ctx = getattr(node, "ctx", None)
+    if ctx is None:
+        return 0
+    entry = _repeat_guard_state(ctx).get(fingerprint)
+    if not isinstance(entry, dict):
+        return 0
+    if entry.get("ui") != ui_fingerprint or entry.get("subgoal") != subgoal:
+        return 0  # ngữ cảnh đã đổi ⇒ bộ đếm chặn không còn nghĩa
+    blocked = int(entry.get("blocked_turns") or 0) + 1
+    entry["blocked_turns"] = blocked
+    return blocked
+
+
+def _request_recovery(ctx, fingerprint: str, failures: int, unknown_ui: bool) -> None:
+    """Yêu cầu phục hồi **cụ thể** khi chặn được mở (không phải mở khoá theo thời gian)."""
+    try:
+        ctx.repeat_observation_request = (
+            f"Hành động `{fingerprint.split('|')[0]}` đã bị chặn nhiều lượt liên tiếp sau {failures}"
+            " lần thất bại thật" + (" (không xác định được UI fingerprint)" if unknown_ui else "")
+            + ". Chặn đã được MỞ để hành động đi tiếp qua safety gate — nhưng bắt buộc: (1) quan sát"
+            " lại màn hình hiện tại; (2) chọn mục tiêu khác hoặc cách tiếp cận khác; (3) cập nhật"
+            " `task_plan` nếu UI khác kỳ vọng. Lặp lại y hệt sẽ tiếp tục bị chặn."
+        )
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+
+#: Các loại kết quả một lần thử có thể có, theo đúng cách retry counter phải xử lý.
+OUTCOME_FAILED = "failed"  # dispatch lỗi hoặc safety net từ chối ⇒ **tăng** bộ đếm
+OUTCOME_PROGRESS = "progress"  # bằng chứng tiến triển thật (UI đổi/màn hình đã chuyển) ⇒ **reset**
+OUTCOME_NO_PROGRESS = "no_progress"  # dispatch xong nhưng UI không đổi ⇒ giữ nguyên bộ đếm
+OUTCOME_NEUTRAL = "neutral"  # gate chặn / không dispatch / chặn lặp ⇒ giữ nguyên bộ đếm
+
+
 def note_action_outcome(
-    node, fingerprint: str, *, failed: bool, ui_fingerprint, subgoal
+    node, fingerprint: str, *, outcome: str, ui_fingerprint, subgoal
 ) -> int:
     """Ghi kết quả **thật** của một lần thử; trả về số thất bại thật tích luỹ của fingerprint.
 
-    Chỉ gọi với lần thử thực sự: ``failed=True`` cho dispatch lỗi hoặc bị safety net từ chối.
-    ``already_applied`` / bị gate ledger chặn / burst bỏ qua / chặn lặp ⇒ ``failed=False`` (không
-    phải thất bại, và đó là tiến triển ⇒ xoá bộ đếm).
+    Bất biến (yêu cầu rà soát):
+      * ``failed`` ⇒ tăng bộ đếm.
+      * ``progress`` (đã có bằng chứng tiến triển thật) ⇒ **xoá** bộ đếm.
+      * ``no_progress`` (dispatch nhưng UI không đổi) ⇒ **không tăng, không xoá**.
+      * ``neutral`` (gate ledger chặn, không dispatch, chặn lặp, burst bỏ qua) ⇒ **không tăng, không
+        xoá** — các trạng thái này không được tự reset bộ đếm.
     """
     ctx = getattr(node, "ctx", None)
     if ctx is None:
         return 0
     guard_state = _repeat_guard_state(ctx)
-    if not failed:
+    if outcome == OUTCOME_PROGRESS:
         guard_state.pop(fingerprint, None)
         return 0
+    if outcome in (OUTCOME_NO_PROGRESS, OUTCOME_NEUTRAL):
+        entry = guard_state.get(fingerprint)
+        return int(entry.get("failures") or 0) if isinstance(entry, dict) else 0
     entry = guard_state.get(fingerprint)
     same_context = (
         isinstance(entry, dict)
@@ -457,6 +520,9 @@ async def _process_action(
             outcome.error_category = ValidationErrorCategory.REPEAT_LOOP
             attempts_log.append(repeat_reason)
             action_item["attempts"] = list(attempts_log)
+            note_blocked_attempt(
+                node, fingerprint, ui_fingerprint=ui_fp, subgoal=subgoal
+            )
             logger.warning(f"Chặn hành động lặp vô ích (sticky): {repeat_reason}")
             return outcome
 
@@ -507,13 +573,20 @@ async def _process_action(
         )
 
     if not burst and fingerprint:
-        # Chỉ **thất bại thật** mới tính vào retry guard: dispatch lỗi hoặc bị safety net từ chối.
-        # ``already_applied``/bị gate chặn/không dispatch = không phải thất bại (và là tiến triển).
-        real_failure = (
-            not outcome.success and not outcome.already_applied and not outcome.repeat_blocked
-        )
+        # Phân loại tường minh: chỉ ``failed`` mới tăng bộ đếm; chỉ **bằng chứng tiến triển thật**
+        # (``already_applied``) mới reset; ``no_progress``/``neutral`` giữ nguyên bộ đếm. Một lần
+        # dispatch "thành công" chưa phải bằng chứng tiến triển — UI có đổi hay không do dHash của
+        # lượt sau quyết định (khi đó ngữ cảnh đổi và bộ đếm tự bắt đầu lại).
+        if outcome.repeat_blocked:
+            outcome_kind = OUTCOME_NEUTRAL
+        elif outcome.already_applied:
+            outcome_kind = OUTCOME_PROGRESS
+        elif not outcome.success:
+            outcome_kind = OUTCOME_FAILED
+        else:
+            outcome_kind = OUTCOME_NO_PROGRESS
         note_action_outcome(
-            node, fingerprint, failed=real_failure, ui_fingerprint=ui_fp, subgoal=subgoal
+            node, fingerprint, outcome=outcome_kind, ui_fingerprint=ui_fp, subgoal=subgoal
         )
 
     if not outcome.success and not outcome.already_applied and not outcome.repeat_blocked:

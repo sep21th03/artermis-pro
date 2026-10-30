@@ -25,11 +25,17 @@ import inspect
 from types import SimpleNamespace
 
 from artemis.agents.validator.execution_loop import (
+    OUTCOME_FAILED,
+    OUTCOME_NEUTRAL,
+    OUTCOME_NO_PROGRESS,
+    OUTCOME_PROGRESS,
     REPEAT_BLOCK_AFTER,
+    REPEAT_BLOCK_RECOVERY_TURNS,
     REPEAT_OBSERVE_AFTER,
     action_ui_fingerprint,
     active_subgoal_text,
     note_action_outcome,
+    note_blocked_attempt,
     repeat_fingerprint,
     repeat_guard_verdict,
 )
@@ -60,40 +66,166 @@ def test_only_real_failures_accumulate():
     node = _node()
     fp = _fp()
 
-    assert note_action_outcome(node, fp, failed=True, ui_fingerprint="ui-a", subgoal="s") == 1
-    assert note_action_outcome(node, fp, failed=True, ui_fingerprint="ui-a", subgoal="s") == 2
+    assert note_action_outcome(node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="s") == 1
+    assert note_action_outcome(node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="s") == 2
     # Thành công/không phải thất bại (already_applied, gate chặn, không dispatch) ⇒ xoá bộ đếm.
-    assert note_action_outcome(node, fp, failed=False, ui_fingerprint="ui-a", subgoal="s") == 0
-    assert note_action_outcome(node, fp, failed=True, ui_fingerprint="ui-a", subgoal="s") == 1
+    assert note_action_outcome(node, fp, outcome=OUTCOME_PROGRESS, ui_fingerprint="ui-a", subgoal="s") == 0
+    assert note_action_outcome(node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="s") == 1
 
 
 def test_a_changed_screen_restarts_the_count():
     node = _node()
     fp = _fp(ui="ui-a")
 
-    note_action_outcome(node, fp, failed=True, ui_fingerprint="ui-a", subgoal="s")
-    note_action_outcome(node, fp, failed=True, ui_fingerprint="ui-a", subgoal="s")
+    note_action_outcome(node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="s")
+    note_action_outcome(node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="s")
     # Cùng fingerprint nhưng UI đã đổi ⇒ đếm lại từ 1 (không chặn oan).
-    assert note_action_outcome(node, fp, failed=True, ui_fingerprint="ui-b", subgoal="s") == 1
+    assert note_action_outcome(node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-b", subgoal="s") == 1
 
 
-def test_two_failures_request_re_observation_without_blocking():
+def test_two_failures_make_the_third_attempt_blocked_and_request_re_observation():
+    """Bất biến: sau 2 thất bại thật, **lần thử thứ 3** bị chặn và Operator nhận yêu cầu cụ thể."""
     node = _node()
     fp = _fp()
 
     for _ in range(REPEAT_OBSERVE_AFTER):
-        note_action_outcome(node, fp, failed=True, ui_fingerprint="ui-a", subgoal="Tap Dled card")
+        note_action_outcome(
+            node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+        )
 
-    assert repeat_guard_verdict(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card") is None
     request = node.ctx.repeat_observation_request
     assert "thất bại thật" in request and "KHÔNG tap lại cùng toạ độ" in request
+    reason = repeat_guard_verdict(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card")
+    assert reason and "KHÔNG chạy lại" in reason
+
+
+def test_neutral_outcomes_neither_count_nor_reset_the_failure_counter():
+    """Yêu cầu rà soát: gate blocked / no_action / repeat_blocked **không** được tự reset bộ đếm."""
+    node = _node()
+    fp = _fp()
+    for _ in range(2):
+        note_action_outcome(
+            node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+        )
+
+    for _ in range(3):  # ba lượt trung tính liên tiếp
+        assert (
+            note_action_outcome(
+                node, fp, outcome=OUTCOME_NEUTRAL, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+            )
+            == 2
+        )
+
+    assert repeat_guard_verdict(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card"), (
+        "bộ đếm phải giữ nguyên ⇒ lần thử kế tiếp vẫn bị chặn"
+    )
+
+
+def test_two_failures_then_a_gate_block_then_the_third_tap_is_still_blocked():
+    """Ca yêu cầu 1: 2 tap failed → 1 gate blocked → tap lần 3 vẫn bị chặn."""
+    node = _node()
+    fp = _fp()
+    for _ in range(2):
+        note_action_outcome(
+            node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+        )
+    note_action_outcome(
+        node, fp, outcome=OUTCOME_NEUTRAL, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+    )  # lượt bị gate ledger chặn (không tới thiết bị)
+
+    assert repeat_guard_verdict(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card")
+
+
+def test_two_failures_then_a_no_action_turn_then_the_third_tap_is_still_blocked():
+    """Ca yêu cầu 2: 2 tap failed → 1 lượt no_action (vd chờ retry 429) → tap lần 3 vẫn bị chặn."""
+    node = _node()
+    fp = _fp()
+    for _ in range(2):
+        note_action_outcome(
+            node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+        )
+    note_action_outcome(
+        node, fp, outcome=OUTCOME_NEUTRAL, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+    )  # lượt không phát action nào
+
+    assert repeat_guard_verdict(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card")
+
+
+def test_a_dispatch_without_ui_change_does_not_reset_the_counter():
+    """``no_progress`` giữ nguyên bộ đếm — chỉ bằng chứng tiến triển thật mới reset."""
+    node = _node()
+    fp = _fp()
+    for _ in range(2):
+        note_action_outcome(
+            node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+        )
+
+    assert (
+        note_action_outcome(
+            node, fp, outcome=OUTCOME_NO_PROGRESS, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+        )
+        == 2
+    )
+    assert repeat_guard_verdict(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card")
+
+
+def test_progress_evidence_resets_the_counter():
+    node = _node()
+    fp = _fp()
+    for _ in range(2):
+        note_action_outcome(
+            node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+        )
+
+    assert (
+        note_action_outcome(
+            node, fp, outcome=OUTCOME_PROGRESS, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+        )
+        == 0
+    )
+    assert repeat_guard_verdict(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card") is None
+
+
+def test_a_sticky_block_recovers_after_the_operator_ignores_it():
+    """Không có vòng lặp chỉ toàn ``repeat_blocked``: sau N lượt bị chặn, mở chặn để đi tiếp vào gate."""
+    node = _node()
+    fp = _fp()
+    for _ in range(REPEAT_BLOCK_AFTER - 1):
+        note_action_outcome(
+            node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+        )
+
+    for _ in range(REPEAT_BLOCK_RECOVERY_TURNS):
+        assert repeat_guard_verdict(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card")
+        note_blocked_attempt(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card")
+
+    # Hết ngân sách chặn ⇒ mở để hành động đi tiếp qua safety gate (gate vẫn có thể từ chối).
+    assert repeat_guard_verdict(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card") is None
+    request = node.ctx.repeat_observation_request
+    assert "Chặn đã được MỞ" in request and "safety gate" in request
+
+
+def test_an_unknown_ui_fingerprint_recovers_earlier():
+    """UI fingerprint không xác định được ⇒ phục hồi sớm hơn, không giữ chặn mà không có căn cứ."""
+    node = _node()
+    fp = _fp(ui=None)
+    for _ in range(REPEAT_BLOCK_AFTER - 1):
+        note_action_outcome(node, fp, outcome=OUTCOME_FAILED, ui_fingerprint=None, subgoal="s")
+
+    assert repeat_guard_verdict(node, fp, ui_fingerprint=None, subgoal="s")
+    note_blocked_attempt(node, fp, ui_fingerprint=None, subgoal="s")
+
+    assert repeat_guard_verdict(node, fp, ui_fingerprint=None, subgoal="s") is None
+    assert "không xác định được UI fingerprint" in node.ctx.repeat_observation_request
 
 
 def test_three_failures_block_the_action_sticky():
     node = _node()
     fp = _fp()
     for _ in range(REPEAT_BLOCK_AFTER):
-        note_action_outcome(node, fp, failed=True, ui_fingerprint="ui-a", subgoal="Tap Dled card")
+        note_action_outcome(
+            node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+        )
 
     reason = repeat_guard_verdict(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card")
     assert reason and "KHÔNG chạy lại" in reason
@@ -105,7 +237,7 @@ def test_block_lifts_when_ui_target_or_subgoal_changes():
     node = _node()
     fp = _fp()
     for _ in range(REPEAT_BLOCK_AFTER):
-        note_action_outcome(node, fp, failed=True, ui_fingerprint="ui-a", subgoal="Tap Dled card")
+        note_action_outcome(node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="Tap Dled card")
 
     assert repeat_guard_verdict(node, fp, ui_fingerprint="ui-b", subgoal="Tap Dled card") is None
     assert repeat_guard_verdict(node, fp, ui_fingerprint="ui-a", subgoal="Verify on Home") is None
@@ -159,3 +291,39 @@ def test_ui_fingerprint_is_a_hash_or_none():
     assert action_ui_fingerprint(None) is None
     assert action_ui_fingerprint("not-base64!!") is None
 
+
+
+def test_a_blocked_turn_opens_no_incident_and_no_action_failed():
+    """Yêu cầu rà soát: khi bị chặn KHÔNG mở incident và KHÔNG ghi `Action failed`."""
+    from artemis.agents.validator import execution_loop
+
+    loop_source = inspect.getsource(execution_loop.run_validation_loop)
+    tail = loop_source.split("if outcome.repeat_blocked:", 1)[1]
+    branch = tail.split("if not success:", 1)[0]  # chỉ thân nhánh chặn
+    assert "_build_incident" not in branch, "nhánh chặn không được mở incident"
+    assert "Action failed" not in branch, "nhánh chặn không được ghi Action failed"
+
+    process_source = inspect.getsource(execution_loop._process_action)
+    assert "and not outcome.repeat_blocked" in process_source, (
+        "lượt bị chặn không được chụp ảnh thất bại"
+    )
+
+
+def test_blocked_turns_do_not_loop_forever():
+    """Bất biến: mỗi fingerprint chỉ bị chặn tối đa REPEAT_BLOCK_RECOVERY_TURNS lượt liên tiếp."""
+    node = _node()
+    fp = _fp()
+    for _ in range(REPEAT_BLOCK_AFTER - 1):
+        note_action_outcome(
+            node, fp, outcome=OUTCOME_FAILED, ui_fingerprint="ui-a", subgoal="Tap Dled card"
+        )
+
+    blocked_turns = 0
+    for _ in range(10):  # agent cố lặp 10 lần
+        if repeat_guard_verdict(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card"):
+            blocked_turns += 1
+            note_blocked_attempt(node, fp, ui_fingerprint="ui-a", subgoal="Tap Dled card")
+        else:
+            break  # đã mở chặn ⇒ hành động đi tiếp vào safety gate
+
+    assert blocked_turns == REPEAT_BLOCK_RECOVERY_TURNS
