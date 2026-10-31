@@ -564,6 +564,11 @@ function toast(msg, kind=''){
   $('toast').appendChild(el);
   setTimeout(()=>el.remove(), 5000);
 }
+// ── Token quản trị KB (script này dùng trong api(); UI đăng nhập ở script sau) ──────────
+function kbToken(){ try { return localStorage.getItem('kbToken') || ''; } catch { return ''; } }
+function kbSetToken(t){ try { t ? localStorage.setItem('kbToken', t) : localStorage.removeItem('kbToken'); } catch {} }
+function kbAuthHint(){ const el=$('kbAuthState'); if(el) el.textContent = 'KB: cần đăng nhập để thêm/sửa/xoá'; }
+
 async function api(path, opts){
   opts = opts || {};
   // Quản trị KB cần token admin (đăng nhập ở tab Knowledge). Đọc vẫn không cần token.
@@ -592,10 +597,6 @@ async function api(path, opts){
   }
   return data;
 }
-
-$('kbLoginBtn').onclick = kbLogin;
-$('kbLogoutBtn').onclick = kbLogout;
-$('kbPassword').addEventListener('keydown', e => { if(e.key === 'Enter') kbLogin(); });
 
 function renderPresets(){
   const box = $('presets');
@@ -1639,9 +1640,14 @@ const kbState = {apps: [], workflows: [], versions: [], appId: '', editingId: ''
 // ── Đăng nhập quản trị KB ────────────────────────────────────────────────────────────
 // Đọc (danh sách/retrieve) không cần token; thêm/sửa/xoá workflow cần tài khoản admin.
 // Token lưu ở localStorage nên F5 vẫn còn đăng nhập; hết hạn thì API trả 401 và UI nhắc lại.
-function kbToken(){ try { return localStorage.getItem('kbToken') || ''; } catch { return ''; } }
-function kbSetToken(t){ try { t ? localStorage.setItem('kbToken', t) : localStorage.removeItem('kbToken'); } catch {} }
-function kbAuthHint(){ const el=$('kbAuthState'); if(el) el.textContent = 'KB: cần đăng nhập để thêm/sửa/xoá'; }
+function kbAuthInit(){
+  // Gắn sự kiện **sau khi DOM có phần tử** và **trong cùng script** với kbLogin/kbLogout —
+  // gắn ở script trước sẽ ném ReferenceError và làm chết cả script đó (mọi tab mất handler).
+  const login = $('kbLoginBtn'), logout = $('kbLogoutBtn'), pwd = $('kbPassword');
+  if(login) login.onclick = kbLogin;
+  if(logout) logout.onclick = kbLogout;
+  if(pwd) pwd.addEventListener('keydown', e => { if(e.key === 'Enter') kbLogin(); });
+}
 async function kbAuthRefresh(){
   const el = $('kbAuthState');
   if(!el) return;
@@ -2198,6 +2204,7 @@ try{
 }catch(_){}
 updateGoalCount();
 updateRunPromptState();
+kbAuthInit();
 renderPresets();
 // Cho phép mở thẳng một tab bằng URL: /?tab=kb — tiện bookmark tab Knowledge.
 const wantedTab = (() => {

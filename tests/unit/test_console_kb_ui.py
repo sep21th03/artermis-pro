@@ -179,3 +179,49 @@ def test_the_status_options_match_the_backend(html):
     assert block, "không tìm thấy select kbStatusSel"
     offered = set(re.findall(r'<option value="([a-z]+)"', block.group(1)))
     assert offered == set(WORKFLOW_STATUSES)
+
+
+# ── Regression: không được tham chiếu hàm khai báo ở <script> khác ───────────────────────
+#
+# Lỗi thật 30/10/2026: phần gắn sự kiện đăng nhập KB được chèn vào <script> thứ nhất trong khi
+# `kbLogin`/`kbLogout` khai báo ở <script> thứ hai ⇒ ReferenceError ngay khi trang tải ⇒ script thứ
+# nhất chết giữa đường ⇒ **mọi tab của console không bấm được**. Test này khoá lại: helper dùng trong
+# `api()` phải nằm cùng script, và phần gắn sự kiện phải nằm sau định nghĩa hàm, cùng script.
+
+SCRIPT_RE = re.compile(r"<script[^>]*>(?P<body>.*?)</script>", re.DOTALL)
+
+
+def _script_blocks(html: str) -> list[str]:
+    return [m.group("body") for m in SCRIPT_RE.finditer(html)]
+
+
+def test_kb_token_helpers_live_in_the_same_script_as_api(html):
+    blocks = _script_blocks(html)
+    api_block = next((b for b in blocks if "async function api(" in b), None)
+
+    assert api_block is not None
+    for name in ("function kbToken(", "function kbSetToken(", "function kbAuthHint("):
+        assert name in api_block, f"{name} phải ở cùng <script> với api() — nếu không, api() ném ReferenceError"
+
+
+def test_kb_login_wiring_happens_after_the_functions_in_the_same_script(html):
+    blocks = _script_blocks(html)
+    login_block = next((b for b in blocks if "async function kbLogin(" in b), None)
+
+    assert login_block is not None
+    assert "function kbAuthInit(" in login_block
+    assert "kbLoginBtn" in login_block.split("function kbAuthInit(", 1)[1], (
+        "phần gắn sự kiện phải nằm trong kbAuthInit của chính script này"
+    )
+    # Không được gắn sự kiện ở top-level của bất kỳ script nào (DOM có thể chưa có phần tử).
+    for block in blocks:
+        for line in block.splitlines():
+            if line[:1] in (" ", "\t", "") or "$" not in line:
+                continue
+            assert ".onclick" not in line, f"gắn sự kiện ở top-level rất dễ chết: {line.strip()}"
+
+
+def test_kb_auth_init_is_called_at_boot(html):
+    assert re.search(r"^kbAuthInit\(\);\s*$", html, re.MULTILINE), (
+        "kbAuthInit() phải được gọi ở khối boot cuối file"
+    )
