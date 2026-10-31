@@ -183,6 +183,58 @@ def read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+#: Nhãn tiếng Việt cho từng vai trò LLM (hiển thị trên console).
+ROLE_LABELS = {
+    "planner": "Lập kế hoạch",
+    "operator": "Điều khiển",
+    "explorer": "Quan sát",
+    "checker": "Kiểm tra",
+}
+
+
+def llm_roles_summary() -> list[dict]:
+    """Model THẬT của từng vai trò, theo đúng thứ tự ưu tiên router sẽ dùng.
+
+    Vì sao không tự parse ``config/artemis.jsonc``: thứ tự ứng viên là
+    primary → ``ARTEMIS_LLM_CHAIN_<VAI TRÒ>`` → ``fallback`` trong config, và model nào đang
+    "nghỉ" (mạch mở sau 429 quota) sẽ bị bỏ qua. Chỉ chính router trả lời đúng được câu "lượt tới
+    gọi model nào", nên hỏi thẳng nó — chỉ đọc cấu hình, không gọi mạng, không đụng thiết bị.
+
+    Đây là câu trả lời cho "chạy model nào thì hiển thị ra": khi ``gemini-3.5-flash-lite`` cạn quota
+    ngày, mọi vai trò rơi xuống ``gemini-3.1-flash-lite`` — nhìn danh sách này là thấy ngay.
+    """
+    try:
+        from artemis.config.llm import get_default_llm_config
+        from artemis.services.llm import _endpoint_candidates, _endpoint_key_of
+
+        class _ConfigOnly:
+            pass
+
+        ctx = _ConfigOnly()
+        ctx.llm_config = get_default_llm_config()
+        roles: list[dict] = []
+        for role in ("planner", "operator", "explorer", "checker"):
+            try:
+                candidates = _endpoint_candidates(ctx, role, is_utils=False)
+            except Exception:  # noqa: BLE001 - thiếu 1 vai trò không được làm hỏng cả bảng
+                continue
+            if not candidates:
+                continue
+            primary = candidates[0]
+            roles.append(
+                {
+                    "role": role,
+                    "label": ROLE_LABELS.get(role, role),
+                    "model": _endpoint_key_of(primary),
+                    "thinking": getattr(primary, "thinking_level", None),
+                    "chain": [_endpoint_key_of(endpoint) for endpoint in candidates],
+                }
+            )
+        return roles
+    except Exception:  # noqa: BLE001 - thiếu runtime thì chỉ không hiển thị được, /api/health vẫn phải chạy
+        return []
+
+
 def llm_summary() -> dict:
     env = read_env_file(ARTEMIS_ENV)
     provider, model = "google", "gemini-2.5-flash"
@@ -207,7 +259,11 @@ def llm_summary() -> dict:
         }
     return {
         "provider": provider,
-        "model": model,
+        # Resolve ``${env:...}`` — nếu không, chip trên console in ra nguyên chuỗi template
+        # ``${env:GEMINI35FLASHLITE_DEFAULT:-gemini-3.5-flash-lite}`` và nút "Kiểm tra LLM" gửi
+        # chuỗi đó làm tên model (gateway trả 404, trông như proxy hỏng).
+        "model": resolve_model_name(model),
+        "roles": llm_roles_summary(),
         # Hai thứ khác nhau, và trên máy chủ dùng chung thì khác hẳn nhau:
         #   base_url = nơi client gửi request tới (OPENAI_BASE_URL)
         #   upstream = nơi tiến trình này chuyển tiếp tới (ARTEMIS_UPSTREAM_BASE_URL)
@@ -2021,6 +2077,9 @@ def task_now(task_id: str) -> dict:
             "event_name": current.event_name,
             "elapsed_ms": round((now - (current.started_at or now)) * 1000.0, 1),
             "agent_role": current.agent_role,
+            # Model của span đang chạy: với lượt gọi LLM đây chính là "đang chạy model nào".
+            "model": current.model,
+            "provider": current.provider,
         }
 
     finished = [event for event in events if event.ended_at is not None]
@@ -2045,6 +2104,11 @@ def task_now(task_id: str) -> dict:
             "ttft_ms": last_llm.ttft_ms,
             "input_tokens": last_llm.input_tokens,
             "output_tokens": last_llm.output_tokens,
+            # Model THẬT của lượt gọi vừa xong (không phải model trong config): sau khi model chính
+            # cạn quota, đây là chỗ duy nhất tester thấy được nó đã xoay sang model nào.
+            "model": last_llm.model,
+            "endpoint": last_llm.endpoint,
+            "status": last_llm.status,
         }
         if last_llm
         else None,

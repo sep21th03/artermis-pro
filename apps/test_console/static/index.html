@@ -889,9 +889,15 @@ async function loadHealth(){
     const llm = h.llm || {};
     $('llmDot').className = 'dot ' + (llm.key_present ? 'ok' : 'err');
     $('llmText').textContent = (llm.provider || '?') + ' / ' + (llm.model || '?');
+    // Vai trò nào dùng model nào — hiện trong tooltip của chip, và ở dòng dưới cùng của panel
+    // "Đang chờ" (xem renderNow) để biết ngay khi model chính cạn quota thì đã xoay sang model nào.
+    const roleLines = (llm.roles || []).map(r =>
+      r.label + ': ' + (r.model || '?') + (r.thinking ? ' (' + r.thinking + ')' : '')
+      + (r.chain && r.chain.length > 1 ? ' → ' + r.chain.slice(1).join(' → ') : ''));
     $('llmBadge').title = 'Client gửi tới: ' + (llm.base_url || '')
       + (llm.upstream ? ' · chuyển tiếp tới: ' + llm.upstream : '')
-      + (llm.key_present ? ' · key ' + (llm.key_hint || '') : ' · thiếu key');
+      + (llm.key_present ? ' · key ' + (llm.key_hint || '') : ' · thiếu key')
+      + (roleLines.length ? '\n' + roleLines.join('\n') : '');
     const access = h.access || {};
     $('accessDot').className = 'dot ' + (access.required ? 'ok' : 'warn');
     $('accessText').textContent = access.required ? 'API khoá: bật' : 'API khoá: không cần';
@@ -1133,6 +1139,7 @@ async function loadNow(){
     if(d.in_flight){
       parts.push('⏳ <b>Đang chờ: ' + perfEsc(d.in_flight.stage_label) + '</b>'
         + ' <span class="muted">(' + perfEsc(d.in_flight.event_name) + ')</span>'
+        + (d.in_flight.model ? ' — model <b>' + perfEsc(d.in_flight.model) + '</b>' : '')
         + ' — đã ' + perfFmt(d.in_flight.elapsed_ms));
     }else if(d.silent_ms !== null && d.silent_ms !== undefined){
       parts.push('⏳ <b>Không có span nào đang chạy</b> — im lặng ' + perfFmt(d.silent_ms));
@@ -1140,6 +1147,7 @@ async function loadNow(){
     if(d.last_llm){
       parts.push('lượt LLM gần nhất: <b>' + perfFmt(d.last_llm.duration_ms) + '</b>'
         + ' (chờ token đầu ' + perfFmt(d.last_llm.ttft_ms) + ')'
+        + (d.last_llm.model ? ' · model <b>' + perfEsc(d.last_llm.model) + '</b>' : '')
         + (d.last_llm.input_tokens ? ' · ' + d.last_llm.input_tokens + ' token vào' : ''));
     }
     if(d.last_action && d.last_action.action_type){

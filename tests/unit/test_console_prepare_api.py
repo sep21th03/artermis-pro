@@ -510,6 +510,28 @@ def test_an_interpolated_model_name_falls_back_to_its_default(monkeypatch):
     assert resolved == "ts/gemini-3.5-flash-lite"
 
 
+def test_health_reports_the_real_model_and_which_role_uses_what(monkeypatch):
+    """``/api/health`` phải trả model **đã nội suy** + bảng model theo từng vai trò.
+
+    Lỗi thật trên console 31/10/2026: chip hiện nguyên chuỗi template
+    ``${env:GEMINI35FLASHLITE_DEFAULT:-gemini-3.5-flash-lite}`` nên tester không biết đang chạy
+    model nào — và nút "Kiểm tra LLM" gửi chính chuỗi đó làm tên model (gateway trả 404, trông như
+    proxy hỏng). Bảng theo vai trò là chỗ nhìn ra "model chính cạn quota thì rơi xuống model nào".
+    """
+    monkeypatch.setenv("GEMINI35FLASHLITE_DEFAULT", "gemini-3.5-flash-lite")
+
+    llm = console_server.llm_summary()
+
+    assert llm["model"] == "gemini-3.5-flash-lite"
+    assert "${" not in llm["model"]
+    roles = {row["role"]: row for row in llm["roles"]}
+    assert {"planner", "operator", "explorer", "checker"} <= set(roles)
+    for row in roles.values():
+        assert row["model"] and "${" not in row["model"]
+        # Ứng viên #0 là model chính, phần còn lại là chuỗi xoay (phải giữ đúng thứ tự).
+        assert row["chain"] and row["chain"][0] == row["model"]
+
+
 def test_a_plain_model_name_is_untouched():
     assert console_server.resolve_model_name("gpt-4o-mini") == "gpt-4o-mini"
 

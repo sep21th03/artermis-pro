@@ -134,6 +134,11 @@ def perf_session(tmp_path, monkeypatch):
             "ttft_ms": 18780.0,
             "input_tokens": 16624,
             "output_tokens": 161,
+            # Model thật của lượt gọi: sau khi model chính cạn quota, đây là chỗ duy nhất tester
+            # thấy được nó đã xoay sang model nào.
+            "model": "gemini-3.1-flash-lite",
+            "provider": "google",
+            "endpoint": "google:gemini-3.1-flash-lite",
         },
         {
             "session_id": SESSION,
@@ -170,6 +175,9 @@ def test_now_reports_what_the_agent_is_waiting_on(perf_session, monkeypatch):
     assert data["in_flight"]["elapsed_ms"] is not None
     assert data["last_llm"]["ttft_ms"] == 18780.0
     assert data["last_llm"]["input_tokens"] == 16624
+    # "Chạy model nào" phải nhìn thấy được: đây là model THẬT của lượt gọi vừa xong.
+    assert data["last_llm"]["model"] == "gemini-3.1-flash-lite"
+    assert data["last_llm"]["endpoint"] == "google:gemini-3.1-flash-lite"
     assert data["last_action"]["action_type"] == "tap"
     assert data["last_events"][0]["event_name"] == "adb_tap"
 
