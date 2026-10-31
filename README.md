@@ -58,10 +58,15 @@ sh apps/test_console/run.sh
   `ARTEMIS_KB_DSN` (cần đường mạng tới Postgres ⇒ đây là lý do có tunnel SSH, vì DB không TLS và
   không mở ra Internet); hoặc (b) *gọi console ở xa qua HTTP*: `ARTEMIS_KB_API=https://<host>` +
   `ARTEMIS_KB_API_KEY=<key>` ⇒ máy tester **không cần SSH, không cần DB, không cần khoá embedding**.
-  Endpoint là `POST {ARTEMIS_KB_API}/api/kb/retrieve` (User-Agent `ARTEMIS/1.0`, header
-  `Authorization: Bearer <key>`). Lưu ý: máy phục vụ API vẫn phải có DB, router `/api/kb/*`
-  **không có auth riêng** và cho phép sửa/xoá workflow ⇒ phải chặn ở proxy (key/IP/Cloudflare),
-  đừng mở trần ra Internet; bản deploy phải có router này (bản cũ trả 404 ⇒ KB im lặng vô dụng).
+  Có **hai** endpoint, tuỳ đường đi: `POST {ARTEMIS_KB_API}/api/knowledge/context` — đúng một lượt gọi
+  **mỗi lần chạy** (máy tester nhận về prompt hoàn chỉnh mà console sẽ tự chèn) — và
+  `POST {ARTEMIS_KB_API}/api/kb/retrieve` cho công cụ tra kiến thức giữa lúc chạy. Cả hai đều gửi
+  User-Agent `ARTEMIS/1.0` + header `Authorization: Bearer <key>`.
+  Lưu ý: máy phục vụ API vẫn phải có DB. Vai `server` (`CONSOLE_ROLE=server`) **cố ý không đăng ký**
+  `/api/kb/*` — router đó sửa/xoá được workflow mà **không có auth riêng**, nên phải chặn ở proxy
+  (key/IP/Cloudflare), đừng mở trần ra Internet; khi đó máy tester vẫn lấy kiến thức qua
+  `/api/knowledge/context`. Vì vậy **404 ở `/api/kb/*` không phải bằng chứng "KB hỏng"** — kiểm bằng
+  `/api/knowledge/context`.
 - **Quản trị KB cần đăng nhập**: tab Knowledge có form đăng nhập, tài khoản mặc định
   `admin@admin` / `admin` (đổi bằng `KB_ADMIN_EMAIL` / `KB_ADMIN_PASSWORD`; ký token bằng
   `KB_AUTH_SECRET`; hạn token `KB_AUTH_TTL_SECONDS`, mặc định 12 giờ). Chỉ tài khoản này được
@@ -72,6 +77,13 @@ sh apps/test_console/run.sh
   Embedding khi truy vấn KB dùng `GEMINI_API_KEY`/`GOOGLE_API_KEY`.
 - **Thiếu khoá SSH hoặc DSN thì web vẫn chạy bình thường**, chỉ tab **Knowledge** báo không dùng được;
   khi có khoá rồi thì mở lại bằng `sh scripts/kb_tunnel.sh start`.
+- **Cài cho máy khác (máy tester)** — máy chỉ cắm điện thoại, **không** cần PostgreSQL, **không** cần
+  khoá embedding, **không** cần key LLM thật. Một lệnh:
+  `sh scripts/install_tester.sh --console https://sep21th03.com/artemis --key 21092003`
+  (console chạy trong LAN: `--console http://<ip-máy-chạy-console>:8787`). Script tự kiểm tra `adb`/`uv`,
+  `uv sync` khi chưa có `.venv`, ghi `.env` **4 dòng** (`chmod 600`) rồi **thử gọi console** để URL/khoá
+  sai lộ ra ngay. `--dry-run` xem trước, `--force` ghi đè `.env` cũ (có sao lưu),
+  `--no-sync`/`--no-verify` bỏ bớt bước, `--help` xem đủ tham số.
 - Cần có: `adb` trong PATH và điện thoại Android đã bật **USB debugging** (đã bấm *Allow*).
 - Chưa có `uv`: `brew install uv` (macOS) hoặc `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 - Muốn chạy UI gốc của ARTEMIS (cổng 8000) thay vì Test Console: `./start.sh`.
@@ -242,12 +254,26 @@ Lưu ý khi đổi model:
 
 ## 7. Kết nối Knowledge base (bắt buộc cho tab Knowledge)
 
-Knowledge base là **PostgreSQL trên VPS**, không mở cổng ra Internet. Máy tester kết nối qua
-**SSH tunnel** `127.0.0.1:5433 → VPS:5432`. Không có tunnel thì console báo
-*"Không kết nối được PostgreSQL: port 5433 → Connection refused"* và tab Knowledge bị khoá
-(prompt vẫn chạy được, chỉ là không ghép kiến thức).
+Knowledge base là **PostgreSQL trên VPS**, không mở cổng ra Internet. Có **hai đường**, chọn theo vai
+của máy:
 
-**Tester chỉ cần một lệnh** — tunnel được mở tự động khi khởi động console:
+| Máy | Đường đi | Biến |
+| --- | --- | --- |
+| Chạy console — đọc DB trực tiếp (điều kiện để tab Knowledge hoạt động) | **SSH tunnel** `127.0.0.1:5433 → VPS:5432` | `ARTEMIS_KB_DSN` (+ `KB_VPS_*` nếu khác mặc định) |
+| Chỉ cắm điện thoại — máy tester | **HTTP** tới console | `ARTEMIS_KB_API` + `ARTEMIS_KB_API_KEY` |
+
+Không có tunnel thì console báo *"Không kết nối được PostgreSQL: port 5433 → Connection refused"* và
+tab Knowledge bị khoá (prompt vẫn chạy được, chỉ là không ghép kiến thức).
+
+**Máy tester: không SSH, không DB, không khoá embedding** — trước mỗi lần chạy ARTEMIS hỏi console
+(`POST /api/knowledge/context`) và nhận về prompt hoàn chỉnh; console tắt thì ARTEMIS chạy tiếp **không
+có kiến thức**, không bao giờ làm hỏng một lần test:
+
+```bash
+sh scripts/install_tester.sh --console https://sep21th03.com/artemis --key 21092003
+```
+
+**Máy chạy console: cần tunnel** — mở tự động khi khởi động console:
 
 ```bash
 sh apps/test_console/run.sh          # tự mở tunnel rồi chạy console ở http://127.0.0.1:8787
@@ -555,6 +581,11 @@ LOCAL_LLM=1 sh apps/test_console/run.sh                     # Ollama, 0đ
   gần nhất trong PostgreSQL rồi trả về **prompt hoàn chỉnh** (prompt gốc + hướng dẫn từng bước).
   Chỉ máy chạy console cần database và khoá embedding; máy tester chỉ cần ARTEMIS và điện thoại.
   Xem `apps/test_console/README.md`.
+- **Cài trên máy khác (máy tester)**: một lệnh —
+  `sh scripts/install_tester.sh --console <url-console> --key <khoá>`; script ghi `.env` 4 dòng rồi
+  **thử gọi console** (`/llm/v1/models` + `/api/knowledge/context`) để URL/khoá sai lộ ra ngay. Chi tiết
+  từng tình huống (chạy console tại chỗ / chỉ cắm điện thoại / đặt trên VPS):
+  [`apps/test_console/README.md`](./apps/test_console/README.md#cài-trên-máy-khác).
 - **Tài liệu**: [`apps/test_console/README.md`](./apps/test_console/README.md).
 - **Wrapper CLI**: [`scripts/artemis.sh`](./scripts/artemis.sh) (tự thêm `adb` vào PATH, tự dùng
   `.venv` hoặc `uv run`).
@@ -565,7 +596,10 @@ Mô hình: **máy DEV** chạy ARTEMIS backend + Web UI, **máy tester** cắm �
 ADB server mở ra LAN. Mọi thao tác thiết bị (screenshot, tap, swipe, input, đọc UI, UIAutomator2)
 đều đi qua ADB server đó; không có đường nào tự rơi về `localhost`.
 
-### 17.1. Máy tester (nơi cắm điện thoại)
+### 18.1. Máy tester (nơi cắm điện thoại)
+
+> Máy tester **chạy ARTEMIS tại chỗ** (không dùng ADB remote) thì bỏ qua mục 18 — cài bằng
+> `sh scripts/install_tester.sh --console <url-console> --key <khoá>` (xem mục 17).
 
 ```bash
 # Bật USB debugging trên điện thoại, cắm cáp, chấp nhận "Allow USB debugging"
@@ -581,7 +615,7 @@ sudo ufw allow from <DEV_IP> to any port 5037 proto tcp
 
 Tuyệt đối **không** mở cổng 5037 ra Internet — ADB không có xác thực kênh truyền, chỉ dùng LAN/VPN.
 
-### 17.2. Máy DEV (chạy ARTEMIS)
+### 18.2. Máy DEV (chạy ARTEMIS)
 
 ```bash
 cd ~/Developer/artermis-pro
@@ -615,7 +649,7 @@ uv run artemis adb devices --host 10.0.0.25 --port 5037
 ADB_HOST=10.0.0.25 uv run artemis run "Mở Settings, cho biết mức pin" -p flash
 ```
 
-### 17.3. Kiến trúc & giới hạn cần biết
+### 18.3. Kiến trúc & giới hạn cần biết
 
 | Hạng mục | Trạng thái với ADB remote |
 | --- | --- |
@@ -623,11 +657,11 @@ ADB_HOST=10.0.0.25 uv run artemis run "Mở Settings, cho biết mức pin" -p f
 | UIAutomator2 (đọc UI) | ✅ adbutils/uiautomator2 được rebind sang endpoint (`ANDROID_ADB_SERVER_HOST/PORT`) |
 | Device list trong Web UI, live screen, replay | ✅ dùng endpoint đã cấu hình |
 | Accessibility Helper | ⚠️ **tự động tắt** ở chế độ remote: `adb forward` chỉ bind trên loopback của máy chạy ADB server, nên máy DEV không gọi được. ARTEMIS tự chuyển sang UIAutomator2. Muốn dùng helper phải có SSH tunnel (`ssh -L <port>:127.0.0.1:<port>`) rồi đặt `ARTEMIS_ALLOW_REMOTE_HELPER=1` |
-| Ghi video bằng scrcpy | ⚠️ scrcpy tự gọi `adb` của máy DEV → cần wrapper (xem 17.4) |
+| Ghi video bằng scrcpy | ⚠️ scrcpy tự gọi `adb` của máy DEV → cần wrapper (xem 18.4) |
 | `adb start-server` / `kill-server` | ⚠️ chỉ chạy khi endpoint là local; với remote thì ARTEMIS chỉ kiểm tra kết nối (không tạo server mới trên máy DEV) |
 | Đổi endpoint từ Admin Console | Mặc định chỉ cho client local; muốn đổi từ xa đặt `ARTEMIS_ALLOW_REMOTE_ADB_CONFIGURATION=true` |
 
-### 17.4. scrcpy với ADB remote (tuỳ chọn)
+### 18.4. scrcpy với ADB remote (tuỳ chọn)
 
 ```bash
 cat > ~/bin/adb-remote <<'EOF'
@@ -638,7 +672,7 @@ chmod +x ~/bin/adb-remote
 export ADB="$HOME/bin/adb-remote"     # scrcpy dùng biến ADB này
 ```
 
-### 17.5. Kiểm thử end-to-end
+### 18.5. Kiểm thử end-to-end
 
 ```bash
 # 1) Endpoint + thiết bị

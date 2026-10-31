@@ -4,6 +4,22 @@
 
 ### Added
 
+- **`scripts/install_tester.sh` — cài ARTEMIS lên máy tester bằng một lệnh.** Máy chỉ cắm điện thoại
+  không cần PostgreSQL, không cần khoá embedding, không cần key LLM thật; gõ tay `.env` 4 dòng rất dễ
+  sai (thừa/thiếu dấu `/`, quên `ARTEMIS_KB_API`, dán nhầm key thật). Script kiểm tra `adb`/`uv` trước,
+  `uv sync` khi chưa có `.venv`, ghi `.env` `chmod 600` (không key thật, không `ARTEMIS_KB_DSN`) rồi
+  **thử gọi console** (`/llm/v1/models` + `/api/knowledge/context`) ⇒ URL/khoá sai lộ ra ngay thay vì
+  đợi tới lúc chạy task mới thấy 401. Không ghi đè `.env` đang có (cần `--force`, bản cũ được sao lưu
+  `.bak.<thời-gian>`); `--dry-run` in ra mà không ghi; `--no-sync`/`--no-verify` bỏ hai bước tương ứng;
+  `--env-file` để ghi vào đường dẫn khác. Chạy được bằng `sh` (bash 3.2 trên macOS) — mảng rỗng dưới
+  `set -u` phải dùng `${a[@]+"${a[@]}"}`.
+
+- **KB có đăng nhập quản trị (tab Knowledge).** Tài khoản mặc định `admin@admin` / `admin`
+  (`KB_ADMIN_EMAIL`/`KB_ADMIN_PASSWORD`; token ký bằng `KB_AUTH_SECRET`, hạn `KB_AUTH_TTL_SECONDS` =
+  12 giờ). Chỉ tài khoản này được **thêm/sửa/xoá** workflow; **đọc** (`/api/kb/retrieve`, danh sách)
+  vẫn không cần tài khoản để agent ở máy tester gọi được. `KB_AUTH_DISABLED=1` chỉ dành cho máy dev
+  chạy một mình. 232 dòng test ở `tests/unit/test_knowledge_auth.py`.
+
 - **KB theo công đoạn: tra đúng 1–2 mục của bước đang làm (`artemis/knowledge/subtask_kb.py`).**
   Đo trên KB thật 29/10/2026: 26 mục `device_action.*` (luật chọn thiết bị/hành động khi tạo ngữ
   cảnh, hẹn giờ) **có** trong KB nhưng câu task đầy đủ không kéo về mục nào — và nâng
@@ -44,6 +60,12 @@
   `navigationRef.current.navigate(...)` mất tích vì mất chuỗi member lồng nhau. 28 test.
 
 ### Changed
+
+- **README: nêu rõ hai đường dùng KB, và sửa lỗi đánh số mục.** Mục 7 giờ có bảng *máy chạy console
+  (SSH tunnel + `ARTEMIS_KB_DSN`)* vs *máy tester (`ARTEMIS_KB_API` + `ARTEMIS_KB_API_KEY`)*, và nói rõ
+  vai `server` **cố ý không đăng ký** `/api/kb/*` ⇒ **404 ở đó không phải bằng chứng "KB hỏng"**, kiểm
+  bằng `/api/knowledge/context`. Thêm `scripts/install_tester.sh` vào phần chạy nhanh và mục 17; các
+  mục con của mục 18 (ADB server từ xa) đang bị ghi `17.x` đã sửa thành `18.x`.
 
 - **Cắt độ trễ tra KB: local-first + cầu dao, bằng chứng màn hình cho loại thiết bị, cache có hạn
   dùng.** Ba việc theo yêu cầu trước khi chạy lại task trên APK; kiến trúc không đổi (vẫn
@@ -194,6 +216,17 @@
   - `config/artemis.jsonc`: `default.fallback` và preset `gemini-flash` chuyển hết về Google
     (bỏ `ts/…` và `gemini-2.0-flash`) ⇒ **mọi chuỗi của cả 4 vai trò giờ kết thúc trong Google**,
     không còn mắt xích nào ra gateway bên thứ ba.
+
+### Fixed
+
+- **Console: mọi tab không bấm được (`apps/test_console/static/index.html`).** File có **2 thẻ
+  `<script>`**; phần gắn sự kiện đăng nhập KB bị chèn vào script #1 (`$('kbLoginBtn').onclick =
+  kbLogin;`) trong khi `kbLogin`/`kbLogout` lại khai báo ở script #2 ⇒ `ReferenceError` ngay khi trang
+  tải ⇒ script #1 chết giữa đường ⇒ **toàn bộ handler của các tab không được gắn** (HTML đã render nên
+  trông như trang bình thường, chỉ là không bấm được gì). Đã gom `kbToken`/`kbSetToken`/`kbAuthHint` về
+  cùng script với `api()`, gắn sự kiện trong `kbAuthInit()` gọi ở khối boot, và khoá lại bằng 3
+  regression test (`tests/unit/test_console_kb_ui.py`): helper phải cùng script với `api()`, gắn sự
+  kiện phải nằm trong `kbAuthInit` chứ **không** ở top-level, và `kbAuthInit();` phải được gọi lúc boot.
 
 ### Added
 
