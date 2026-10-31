@@ -30,7 +30,12 @@ from artemis.graph.state import State
 from artemis.graph.visibility import strict_state
 from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER, operator_shell_tool
 from artemis.llm.google import usage_from_message
-from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
+from artemis.services.llm import (
+    acomplete,
+    get_llm,
+    invoke_llm_with_timeout_message,
+    with_fallback,
+)
 from artemis.tools.command_tool import (
     analyze_task_output_wrapper,
     get_adb_task_registry,
@@ -142,6 +147,25 @@ def _described(value: Any) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+async def acomplete_with_fallback(bound_llm, bound_fallback, messages):
+    """Gọi model chính; có model dự phòng thì bàn giao khi model chính hỏng vì quota.
+
+    Google Free Tier cho 500 request/ngày **mỗi model**, nên model chính cạn quota giữa lượt chạy
+    là chuyện thường.  Không có dự phòng ở đây thì 429 quota ngày là **chết cả task** dù model kế
+    trong ``ARTEMIS_LLM_CHAIN_*`` còn nguyên quota — đúng lỗi đo được trên máy thật 31/10/2026
+    (task 3110_0957: Operator hết quota ``gemini-3.5-flash-lite`` rồi task chết).
+
+    Tách riêng khỏi ``_invoke_llm_loop`` để test được mà không cần dựng cả OperatorNode: đây chính
+    là chỗ quyết định "hết quota thì xoay model hay chết".
+    """
+    if bound_fallback is None:
+        return await invoke_llm_with_timeout_message(acomplete(bound_llm, messages))
+    return await with_fallback(
+        main_call=lambda: invoke_llm_with_timeout_message(acomplete(bound_llm, messages)),
+        fallback_call=lambda: invoke_llm_with_timeout_message(acomplete(bound_fallback, messages)),
+    )
 
 
 class OperatorNode:
@@ -623,6 +647,7 @@ class OperatorNode:
         traced_tools: list,
         new_subagent_calls: list,
         state: State,
+        fallback_llm=None,
     ) -> tuple[list[dict] | None, str | None, str | None, bool]:
         max_iterations = OPERATOR_MAX_TOOL_ITERATIONS
         # PHASE A/B: yêu cầu quan sát lại (retry guard) + watchdog tiến triển. Chỉ **thêm văn bản**
@@ -653,7 +678,10 @@ class OperatorNode:
                 )
 
             bound_llm = base_llm.bind_tools(tools=traced_tools)
-            response = await invoke_llm_with_timeout_message(acomplete(bound_llm, current_messages))
+            bound_fallback = (
+                fallback_llm.bind_tools(tools=traced_tools) if fallback_llm is not None else None
+            )
+            response = await acomplete_with_fallback(bound_llm, bound_fallback, current_messages)
             add_llm_usage(self.ctx, response)
 
             usage = usage_from_message(response)
@@ -1114,6 +1142,16 @@ class OperatorNode:
 
         # 6. Prepare LLM
         llm = get_llm(ctx=self.ctx, name="operator")
+        # Model dự phòng cho các lượt gọi của lượt này.  Google Free Tier cho 500 request/ngày
+        # **mỗi model**, nên model chính cạn quota giữa lượt chạy là chuyện thường; có dự phòng
+        # thì gateway bàn giao ngay cho model kế trong ``ARTEMIS_LLM_CHAIN_OPERATOR`` thay vì để
+        # cả task chết (đo trên máy thật 31/10/2026: operator 429 quota ngày ⇒ task chết trong khi
+        # model kế còn nguyên quota).  Không dựng được dự phòng thì giữ nguyên hành vi cũ.
+        try:
+            llm_fallback = get_llm(ctx=self.ctx, name="operator", use_fallback=True)
+        except Exception as exc:  # noqa: BLE001 - thiếu fallback không được làm chết lượt chạy
+            llm_fallback = None
+            logger.warning(f"Không tạo được model dự phòng cho operator: {exc}")
 
         # 7. Build Prompt
         messages = await self._build_prompt(
@@ -1137,6 +1175,7 @@ class OperatorNode:
             tool_limit_exceeded,
         ) = await self._invoke_llm_loop(
             base_llm=llm,
+            fallback_llm=llm_fallback,
             current_messages=messages,
             traced_tools=traced_tools,
             new_subagent_calls=new_subagent_calls,

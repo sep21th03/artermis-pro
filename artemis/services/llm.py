@@ -46,6 +46,7 @@ from artemis.data_engine.trace import CURRENT_TRACE_ID, DataEngineCallbackHandle
 from artemis.llm.google import is_google_chat_model, is_google_provider
 from artemis.llm.reliability import (
     CircuitBreaker,
+    Failure,
     FailureCategory,
     LLMCallError,
     LLMExhaustedError,
@@ -497,7 +498,19 @@ async def _wait_for_resume(pause_file: Path) -> bool:
 
 
 async def _wait_for_breaker(key: str) -> None:
-    """Wait out an open circuit instead of hammering a melting provider."""
+    """Wait out an open circuit instead of hammering a melting provider.
+
+    Ngoại lệ: khi có **model dự phòng** đang chờ (đang trong ``with_fallback``) thì không chờ —
+    chờ ở đây là tự bắn vào đúng model vừa cạn quota.  Đo trên máy thật 31/10/2026: Planner chờ
+    mạch ``google:gemini-3.5-flash-lite`` 120s rồi vẫn 429, trong khi model kế trong
+    ``ARTEMIS_LLM_CHAIN_*`` còn nguyên quota, và người dùng phải bấm Dừng.  Bàn giao ngay để lượt
+    này dùng model kế.
+    """
+    if not _ENDPOINT_BREAKER.allow(key) and _FALLBACK_AVAILABLE.get():
+        raise LLMExhaustedError(
+            f"LLM circuit open for {key}; chuyển sang model dự phòng.",
+            failure=Failure(FailureCategory.RATE_LIMIT, False, True),
+        )
     waited = 0.0
     warned = False
     while not _ENDPOINT_BREAKER.allow(key):
@@ -560,18 +573,37 @@ async def _run_with_recovery[T](
                             endpoint_key, failure, open_for=quota_cooldown(e)
                         )
                     if not failure.retryable:
-                        llm_logger.warning(
-                            f"LLM call failed permanently ({failure.category.value}): {e}"
-                        )
+                        # ``should_fallback`` nghĩa là "model này hỏng vì quota, đổi model đi" —
+                        # điển hình là 429 quota **theo ngày** của Google (500 request/ngày/**mỗi
+                        # model**).  Trước đây nhánh này luôn ném LLMPermanentError, nên dù bộ
+                        # phân loại đã nói ``should_fallback=True`` thì chuỗi model vẫn không được
+                        # dùng: đo trên máy thật 31/10/2026, Operator cạn quota
+                        # ``gemini-3.5-flash-lite`` và **cả task chết** trong khi các model khác
+                        # trong ``ARTEMIS_LLM_CHAIN_*`` còn nguyên quota.  Có model dự phòng đang
+                        # chờ ⇒ bàn giao ngay (LLMExhaustedError — đúng thứ ``with_fallback``
+                        # chờ); không có thì vẫn là lỗi chết, không pause vô ích.
+                        handover = failure.should_fallback and _FALLBACK_AVAILABLE.get()
+                        if handover:
+                            llm_logger.warning(
+                                f"LLM call failed ({failure.category.value}); chuyển sang model"
+                                f" dự phòng: {e}"
+                            )
+                        else:
+                            llm_logger.warning(
+                                f"LLM call failed permanently ({failure.category.value}): {e}"
+                            )
                         _record_llm_event(
                             "llm_gave_up",
                             {
                                 "error": str(e)[:1000],
                                 "category": failure.category.value,
                                 "retryable": False,
+                                **({"handover": "fallback"} if handover else {}),
                             },
                             status="failed",
                         )
+                        if handover:
+                            raise LLMExhaustedError(str(e), failure=failure, cause=e) from e
                         raise LLMPermanentError(str(e), failure=failure, cause=e) from e
                     last_error, last_failure = e, failure
                     attempt = attempts.get(failure.category, 0) + 1

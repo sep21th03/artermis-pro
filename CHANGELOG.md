@@ -245,6 +245,27 @@
 
 ### Fixed
 
+- **Hết quota nhưng KHÔNG xoay model (2 task Pro ngày 31/10/2026).** Hai lỗi khác nhau, cùng hệ quả
+  "cạn quota một model là chết task":
+  - **Operator không có model dự phòng.** Task `3110_0957` chết bằng `LLMPermanentError` với `429
+    RESOURCE_EXHAUSTED` (Free Tier: 500 request/ngày **mỗi model**, model `gemini-3.5-flash-lite`),
+    dù bộ phân loại đã nói `should_fallback=True` và `ARTEMIS_LLM_CHAIN_OPERATOR` còn model khác
+    nguyên quota. Operator là agent gọi LLM trong **vòng lặp** mà không đi qua `with_fallback`
+    (Planner/Outputter thì có). Nay Operator có `llm_fallback` (`get_llm(..., use_fallback=True)`) và
+    gọi qua `acomplete_with_fallback()`; không dựng được fallback thì giữ nguyên hành vi cũ.
+  - **Mạch mở thì "chờ" thay vì đổi model.** Task `3110_0959`: Planner đã bàn giao sang model kế,
+    nhưng **lượt gọi sau** quay lại model cũ (đối tượng llm tạo một lần cho cả lượt chạy) và
+    `_wait_for_breaker` chờ mạch tới 120s rồi vẫn 429 — người dùng phải bấm Dừng. Nay mạch đang mở
+    mà có model dự phòng thì bàn giao ngay (`LLMExhaustedError`).
+  - Nhánh "non-retryable" ghi log/nhãn đúng sự việc: `handover: fallback` thay vì *"failed
+    permanently"* — chính câu log sai đó làm sự cố trông như "model hỏng vĩnh viễn" trong khi thực
+    ra chỉ cần đổi model.
+  - 5 test mới (`tests/unit/test_llm_gateway.py`, `tests/unit/agents/test_operator.py`). Đã kiểm
+    ngược: test Operator và test mạch mở **fail trên hành vi cũ**, pass sau khi sửa.
+  - Còn cùng lỗ hổng, **chưa sửa**: `flash/runner.py:966`, `checker.py:493`, `diagnoser.py:321`,
+    `history_analyzer.py:135`, `log_analyzer.py:207` vẫn gọi `acomplete` trực tiếp không qua
+    `with_fallback` (Flash là profile mặc định của console ⇒ nên vá tiếp).
+
 - **`scripts/kb_import_workflows.py`: `--dry-run` không đếm số việc sẽ làm.** Tổng kết in *"Tạo mới 0 ·
   bỏ qua 60"* trong khi log có 3 dòng *"SẼ TẠO"* — đúng lúc cần biết còn bao nhiêu việc thì tổng kết
   lại nói 0 (phát hiện khi nạp bộ `kb/`). Nay dry-run in *"Dry-run: sẽ tạo N · bỏ qua M · lỗi K"*, đếm

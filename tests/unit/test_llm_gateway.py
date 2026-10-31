@@ -6,7 +6,12 @@ from types import SimpleNamespace
 from langchain_core.messages import AIMessage, AIMessageChunk
 import pytest
 
-from artemis.llm.reliability import LLMExhaustedError, LLMPermanentError
+from artemis.llm.reliability import (
+    Failure,
+    FailureCategory,
+    LLMExhaustedError,
+    LLMPermanentError,
+)
 from artemis.services import llm as llm_service
 from artemis.services.llm import (
     RobustChatModelWrapper,
@@ -282,3 +287,89 @@ async def test_mid_stream_failure_records_stream_reset_payload(monkeypatch):
     assert payload["reason"] == "mid_stream_failure"
     assert "stream_exec_id" in payload
     assert "lower API priority" in payload["message"]
+
+
+#: 429 quota **theo ngày** của Google Free Tier: non-retryable, nhưng phải **đổi model**.
+DAILY_QUOTA_ERROR = (
+    "429 Too Many Requests: You exceeded your current quota, please check your plan and billing"
+    " details. * Quota exceeded for metric:"
+    " generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 500, model:"
+    " gemini-3.5-flash-lite ... 'quotaMetric':"
+    " 'generate_content_free_tier_requests', 'retryDelay': '14456s'"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_daily_quota_hands_over_to_the_fallback_instead_of_dying():
+    """Quota theo ngày + có model dự phòng ⇒ bàn giao, không chết task.
+
+    Đo trên máy thật 31/10/2026 (task 3110_0957): Operator cạn quota ``gemini-3.5-flash-lite``
+    rồi cả task chết bằng ``LLMPermanentError``, trong khi các model khác trong
+    ``ARTEMIS_LLM_CHAIN_OPERATOR`` còn nguyên quota — nhánh "non-retryable" cũ bỏ qua
+    ``should_fallback`` nên **không bao giờ** bàn giao cho model kế.
+    """
+
+    class QuotaDead:
+        async def astream(self, *args, **kwargs):
+            raise RuntimeError(DAILY_QUOTA_ERROR)
+            yield  # pragma: no cover
+
+    wrapper = RobustChatModelWrapper(QuotaDead())
+    calls = {"fallback": 0}
+
+    async def fallback_call():
+        calls["fallback"] += 1
+        return AIMessage(content="câu trả lời từ model kế")
+
+    result = await with_fallback(
+        main_call=lambda: wrapper.complete([]),
+        fallback_call=fallback_call,
+    )
+
+    assert result.content == "câu trả lời từ model kế"
+    assert calls["fallback"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_daily_quota_without_a_fallback_still_fails_fast():
+    """Không có model dự phòng thì vẫn là lỗi chết — không pause chờ quota hàng giờ."""
+
+    class QuotaDead:
+        async def astream(self, *args, **kwargs):
+            raise RuntimeError(DAILY_QUOTA_ERROR)
+            yield  # pragma: no cover
+
+    wrapper = RobustChatModelWrapper(QuotaDead())
+    with pytest.raises(LLMPermanentError):
+        await wrapper.complete([])
+    assert not llm_service.PAUSE_FILE.exists()
+
+
+@pytest.mark.asyncio
+async def test_an_open_circuit_hands_over_instead_of_waiting():
+    """Mạch mở (model vừa cạn quota) + có dự phòng ⇒ bàn giao ngay, không chờ cooldown.
+
+    Đo trên máy thật 31/10/2026 (task 3110_0959): Planner chờ mạch ``google:gemini-3.5-flash-lite``
+    tới 120s rồi vẫn 429, trong khi model kế trong chuỗi còn quota — người dùng phải bấm Dừng.
+    """
+    key = "google:gemini-3.5-flash-lite"
+    llm_service._ENDPOINT_BREAKER.record_failure(
+        key, Failure(FailureCategory.RATE_LIMIT, False, True), open_for=3600
+    )
+    token = llm_service._FALLBACK_AVAILABLE.set(True)
+    try:
+        with pytest.raises(LLMExhaustedError):
+            await llm_service._wait_for_breaker(key)
+    finally:
+        llm_service._FALLBACK_AVAILABLE.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_an_open_circuit_without_a_fallback_still_waits():
+    """Không có dự phòng thì vẫn chờ hết cooldown rồi đi tiếp (không bỏ lượt gọi)."""
+    key = "google:gemini-3.5-flash-lite"
+    llm_service._ENDPOINT_BREAKER.record_failure(
+        key, Failure(FailureCategory.RATE_LIMIT, False, True), open_for=0.05
+    )
+
+    await llm_service._wait_for_breaker(key)  # không ném lỗi

@@ -1655,3 +1655,43 @@ async def test_operator_burst_limit_error_text_is_not_repeated_per_call():
     # Nothing from the rejected burst ran; turn 2's single click did.
     decisions = json.loads(node_update["structured_decisions"])
     assert len(decisions) == 1 and decisions[0]["action"] == "tap"
+
+
+@pytest.mark.asyncio
+async def test_operator_call_rotates_to_the_fallback_on_a_daily_quota():
+    """Operator hết quota model chính ⇒ dùng model kế, KHÔNG chết cả task.
+
+    Đo trên máy thật 31/10/2026 (task 3110_0957): Operator nhận 429 quota ngày của
+    ``gemini-3.5-flash-lite`` và cả task chết bằng ``LLMPermanentError``, trong khi
+    ``ARTEMIS_LLM_CHAIN_OPERATOR`` còn model khác nguyên quota. ``acomplete_with_fallback`` là chỗ
+    duy nhất quyết định điều đó, nên test bám đúng nó.
+    """
+    from langchain_core.messages import AIMessageChunk
+
+    from artemis.agents.operator.operator import acomplete_with_fallback
+    from artemis.services import llm as llm_service
+    from artemis.services.llm import RobustChatModelWrapper
+
+    class QuotaDeadOperatorModel:
+        async def astream(self, *args, **kwargs):
+            raise RuntimeError(
+                "429 Too Many Requests: You exceeded your current quota ... 'quotaMetric':"
+                " 'generate_content_free_tier_requests', 'retryDelay': '14456s'"
+            )
+            yield  # pragma: no cover
+
+    class HealthyOperatorModel:
+        async def astream(self, *args, **kwargs):
+            yield AIMessageChunk(content="bước tiếp theo từ model kế")
+
+    try:
+        result = await acomplete_with_fallback(
+            RobustChatModelWrapper(QuotaDeadOperatorModel()),
+            RobustChatModelWrapper(HealthyOperatorModel()),
+            [],
+        )
+    finally:
+        # Dọn mạch mà lượt gọi vừa mở, tránh rò trạng thái sang test khác.
+        llm_service._ENDPOINT_BREAKER.record_success("QuotaDeadOperatorModel")
+
+    assert "model kế" in result.content
