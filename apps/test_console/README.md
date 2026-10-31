@@ -210,6 +210,18 @@ ARTEMIS_WEB_HOST=0.0.0.0 sh apps/test_console/run.sh
 
 rồi mở firewall cho cổng 8787 — **chỉ trong LAN, đừng mở ra Internet**.
 
+Hoặc để script làm hết (kiểm tra công cụ → `uv sync` → ghi `.env` → **thử gọi console** để biết ngay
+URL/khoá có đúng):
+
+```bash
+sh scripts/install_tester.sh --console http://<ip-máy-chạy-console>:8787 --key 21092003
+sh scripts/install_tester.sh --console https://sep21th03.com/artemis --key 21092003   # console trên VPS
+```
+
+Script ghi đúng **4 dòng** của mục trên, `chmod 600`, **không** ghi key LLM thật và **không** ghi
+`ARTEMIS_KB_DSN`. `--dry-run` in `.env` ra mà không ghi; `--force` ghi đè `.env` đang có (bản cũ được
+sao lưu `.bak.<thời-gian>`); `--no-sync` / `--no-verify` bỏ hai bước tương ứng; `--help` xem đủ tham số.
+
 **Vì sao chỉ một máy cần PostgreSQL.** Toàn bộ kiến thức — các Workflow của app — nằm trong
 một PostgreSQL trên máy chạy console (hoặc trên VPS của bạn). Máy tester trước mỗi lần chạy hỏi
 đúng một câu:
