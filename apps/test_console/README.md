@@ -32,6 +32,12 @@ sh apps/test_console/run.sh
     `root@VPS:~/.ssh/authorized_keys`.
   - Không có SSH vào VPS ⇒ chạy không KB: `KB_TUNNEL=0 sh apps/test_console/run.sh` (web vẫn lên,
     chỉ tab Knowledge báo không dùng được).
+- **Có 2 cách dùng KB — không nhất thiết phải SSH**: (a) *đọc thẳng database* bằng
+  `ARTEMIS_KB_DSN` (cần đường mạng tới Postgres ⇒ đó là lý do có tunnel SSH); hoặc (b) *gọi console
+  ở xa qua HTTP*: `ARTEMIS_KB_API=https://<host>` + `ARTEMIS_KB_API_KEY=<key>` ⇒ máy tester **không
+  cần SSH/DB/khoá embedding**. Endpoint `POST {ARTEMIS_KB_API}/api/kb/retrieve` (UA `ARTEMIS/1.0`,
+  `Authorization: Bearer <key>`). Máy phục vụ vẫn cần DB; router `/api/kb/*` **không có auth riêng**
+  (sửa/xoá được workflow) ⇒ chặn ở proxy, không mở trần ra Internet.
 - **DSN**: `.env` cần `ARTEMIS_KB_DSN=postgresql://artemis:<mật-khẩu>@127.0.0.1:5433/artemis_kb`
   (`.env.example` không có sẵn). Khoá SSH không thay thế dòng này. Embedding dùng
   `GEMINI_API_KEY`/`GOOGLE_API_KEY`.
