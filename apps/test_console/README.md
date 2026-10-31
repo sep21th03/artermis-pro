@@ -23,6 +23,13 @@ sh apps/test_console/run.sh
 
 - `run.sh` **tự gọi tunnel KB (`ensure`) rồi mới khởi động web** ⇒ bình thường chỉ cần lệnh số 3.
 - Tunnel riêng (kiểm tra / mở lại khi đứt): `sh scripts/kb_tunnel.sh status | start | restart | ensure`
+- **Knowledge base cần 2 thứ (không phải cài thêm gì)**: (1) **file khoá SSH** tới VPS ở
+  `~/.ssh/greencloud`, hoặc khai `KB_VPS_KEY=<đường dẫn>` trong `.env` — `run.sh` dùng khoá này mở
+  tunnel `127.0.0.1:5433 → VPS:5432` (đổi VPS/user bằng `KB_VPS_HOST`, `KB_VPS_USER`); (2) dòng
+  `ARTEMIS_KB_DSN=postgresql://…@127.0.0.1:5433/artemis_kb` trong `.env` (xin từ người giữ DB —
+  `.env.example` **không** có sẵn). Embedding dùng `GEMINI_API_KEY`/`GOOGLE_API_KEY`.
+- **Thiếu khoá SSH hoặc DSN: web vẫn chạy**, chỉ tab Knowledge báo không dùng được ⇒ mở lại bằng
+  `sh scripts/kb_tunnel.sh start` sau khi đã có khoá.
 - Cần có: `adb` trong PATH + điện thoại Android đã bật **USB debugging** (đã bấm *Allow*).
 - Chưa có `uv`: `brew install uv` (macOS) hoặc `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 - Tắt bước tunnel khi chạy: `KB_TUNNEL=0 sh apps/test_console/run.sh`.

@@ -44,6 +44,12 @@ sh apps/test_console/run.sh
 
 - `run.sh` **tự mở tunnel KB rồi mới khởi động web** ⇒ bình thường chỉ cần chạy lệnh số 3.
 - Tunnel riêng (khi cần kiểm tra / mở lại): `sh scripts/kb_tunnel.sh status | start | restart | ensure`
+- **Knowledge base cần 2 thứ, không cần cài gì thêm**: (1) **file khoá SSH** tới VPS ở
+  `~/.ssh/greencloud` (hoặc khai `KB_VPS_KEY=<đường dẫn khoá>` trong `.env`) — `run.sh` dùng khoá này
+  để mở tunnel `127.0.0.1:5433 → VPS:5432`; (2) dòng `ARTEMIS_KB_DSN=postgresql://…@127.0.0.1:5433/artemis_kb`
+  trong `.env` (xin mật khẩu từ người giữ DB — `.env.example` **không** có sẵn dòng này).
+- **Thiếu khoá SSH hoặc DSN thì web vẫn chạy bình thường**, chỉ tab **Knowledge** báo không dùng được;
+  khi có khoá rồi thì mở lại bằng `sh scripts/kb_tunnel.sh start`.
 - Cần có: `adb` trong PATH và điện thoại Android đã bật **USB debugging** (đã bấm *Allow*).
 - Chưa có `uv`: `brew install uv` (macOS) hoặc `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 - Muốn chạy UI gốc của ARTEMIS (cổng 8000) thay vì Test Console: `./start.sh`.
