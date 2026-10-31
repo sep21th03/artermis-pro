@@ -23,11 +23,18 @@ sh apps/test_console/run.sh
 
 - `run.sh` **tự gọi tunnel KB (`ensure`) rồi mới khởi động web** ⇒ bình thường chỉ cần lệnh số 3.
 - Tunnel riêng (kiểm tra / mở lại khi đứt): `sh scripts/kb_tunnel.sh status | start | restart | ensure`
-- **Knowledge base cần 2 thứ (không phải cài thêm gì)**: (1) **file khoá SSH** tới VPS ở
-  `~/.ssh/greencloud`, hoặc khai `KB_VPS_KEY=<đường dẫn>` trong `.env` — `run.sh` dùng khoá này mở
-  tunnel `127.0.0.1:5433 → VPS:5432` (đổi VPS/user bằng `KB_VPS_HOST`, `KB_VPS_USER`); (2) dòng
-  `ARTEMIS_KB_DSN=postgresql://…@127.0.0.1:5433/artemis_kb` trong `.env` (xin từ người giữ DB —
-  `.env.example` **không** có sẵn). Embedding dùng `GEMINI_API_KEY`/`GOOGLE_API_KEY`.
+- **Tunnel KB cần gì** (không cài thêm gói nào): **một file khoá SSH private** tới VPS — mặc định
+  `~/.ssh/greencloud`, đổi bằng `KB_VPS_KEY=<đường dẫn>` khai trong `.env` hoặc export trong shell
+  (`KB_VPS_HOST`, `KB_VPS_USER` để đổi VPS/user; mặc định `root@103.199.18.222`, tunnel
+  `127.0.0.1:5433 → VPS:5432`).
+  - Máy **chưa có khoá**: chép khoá private qua kênh an toàn + `chmod 600`, hoặc tạo khoá mới
+    (`ssh-keygen -t ed25519 -f ~/.ssh/greencloud`) rồi nhờ người giữ VPS thêm khoá public vào
+    `root@VPS:~/.ssh/authorized_keys`.
+  - Không có SSH vào VPS ⇒ chạy không KB: `KB_TUNNEL=0 sh apps/test_console/run.sh` (web vẫn lên,
+    chỉ tab Knowledge báo không dùng được).
+- **DSN**: `.env` cần `ARTEMIS_KB_DSN=postgresql://artemis:<mật-khẩu>@127.0.0.1:5433/artemis_kb`
+  (`.env.example` không có sẵn). Khoá SSH không thay thế dòng này. Embedding dùng
+  `GEMINI_API_KEY`/`GOOGLE_API_KEY`.
 - **Thiếu khoá SSH hoặc DSN: web vẫn chạy**, chỉ tab Knowledge báo không dùng được ⇒ mở lại bằng
   `sh scripts/kb_tunnel.sh start` sau khi đã có khoá.
 - Cần có: `adb` trong PATH + điện thoại Android đã bật **USB debugging** (đã bấm *Allow*).

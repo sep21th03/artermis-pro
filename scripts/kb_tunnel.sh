@@ -18,15 +18,29 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE="$REPO_ROOT/.env"
 
 read_env() {
+  # Luôn trả 0: dưới ``set -euo pipefail``, ``grep`` không khớp sẽ làm cả script thoát im lặng
+  # (đúng lỗi đã xảy ra khi bật đọc .env).
   [ -f "$ENV_FILE" ] || return 0
-  grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2-
+  grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true
+  return 0
 }
 
-VPS_HOST="${KB_VPS_HOST:-${ARTEMIS_KB_VPS_HOST:-103.199.18.222}}"
-VPS_USER="${KB_VPS_USER:-${ARTEMIS_KB_VPS_USER:-root}}"
-VPS_KEY="${KB_VPS_KEY:-$HOME/.ssh/greencloud}"
-LOCAL_PORT="${KB_LOCAL_PORT:-5433}"
-REMOTE_PORT="${KB_REMOTE_PORT:-5432}"
+resolve() {
+  # Thứ tự: biến môi trường → .env → mặc định.  Header của script vẫn luôn ghi "mặc định lấy từ
+  # .env nếu có" nhưng trước đây script **không** đọc .env, nên khai KB_VPS_KEY trong .env bị bỏ qua
+  # im lặng và tunnel cứ đòi ~/.ssh/greencloud.
+  local name="$1" default="$2" value
+  eval "value=\${$name:-}"
+  if [ -z "$value" ]; then value="$(read_env "$name" || true)"; fi
+  if [ -z "$value" ]; then value="$default"; fi
+  printf '%s' "$value"
+}
+
+VPS_HOST="$(resolve KB_VPS_HOST "$(resolve ARTEMIS_KB_VPS_HOST 103.199.18.222)")"
+VPS_USER="$(resolve KB_VPS_USER "$(resolve ARTEMIS_KB_VPS_USER root)")"
+VPS_KEY="$(resolve KB_VPS_KEY "$HOME/.ssh/greencloud")"
+LOCAL_PORT="$(resolve KB_LOCAL_PORT 5433)"
+REMOTE_PORT="$(resolve KB_REMOTE_PORT 5432)"
 PID_FILE="${TMPDIR:-/tmp}/artemis_kb_tunnel.pid"
 LOG_FILE="${TMPDIR:-/tmp}/artemis_kb_tunnel.log"
 
