@@ -130,6 +130,14 @@ class PerfEvent(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
+    #: Token nhà cung cấp báo là **lấy từ cache** (Gemini ``cached_content_token_count``).
+    #: Trước đây chỉ số này chỉ có trong log ``step-metrics`` của Operator, nên không đo được
+    #: tỉ lệ cache cho Planner/Checker/sub-agent — mà đây là thứ duy nhất trả lời được "tiền tố
+    #: có ổn định không" khi tối ưu prompt.
+    cached_tokens: int | None = Field(default=None, description="Prompt token lấy từ cache")
+    cache_ratio: float | None = Field(
+        default=None, description="cached / prompt (0–1), chỉ số của chính lượt gọi này"
+    )
     retry_count: int | None = Field(default=None, description="Số lần thử lại trong span này")
     retry_wait_ms: float | None = Field(default=None, description="Tổng thời gian chờ backoff")
     ttft_ms: float | None = Field(default=None, description="Time to first token (streaming)")

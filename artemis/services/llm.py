@@ -43,7 +43,7 @@ from artemis.config import (
 )
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import CURRENT_TRACE_ID, DataEngineCallbackHandler
-from artemis.llm.google import is_google_chat_model, is_google_provider
+from artemis.llm.google import is_google_chat_model, is_google_provider, usage_from_message
 from artemis.llm.reliability import (
     CircuitBreaker,
     Failure,
@@ -64,7 +64,7 @@ from artemis.perf import (
     record_event,
 )
 from artemis.perf import context as perf_context
-from artemis.services.token_meter import record_llm_usage
+from artemis.services.token_meter import cached_ratio, record_llm_usage
 from artemis.llm.structured import (
     ParseFailure,
     StructuredOutputError,
@@ -955,11 +955,17 @@ class RobustChatModelWrapper:
         if span is None:
             return
         prompt, completion, total = _extract_token_usage(response)
+        usage = usage_from_message(response) or {}
+        cached = int(usage.get("cached_tokens") or 0)
         span.set(
             input_tokens=prompt,
             output_tokens=completion,
             total_tokens=total,
             ttft_ms=_PERF_TTFT_MS.get(),
+            # Tỉ lệ cache của **chính lượt này**: đo được cho mọi vai trò, không chỉ Operator.
+            # Tiền tố ổn định ⇒ con số này cao; prompt đổi mỗi lượt ⇒ 0.
+            cached_tokens=cached,
+            cache_ratio=cached_ratio(cached, prompt or 0),
         )
         breakdown = _context_breakdown(messages)
         if breakdown:

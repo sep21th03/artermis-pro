@@ -28,6 +28,7 @@ from artemis.utils.context_images import (
     IMAGE_OMITTED_PLACEHOLDER,
     SCREENSHOT_LABEL,
     cap_context_images,
+    cap_request_images,
     count_context_images,
 )
 
@@ -81,6 +82,48 @@ def test_the_label_above_a_dropped_image_leaves_with_it():
     # Ảnh được giữ thì nhãn của nó vẫn còn.
     kept_texts = [b.get("text") for b in messages[1].content if isinstance(b, dict)]
     assert SCREENSHOT_LABEL in kept_texts
+
+
+# ── Bản sao cho request (Operator/Pro) ───────────────────────────────────
+def test_cap_request_images_leaves_the_original_messages_untouched():
+    """Ledger/trace phải giữ nguyên ảnh: chỉ **request** gửi model bị cắt.
+
+    Đây là yêu cầu tường minh của Phase B ("không xoá ảnh khỏi trace hoặc evidence storage;
+    chỉ tối ưu ảnh gửi vào model"). Nếu cắt tại chỗ thì lịch sử hội thoại mất ảnh và trace
+    cũng mất theo.
+    """
+    ledger = [observation("a"), observation("b"), observation("c")]
+
+    request, dropped = cap_request_images(ledger, 1)
+
+    assert dropped == 2
+    # Request chỉ còn 1 ảnh (ảnh mới nhất)…
+    assert count_context_images(request) == 1
+    # …nhưng lịch sử gốc vẫn đủ 3 ảnh, nguyên vẹn từng block.
+    assert count_context_images(ledger) == 3
+    assert ledger[-1].content[2] == image_block("c")
+    assert ledger[0].content[2] == image_block("a")
+
+
+def test_cap_request_images_is_a_no_op_when_disabled():
+    """``max_images <= 0`` ⇒ giữ nguyên hành vi cũ, và không nhân bản gì."""
+    ledger = [observation("a"), observation("b")]
+
+    request, dropped = cap_request_images(ledger, 0)
+
+    assert dropped == 0
+    assert request is ledger
+
+
+def test_cap_request_images_keeps_text_only_messages_shared():
+    """Message không có ảnh dùng lại chính object cũ (không tốn bộ nhớ vô ích)."""
+    system = SystemMessage(content="static instructions")
+    ledger = [system, observation("a"), observation("b")]
+
+    request, dropped = cap_request_images(ledger, 1)
+
+    assert dropped == 1
+    assert request[0] is system
 
 
 def test_capping_keeps_two_when_asked_for_two():

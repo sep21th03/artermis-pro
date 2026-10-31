@@ -373,3 +373,38 @@ async def test_an_open_circuit_without_a_fallback_still_waits():
     )
 
     await llm_service._wait_for_breaker(key)  # không ném lỗi
+
+
+def test_the_perf_span_records_provider_cache_hits():
+    """``cached_tokens``/``cache_ratio`` phải vào span của **mọi** lượt gọi.
+
+    Trước đây chỉ số cache chỉ có trong log ``step-metrics`` của Operator, nên không đo được tỉ lệ
+    cache cho Planner/Checker/sub-agent — mà đây là thứ duy nhất trả lời được "tiền tố prompt có ổn
+    định không" khi tối ưu context (Phase A).
+    """
+    response = AIMessage(
+        content="ok",
+        usage_metadata={
+            "input_tokens": 10_000,
+            "output_tokens": 20,
+            "total_tokens": 10_020,
+            "input_token_details": {"cache_read": 8_000},
+        },
+    )
+
+    class Span:
+        def __init__(self):
+            self.values: dict = {}
+
+        def set(self, **kwargs):
+            self.values.update(kwargs)
+
+        def note(self, **kwargs):
+            self.values.update(kwargs)
+
+    span = Span()
+    llm_service.RobustChatModelWrapper(object())._finish_perf_span(span, response)
+
+    assert span.values["input_tokens"] == 10_000
+    assert span.values["cached_tokens"] == 8_000
+    assert span.values["cache_ratio"] == 0.8

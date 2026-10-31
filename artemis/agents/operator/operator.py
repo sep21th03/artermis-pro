@@ -36,6 +36,7 @@ from artemis.services.llm import (
     invoke_llm_with_timeout_message,
     with_fallback,
 )
+from artemis.utils.context_images import cap_request_images
 from artemis.tools.command_tool import (
     analyze_task_output_wrapper,
     get_adb_task_registry,
@@ -176,6 +177,7 @@ class OperatorNode:
         prompt_components: list[PromptComponent] | None = None,
         last_n_detailed: int = 1,
         transcript_config=None,
+        max_context_images: int | None = None,
     ):
         self.ctx = ctx
         self.tools = tools or []
@@ -213,6 +215,9 @@ class OperatorNode:
         self._observed_identifiers: set[str] = set()
         #: Giá trị trạng thái đã bị chặn một lần; không chặn lặp lại (chặn mãi là khoá lượt chạy).
         self._evidence_bounced: set[str] = set()
+        #: Trần ảnh trong **request** gửi model (``agent.pro.max_context_images``). None = chưa đọc
+        #: cấu hình; 0 = tắt. Chỉ cắt bản sao dùng cho lượt gọi, không đụng ledger/trace.
+        self._max_context_images = max_context_images
         # Whether the previous turn's replies carried no visible reasoning text;
         # the next observation tail then carries a one-line reminder (no extra
         # model call). Legacy-path fallback only: with a transcript ledger the
@@ -640,6 +645,42 @@ class OperatorNode:
             logger.info(f"progress-watchdog: không hash được ảnh {image_name}: {e}")
         return None
 
+    def _context_image_limit(self) -> int:
+        """Trần ảnh trong request Operator: tham số truyền vào > ``agent.pro.max_context_images``.
+
+        Đọc cấu hình **một lần** rồi nhớ; thiếu/không đọc được thì trả 0 (tắt) — tối ưu context
+        không được phép làm gãy lượt chạy.
+        """
+        if self._max_context_images is None:
+            limit = 0
+            try:
+                from artemis.config import load_agent_config
+
+                limit = int(getattr(load_agent_config().pro, "max_context_images", 0) or 0)
+            except Exception as exc:  # noqa: BLE001 - thiếu cấu hình chỉ là tắt trần ảnh
+                logger.debug(f"Không đọc được trần ảnh context của operator: {exc}")
+            self._max_context_images = max(0, limit)
+        return self._max_context_images
+
+    def _record_context_image_cap(self, dropped: int, limit: int) -> None:
+        """Ghi số ảnh bị bỏ vào performance log (không cộng vào công đoạn nào khác)."""
+        try:
+            from artemis.perf import PerfStage, record_event
+
+            record_event(
+                PerfStage.COMPRESSION,
+                "context_image_cap",
+                status="success",
+                detail={
+                    "images_dropped": dropped,
+                    "max_context_images": limit,
+                    "agent": "operator",
+                    "note": "cắt xác định trước lượt gọi, không gọi LLM",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Không ghi được context image cap event: {exc}")
+
     async def _invoke_llm_loop(
         self,
         base_llm,
@@ -681,7 +722,18 @@ class OperatorNode:
             bound_fallback = (
                 fallback_llm.bind_tools(tools=traced_tools) if fallback_llm is not None else None
             )
-            response = await acomplete_with_fallback(bound_llm, bound_fallback, current_messages)
+            # Trần ảnh chỉ áp cho **bản sao gửi model**: ledger và trace giữ nguyên mọi ảnh
+            # (yêu cầu: tối ưu ảnh gửi vào model, không xoá bằng chứng). Đo trên máy thật: số ảnh
+            # 1 → 2 → 3 → 4 làm TTFT 7,0s → 40,9s → 53,3s → 98,7s; ảnh mới nhất là màn hình hiện tại.
+            image_limit = self._context_image_limit()
+            request_messages, dropped_images = cap_request_images(current_messages, image_limit)
+            if dropped_images:
+                logger.info(
+                    f"Trần ảnh context (operator): bỏ {dropped_images} ảnh cũ"
+                    f" (giữ tối đa {image_limit}); ledger/trace không đổi."
+                )
+                self._record_context_image_cap(dropped_images, image_limit)
+            response = await acomplete_with_fallback(bound_llm, bound_fallback, request_messages)
             add_llm_usage(self.ctx, response)
 
             usage = usage_from_message(response)

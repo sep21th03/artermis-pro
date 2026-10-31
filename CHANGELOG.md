@@ -78,6 +78,35 @@
 
 ### Changed
 
+- **Context Efficiency (Phase A–D): audit trước, chỉ sửa thứ không mất thông tin.** Không đổi
+  `thinking_level`, không bỏ validator/checker/pixel safety net, không đụng safety gate, chưa chạy APK.
+  - **A. Tiền tố prompt — audit kết luận "đã ổn định", KHÔNG phải sửa.** Đường đang chạy
+    (`agent.memory.transcript.enabled=false` ⇒ legacy) đã tách sẵn: `TemplatePromptComponent` chẻ bản
+    render tại `# CURRENT OBSERVATION`, đẩy section `## Current Plan & Execution History` + đồng hồ
+    `[T+mm:ss]` xuống **human**, chỉ để chỉ dẫn ở **system**. Kiểm bằng code: **chỉ**
+    `TemplatePromptComponent` ghi vào system; **13/13** component còn lại (observation, plan
+    recitation, KB focus/subtask, state evidence, execution state, incident, feedback, hint, tool-limit
+    warning…) đều ghi vào human ⇒ **không** có dữ liệu biến động nào trong tiền tố. Việc đã làm: ghi
+    `cached_tokens`/`cache_ratio` vào `perf_events.jsonl` cho **mọi** lượt gọi (trước đây chỉ Operator
+    có, qua log `step-metrics`) — không có số này thì không đo được cache hit theo từng lượt.
+  - **B. Ảnh — cắt bớt, có đo.** Đo 12 session gần nhất (167 lượt gọi có số ảnh): operator **87 lượt
+    1 ảnh · 2 lượt 2 ảnh · 2 lượt 3 ảnh · 2 lượt 4 ảnh · 20 lượt 5 ảnh**; planner luôn 1 ảnh; pixel 2
+    ảnh. Trần ảnh trước đây chỉ có cho Flash (`flash.max_context_images`), Operator (Pro) **không
+    có** ⇒ thêm `pro.max_context_images` (mặc định **2**: màn hình hiện tại + bằng chứng lượt trước).
+    Cắt trên **bản sao** của request (`cap_request_images`): ledger/trace **giữ nguyên mọi ảnh** —
+    đúng yêu cầu "chỉ tối ưu ảnh gửi vào model"; ảnh cũ thành một dòng chữ, nhãn
+    `--- Current Screenshot ---` đi cùng ảnh bị bỏ. Đo mức prompt (5 → 2 ảnh): bỏ 3 ảnh ≈ **3.300
+    token**/request, ledger vẫn đủ 5 ảnh. Repo đã đo tác động TTFT của số ảnh: 1 → 2 → 3 → 4 ảnh là
+    **7,0s → 40,9s → 53,3s → 98,7s**.
+  - **C. Dedup — audit không tìm thấy nội dung trùng thật, không sửa gì.** Khối KB trong
+    `initial_goal` (console ghép sẵn, `ARTEMIS_KB_PRESUPPLIED=1`) là **phạm vi task**;
+    `SubtaskKbPromptComponent` tra **phạm vi công đoạn** (khác truy vấn, khác mục) — hai khối bổ sung
+    nhau. Truy hồi KB cấp graph đã bị `knowledge_presupplied()` chặn nên không chèn hai lần.
+  - **D. Benchmark** — `scratch/planner_bench.py` (Planner, LLM thật) + phép đo mức prompt cho
+    Operator (không gọi LLM, xác định, chạy lại được).
+  - Test mới: `cap_request_images` giữ nguyên bản gốc (3 test), `cached_tokens`/`cache_ratio` vào span
+    (1 test). Toàn bộ `tests/unit` + ruff chạy lại sau khi sửa.
+
 - **Phase 1 tối ưu độ trễ Planner (theo session `67eafbb7`).** Hai thay đổi, đo lại trên máy thật:
   - `config/artemis.jsonc`: `planner.thinking_level` **high → low**. Đo A/B trên **cùng model**
     (`gemini-3.5-flash`) và cùng prompt (goal 4.104 ký tự của task 3110_1035, 1 ảnh, check gates ON):

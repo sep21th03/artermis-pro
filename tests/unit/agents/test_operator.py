@@ -385,7 +385,20 @@ async def test_operator_node_multiple_actions():
 
     with patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm):
         node = OperatorNode(mock_ctx, transcript_config=LEGACY_TRANSCRIPT)
-        node_update = await node(mock_state)
+        # Trần ảnh (Phase B) cắt trên **bản sao** gửi model, nên ToolMessage được ghi vào list của
+        # vòng lặp chứ không phải list đã gửi. Bắt đúng list đó để vẫn kiểm được "mỗi ToolMessage
+        # mang tên tool của nó" — hành vi thật cần giữ.
+        import artemis.agents.operator.operator as operator_module
+
+        loop_lists: list = []
+        real_cap = operator_module.cap_request_images
+
+        def spy_cap(messages, limit):
+            loop_lists.append(messages)
+            return real_cap(messages, limit)
+
+        with patch("artemis.agents.operator.operator.cap_request_images", side_effect=spy_cap):
+            node_update = await node(mock_state)
 
         update_dict = node_update
 
@@ -400,10 +413,10 @@ async def test_operator_node_multiple_actions():
         assert decisions[1]["coordinates"] == [54, 120]
 
         # Each action's ToolMessage names its tool, like helper-tool results do
-        # (the loop appends them to the same list it sent to the model).
+        # (the loop appends them to its own conversation list).
         from langchain_core.messages import ToolMessage
 
-        sent = mock_llm.ainvoke.call_args[0][0]
+        sent = loop_lists[-1]
         recorded = [(m.name, m.content) for m in sent if isinstance(m, ToolMessage)]
         assert recorded == [("input_text", "Action Recorded"), ("click", "Action Recorded")]
 
@@ -1695,3 +1708,34 @@ async def test_operator_call_rotates_to_the_fallback_on_a_daily_quota():
         llm_service._ENDPOINT_BREAKER.record_success("QuotaDeadOperatorModel")
 
     assert "model kế" in result.content
+
+
+def test_operator_reads_the_image_cap_from_the_pro_config(monkeypatch):
+    """Trần ảnh của request Operator lấy từ ``agent.pro.max_context_images`` (Phase B).
+
+    Tham số truyền thẳng vào constructor thắng cấu hình (đường test/benchmark), và thiếu cấu hình
+    thì trả 0 = tắt — tối ưu context không được phép làm gãy lượt chạy.
+    """
+    from types import SimpleNamespace
+
+    import artemis.config as artemis_config
+    from artemis.agents.operator.operator import OperatorNode
+
+    monkeypatch.setattr(
+        artemis_config,
+        "load_agent_config",
+        lambda: SimpleNamespace(pro=SimpleNamespace(max_context_images=3)),
+    )
+
+    from_config = OperatorNode(MagicMock(), transcript_config=LEGACY_TRANSCRIPT)
+    assert from_config._context_image_limit() == 3
+
+    explicit = OperatorNode(MagicMock(), transcript_config=LEGACY_TRANSCRIPT, max_context_images=1)
+    assert explicit._context_image_limit() == 1
+
+    monkeypatch.setattr(
+        artemis_config, "load_agent_config", lambda: SimpleNamespace(pro=SimpleNamespace())
+    )
+    assert (
+        OperatorNode(MagicMock(), transcript_config=LEGACY_TRANSCRIPT)._context_image_limit() == 0
+    )

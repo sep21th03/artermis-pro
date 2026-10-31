@@ -48,6 +48,36 @@ def _is_image_block(block: Any) -> bool:
     )
 
 
+def cap_request_images(messages: list[Any], max_images: int) -> tuple[list[Any], int]:
+    """Bản sao của ``messages`` **đã** áp trần ảnh — không sửa danh sách gốc.
+
+    Vì sao phải sao chép: :func:`cap_context_images` thay block ảnh cũ bằng một dòng chữ **tại
+    chỗ**. Với Operator (Pro), danh sách message là của transcript ledger (và là thứ đi vào trace),
+    nên sửa tại chỗ là **mất ảnh khỏi lịch sử**, trong khi yêu cầu chỉ là "tối ưu ảnh *gửi vào
+    model*". Ở đây mỗi message có ``content`` dạng list được nhân bản (message mới + list mới), nên
+    phần gốc giữ nguyên ảnh; message không có ảnh vẫn dùng lại chính object cũ (không tốn gì).
+
+    Trả ``(danh sách mới, số ảnh đã bỏ)``. ``max_images <= 0`` ⇒ trả nguyên danh sách gốc.
+    """
+    if max_images <= 0 or not messages:
+        return messages, 0
+
+    copied: list[Any] = []
+    for message in messages:
+        content = getattr(message, "content", None)
+        if isinstance(content, list):
+            try:
+                copied.append(message.model_copy(update={"content": list(content)}))
+                continue
+            except Exception:  # noqa: BLE001 - không nhân bản được thì giữ nguyên message đó
+                copied.append(message)
+                continue
+        copied.append(message)
+
+    dropped = cap_context_images(copied, max_images)
+    return copied, dropped
+
+
 def count_context_images(messages: list[Any]) -> int:
     """Số block ảnh đang có trong danh sách message."""
     total = 0

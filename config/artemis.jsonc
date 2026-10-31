@@ -180,6 +180,11 @@
     // Execution: LangGraph multi-node graph with a living task plan, a pre-execution safety net (single actions) / fast-action bursts (multi-action turns),
     // execution-incident recovery handled by the Operator itself (no separate repair agent), and a read-only Checker for checkpoint verification + exit final review.
     "pro": {
+      // 🖼️ Trần ảnh gửi model mỗi lượt Operator (0 = tắt). Đo trên máy thật: số ảnh 1 → 2 → 3 → 4
+      // làm TTFT 7,0s → 40,9s → 53,3s → 98,7s. Ảnh mới nhất là màn hình hiện tại — thứ duy nhất
+      // cần để nhận diện UI; ảnh cũ bị thay bằng một dòng chữ **trong request**, còn ảnh gốc
+      // KHÔNG bị xoá khỏi trace/evidence.
+      "max_context_images": 2,
       // 🧭 Explorer: Perception sub-agent under Pro profile ('flash', 'pro', or 'ultra')
       "explorer": {
         "mode": "pro" // Explorer tier for Pro nodes (Operator/Validator): 'flash' | 'pro' | 'ultra'

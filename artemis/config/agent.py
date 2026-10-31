@@ -861,6 +861,16 @@ class ProProfileConfig(BaseModel):
         default_factory=VideoAnalyzerConfig,
         description="Screen video action ledger tracking settings.",
     )
+    max_context_images: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "Trần số ảnh chụp màn hình giữ trong **request** của Operator (Pro); 0 = tắt. Đo trên"
+            " máy thật: số ảnh 1 → 2 → 3 → 4 làm TTFT 7,0s → 40,9s → 53,3s → 98,7s. Ảnh mới nhất"
+            " là màn hình hiện tại — thứ duy nhất cần để nhận diện UI; ảnh cũ chỉ còn giá trị"
+            " minh hoạ và được thay bằng một dòng chữ. Ảnh gốc **không** bị xoá khỏi trace."
+        ),
+    )
     model_config = {"extra": "allow"}
 
 
