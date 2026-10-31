@@ -1,0 +1,280 @@
+[
+  {
+    "id": "device_action.selector",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Bộ chọn thiết bị và hành động dùng chung",
+    "description": "Quy tắc chung của route selectDevice dùng bởi ngữ cảnh chạy khi ấn, tự động, hẹn giờ và các luồng liên kết. Phải phân loại thiết bị và selection_context trước khi thao tác; không áp dụng quy tắc của loại khác.",
+    "aliases": ["chọn thiết bị và hành động", "SelectDevice", "ListDeviceSelect", "chọn action thiết bị"],
+    "preconditions": ["Đang ở màn Chọn thiết bị hoặc Chọn hành động", "Đã nhận diện được item thiết bị mục tiêu và loại ngữ cảnh hiện tại"],
+    "steps": [
+      {"action":"assert","target":"Tên thiết bị mục tiêu trong danh sách theo phòng","expected_state":"Đúng thiết bị và trạng thái hành động hiện tại được quan sát"},
+      {"action":"tap","target":"Item thiết bị mục tiêu theo rule device_type tương ứng","expected_state":"Trạng thái item đổi hoặc overlay/màn chọn hành động đúng loại xuất hiện"},
+      {"action":"assert","target":"Nhãn trạng thái sau thao tác hoặc overlay hành động","expected_state":"Kết quả khớp rule thiết bị; nếu UI không đổi thì dừng, không nhấn lặp"}
+    ],
+    "success_criteria": ["Hành động hiển thị trên item đúng với mục tiêu", "Không dùng rule của device_type khác", "Nút Xong chỉ được dùng sau khi trạng thái đã quan sát được"],
+    "status": "draft",
+    "tags": ["device_action", "screen:select_device", "shared_selector", "source_verified"],
+    "metadata": {
+      "namespace":"device_action.selector", "type":"screen_rule", "screen":"screen.select_device", "verification_level":"source_verified",
+      "components":["SelectDevice","ListRoomSelect","ListDeviceSelect"],
+      "selection_contexts":["TYPE_ACTION","TYPE_CONDITION","COLLECTION_BASE","COLLECTION_AUTO","COLLECTION_TIMER","TYPE_LINK_DEVICE_ACTION","TYPE_COLLECTION_STAIR","device/link selectors"],
+      "state_field":"device.select", "unknown_state_behavior":"Không thao tác tuần tự khi chưa nhận diện được trạng thái hiện tại", "no_change_behavior":"Dừng sau một thao tác không làm UI thay đổi; không lặp vô hạn",
+      "evidence":["App.js:1161","src/SelectDevice/SelectDevice.js:68-107","src/SelectDevice/ListRoomSelect.js:256-298","src/SelectDevice/ListDeviceSelect.js:539-545","src/SelectDevice/ListDeviceSelect.js:2222-2997","src/SelectDevice/SelectDevice.js:425-462"]
+    },
+    "change_note":"Tạo từ source Hunonic; rule dùng chung, chưa xác minh trên APK."
+  },
+  {
+    "id":"device_action.switch", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn hành động công tắc thông thường", "description":"Công tắc thuộc nhánh action tuần tự dùng chu kỳ NONE → ON → OFF → NONE. Luôn đọc trạng thái hiện tại trước khi tính số lần nhấn.",
+    "aliases":["chọn bật tắt công tắc","switch action cycle","NONE ON OFF"],
+    "preconditions":["Item đi vào nhánh switch tuần tự của handleSelectDevice", "Không phải SDoor, NeoR6 hoặc thiết bị mở overlay"],
+    "steps":[{"action":"tap","target":"Item công tắc đúng tên, tối đa số lần cần theo trạng thái hiện tại","expected_state":"Nhãn lần lượt Không chọn, Bật, Tắt theo transition và được kiểm tra sau từng lần"}],
+    "success_criteria":["NONE→ON→OFF→NONE", "Không nhấn tiếp nếu trạng thái quan sát không đổi hoặc không xác định"], "status":"draft",
+    "tags":["device_action","device_type:switch","interaction:cyclic_tap","source_verified"],
+    "metadata":{"namespace":"device_action.switch","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","device_type":"switch","interaction_type":"cyclic_tap","selection_contexts":["TYPE_ACTION","TYPE_CONDITION khi branch cho phép"],"stored_values":{"NONE":0,"ON":1,"OFF":2},"visible_text":{"NONE":"Không chọn","ON":"Bật","OFF":"Tắt"},"state_transitions":{"NONE":"ON","ON":"OFF","OFF":"NONE"},"max_taps_from_known_state":2,"deselect_behavior":"Từ OFF nhấn một lần; từ ON nhấn hai lần, xác minh sau mỗi lần","evidence":["src/SelectDevice/ListDeviceSelect.js:2978-2988","src/Define/Const.js:956-959","src/SelectDevice/ListRoomSelect.js:256-298"]},
+    "change_note":"State machine được source xác nhận; chưa runtime_verified."
+  },
+  {
+    "id":"device_action.sdoor", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn hành động SDoor và họ cửa", "description":"Trong ngữ cảnh action/condition thông thường, chạm SDoor hoặc root_type được isTypeDoor nhận diện sẽ mở bottom sheet chọn trạng thái, không chạy chu kỳ switch.",
+    "aliases":["chọn hành động SDoor","hành động cửa","sdoor action"],
+    "preconditions":["FunctionCustom.isTypeDoor(root_type) trả true", "Đã xác định selection_context"],
+    "steps":[{"action":"tap","target":"Item SDoor đúng tên","expected_state":"Bottom sheet Chọn trạng thái xuất hiện"},{"action":"tap","target":"Hành động cửa đúng mục tiêu trong bottom sheet","expected_state":"Bottom sheet đóng và item hiển thị hành động đã chọn"}],
+    "success_criteria":["Không áp dụng chu kỳ công tắc", "device.select nhận đúng mã hành động cửa"], "status":"draft",
+    "tags":["device_action","device_type:sdoor","interaction:bottomsheet","source_verified"],
+    "metadata":{"namespace":"device_action.sdoor","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","device_type":"sdoor_family","root_types":["sdoor","door_2..door_14","door_box","gach_door_1 theo constants"],"interaction_type":"open_bottomsheet","selection_contexts":{"normal":["TYPE_ACTION","TYPE_CONDITION"],"exception":{"TYPE_LINK_DEVICE_ACTION":"NONE↔ON, không mở sheet"}},"actions":{"OPEN":{"value":1,"text":"Mở cửa"},"CLOSE":{"value":2,"text":"Đóng cửa"},"STOP":{"value":3,"text":"Dừng cửa"},"LOCK":{"value":4,"text":"Khoá cửa"},"UNLOCK":{"value":5,"text":"Mở khoá"},"NONE":{"value":0,"text":"Không chọn"}},"auto_collapse_extra_actions":["Dừng khi cửa đang đóng","Mở khi cửa đang đóng"],"deselect_behavior":"Chọn Không chọn trong bottom sheet","evidence":["src/Define/Const.js:332","src/Common/FunctionCustom.js:516-535","src/SelectDevice/ListDeviceSelect.js:2347-2360","src/SelectDevice/ListDeviceSelect.js:3069-3184"]},
+    "change_note":"Bao gồm ngoại lệ TYPE_LINK_DEVICE_ACTION; chưa kiểm thử APK."
+  },
+  {
+    "id":"device_action.bottomsheet.sdoor", "app_id":"hunonic", "version_id":null,
+    "name":"Bottom sheet chọn hành động SDoor", "description":"Overlay Chọn trạng thái của họ cửa, ánh xạ từng nhãn UI sang giá trị select có bằng chứng source.",
+    "aliases":["bottom sheet SDoor","Chọn trạng thái cửa"], "preconditions":["Đã chạm một item họ cửa trong context mở sheet"],
+    "steps":[{"action":"tap","target":"Một trong Mở cửa, Đóng cửa, Dừng cửa, Khoá cửa, Mở khoá hoặc Không chọn","expected_state":"Overlay đóng và item cửa hiển thị lựa chọn tương ứng"}],
+    "success_criteria":["Lựa chọn được chuyển qua changeSelectDevice(itemSelect, value)"], "status":"draft",
+    "tags":["device_action","bottomsheet","device_type:sdoor","source_verified"],
+    "metadata":{"namespace":"device_action.bottomsheet.sdoor","type":"bottomsheet","screen":"screen.select_device","verification_level":"source_verified","trigger":"tap sdoor family item","close_behavior":"AppBottomSheetSelectSimple xử lý chọn item; callback cập nhật select","actions":["OPEN_DOOR","CLOSE_DOOR","STOP_DOOR","LOCK_DOOR","UNLOCK_DOOR","ACTION_NULL"],"evidence":["src/SelectDevice/ListDeviceSelect.js:3069-3184","src/Define/Const.js:583-587"]},
+    "change_note":"Overlay source_verified, chưa runtime_verified."
+  },
+  {
+    "id":"device_action.neo_r6", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn nút và sự kiện NeoR6", "description":"NeoR6 scenario_sw6 mở bottom sheet hai bước: chọn một trong sáu nút rồi chọn nhấn một lần, hai lần hoặc nhấn giữ. Không dùng chu kỳ switch.",
+    "aliases":["NeoR6 action","công tắc ngữ cảnh sáu nút","chọn sự kiện Neo R6"],
+    "preconditions":["root_type = scenario_sw6", "Nếu data_extra.noHS thì phải có thiết bị trung gian đã liên kết"],
+    "steps":[{"action":"tap","target":"Item NeoR6 đúng tên","expected_state":"Bottom sheet Chọn nút xuất hiện hoặc cảnh báo thiếu liên kết trung gian"},{"action":"tap","target":"Nút mặt trời, mặt trăng, ngôi sao, vuông, tam giác hoặc lục giác","expected_state":"Bottom sheet chuyển sang Chọn hành động"},{"action":"tap","target":"Nhấn 1 lần, Nhấn 2 lần hoặc Nhấn giữ","expected_state":"Sheet đóng và item hiển thị nút/sự kiện đã chọn"}],
+    "success_criteria":["Giá trị lưu = button_index + event_index*6", "Không áp dụng switch cycle"], "status":"draft",
+    "tags":["device_action","device_type:neo_r6","interaction:bottomsheet","source_verified"],
+    "metadata":{"namespace":"device_action.neo_r6","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","device_type":"neo_r6","root_type":"scenario_sw6","interaction_type":"two_stage_bottomsheet","selection_contexts":["condition/trigger contexts nơi NeoR6 được bộ lọc cho xuất hiện"],"buttons":{"sun":1,"moon":2,"star":3,"square":4,"triangle":5,"hexagon":6},"events":{"press_once":{"offset":0,"values":"1..6"},"press_twice":{"offset":6,"values":"7..12"},"long_press":{"offset":12,"values":"13..18"}},"deselect_behavior":"Chọn Không chọn ở bước chọn nút; onDone(null)","exceptions":["data_extra.noHS và không có intermediate link: chỉ cảnh báo, không mở sheet"],"evidence":["src/Define/Const.js:414","src/SelectDevice/ListDeviceSelect.js:2437-2445","src/Modal/Neo/BottomSheetSelectEventNeo.js:12-200"]},
+    "change_note":"Công thức payload và hai bước được source xác nhận."
+  },
+  {
+    "id":"device_action.bottomsheet.neo_r6", "app_id":"hunonic", "version_id":null,
+    "name":"Bottom sheet chọn sự kiện NeoR6", "description":"Overlay động gồm view chọn nút và view chọn event; đóng sheet sau khi gọi onDone với mã 1..18 hoặc null.",
+    "aliases":["NeoR6 bottom sheet","sheet chọn nút Neo"], "preconditions":["NeoR6 đủ điều kiện liên kết"],
+    "steps":[{"action":"tap","target":"Nút hình dạng NeoR6","expected_state":"Tiêu đề đổi từ Chọn nút sang Chọn hành động"},{"action":"tap","target":"Sự kiện nhấn mong muốn","expected_state":"Sheet đóng và lựa chọn được lưu"}],
+    "success_criteria":["Hai tầng lựa chọn hoàn tất", "Không chọn trả null"], "status":"draft",
+    "tags":["device_action","bottomsheet","device_type:neo_r6","source_verified"],
+    "metadata":{"namespace":"device_action.bottomsheet.neo_r6","type":"bottomsheet","screen":"screen.select_device","verification_level":"source_verified","views":["choose-button","choose-event"],"visible_actions":["Nút mặt trời","Nút mặt trăng","Nút ngôi sao","Nút vuông","Nút tam giác","Nút lục giác","Không chọn","Nhấn 1 lần","Nhấn 2 lần","Nhấn giữ"],"evidence":["src/Modal/Neo/BottomSheetSelectEventNeo.js:12-200"]},
+    "change_note":"Overlay source_verified."
+  },
+  {
+    "id":"device_action.ocs_wifi", "app_id":"hunonic", "version_id":null,
+    "name":"Chu kỳ hành động OCS Wi-Fi", "description":"OCS Wi-Fi có chu kỳ bốn trạng thái, khác công tắc thường: NONE → ON → OVER_TIME_CLOSE → OFF → NONE.",
+    "aliases":["OCS WiFi action","cửa OCS quá thời gian"], "preconditions":["root_type = ROOT_TYPE_OCS_WIFI"],
+    "steps":[{"action":"tap","target":"Item OCS Wi-Fi đúng tên theo số bước tính từ trạng thái hiện tại","expected_state":"UI lần lượt hiển thị Không chọn, Mở cửa, Đóng cửa quá thời gian, Đóng cửa"}],
+    "success_criteria":["Đạt đúng trạng thái đích trong tối đa ba tap từ trạng thái đã biết"], "status":"draft",
+    "tags":["device_action","device_type:ocs_wifi","interaction:cyclic_tap","source_verified"],
+    "metadata":{"namespace":"device_action.ocs_wifi","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","device_type":"ocs_wifi","state_transitions":{"NONE":"ON","ON":"OVER_TIME_CLOSE","OVER_TIME_CLOSE":"OFF","OFF":"NONE"},"visible_text":{"NONE":"Không chọn","ON":"Mở cửa","OVER_TIME_CLOSE":"Đóng cửa khi quá thời gian","OFF":"Đóng cửa"},"max_taps_from_known_state":3,"deselect_behavior":"Tiếp tục chu kỳ tới NONE, xác minh sau từng tap","evidence":["src/SelectDevice/ListDeviceSelect.js:2413-2430","src/SelectDevice/ListDeviceSelect.js:1443-1452"]},
+    "change_note":"Chu kỳ 4 trạng thái source_verified."
+  },
+  {
+    "id":"device_action.blind", "app_id":"hunonic", "version_id":null,
+    "name":"Chu kỳ hành động rèm", "description":"Blind v1/v2/v3 và curtain controller dùng chu kỳ NONE → OPEN → CLOSE → STOP → NONE.",
+    "aliases":["chọn hành động rèm","mở đóng dừng rèm"], "preconditions":["root_type thuộc blind v1/v2/v3 hoặc curtain controller"],
+    "steps":[{"action":"tap","target":"Item rèm đúng tên theo trạng thái hiện tại","expected_state":"Nhãn lần lượt Không chọn, Mở rèm, Đóng rèm, Dừng"}],
+    "success_criteria":["Đạt OPEN/CLOSE/STOP/NONE đúng chu kỳ"], "status":"draft",
+    "tags":["device_action","device_type:blind","interaction:cyclic_tap","source_verified"],
+    "metadata":{"namespace":"device_action.blind","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","device_type":"blind_family","state_transitions":{"NONE":"OPEN","OPEN":"CLOSE","CLOSE":"STOP","STOP":"NONE"},"visible_text":{"NONE":"Không chọn","OPEN":"Mở rèm","CLOSE":"Đóng rèm","STOP":"Dừng"},"max_taps_from_known_state":3,"evidence":["src/SelectDevice/ListDeviceSelect.js:2530-2547","src/SelectDevice/ListDeviceSelect.js:1327-1341"]},
+    "change_note":"State machine rèm source_verified."
+  },
+  {
+    "id":"device_action.gate", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn hành động gate thường", "description":"Gate, WS gate và gate v2 dùng chu kỳ NONE → BUTTON_1 → BUTTON_2 → BUTTON_3 → NONE; nhãn thực tế lấy từ GateCmd theo model thiết bị.",
+    "aliases":["gate action cycle","chọn nút cổng"], "preconditions":["root_type là gate, ws_gate hoặc gate_v2"],
+    "steps":[{"action":"tap","target":"Item gate đúng tên theo trạng thái hiện tại","expected_state":"Tên nút điều khiển gate trên item thay đổi theo chu kỳ"}],
+    "success_criteria":["Không quá ba tap từ trạng thái đã biết", "Nhãn mới phải quan sát được trước tap tiếp"], "status":"draft",
+    "tags":["device_action","device_type:gate","interaction:cyclic_tap","source_verified"],
+    "metadata":{"namespace":"device_action.gate","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","device_type":"gate_standard","root_types":["ROOT_TYPE_GATE","ROOT_TYPE_WS_GATE","ROOT_TYPE_GATE_V2"],"state_transitions":{"NONE":"BUTTON_1","BUTTON_1":"BUTTON_2","BUTTON_2":"BUTTON_3","BUTTON_3":"NONE"},"visible_text":"GateCmd.getCollectionControlBtn(...).shortName; phụ thuộc model/runtime","deselect_behavior":"Sau BUTTON_3 chuyển NONE","evidence":["src/SelectDevice/ListDeviceSelect.js:2523-2529","src/SelectDevice/HandleSelectDevice.js:86-121","src/SelectDevice/ListDeviceSelect.js:1405-1412"]},
+    "change_note":"Không bịa nhãn button; giữ runtime-dependent theo GateCmd."
+  },
+  {
+    "id":"device_action.gate_hun", "app_id":"hunonic", "version_id":null,
+    "name":"Bottom sheet hành động Gate Hun", "description":"Các biến thể Gate Hun mở bottom sheet thay vì cycle trực tiếp.",
+    "aliases":["Gate Hun action","cổng hai cánh"], "preconditions":["root_type thuộc Gate Hun, Gate Hun v2 hoặc Gate Hun Wi-Fi"],
+    "steps":[{"action":"tap","target":"Item Gate Hun đúng tên","expected_state":"Bottom sheet Chọn trạng thái xuất hiện"},{"action":"tap","target":"Mở hai cánh, Đóng hai cánh, Dừng, Mở một cánh, Đóng một cánh hoặc Không chọn","expected_state":"Item hiển thị hành động gate đã chọn"}],
+    "success_criteria":["Lựa chọn được lưu qua changeSelectDevice"], "status":"draft",
+    "tags":["device_action","device_type:gate_hun","interaction:bottomsheet","source_verified"],
+    "metadata":{"namespace":"device_action.gate_hun","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","interaction_type":"bottomsheet","actions":["OPEN_TWO_WING_GATE","CLOSE_TWO_WING_GATE","PAUSE_WING_GATE","OPEN_WING_ONE_GATE","CLOSE_WING_ONE_GATE","ACTION_NULL"],"deselect_behavior":"Chọn Không chọn","evidence":["src/SelectDevice/ListDeviceSelect.js:2390-2396","src/SelectDevice/ListDeviceSelect.js:3205-3264"]},
+    "change_note":"Gate Hun bottomsheet source_verified."
+  },
+  {
+    "id":"device_action.rf_remote", "app_id":"hunonic", "version_id":null,
+    "name":"Chu kỳ nút RF remote", "description":"RF remote chuyển NONE → nút 1 → nút 2 → nút 3 → nút 4 → NONE.",
+    "aliases":["chọn nút remote RF","RF remote button cycle"], "preconditions":["root_type = ROOT_TYPE_RF_REMOTE"],
+    "steps":[{"action":"tap","target":"Item RF remote theo số lần cần từ trạng thái hiện tại","expected_state":"UI hiển thị Nhấn nút 1, 2, 3, 4 hoặc Không chọn"}],
+    "success_criteria":["Đúng nút đích, xác minh sau mỗi tap"], "status":"draft",
+    "tags":["device_action","device_type:rf_remote","interaction:cyclic_tap","source_verified"],
+    "metadata":{"namespace":"device_action.rf_remote","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","state_transitions":{"NONE":"BUTTON_1","BUTTON_1":"BUTTON_2","BUTTON_2":"BUTTON_3","BUTTON_3":"BUTTON_4","BUTTON_4":"NONE"},"max_taps_from_known_state":4,"deselect_behavior":"BUTTON_4 → NONE","evidence":["src/SelectDevice/ListDeviceSelect.js:2485-2505","src/SelectDevice/ListDeviceSelect.js:1375-1387"]},
+    "change_note":"Chu kỳ RF remote source_verified."
+  },
+  {
+    "id":"device_action.rf_event", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn sự kiện RF motion, SOS và RF door", "description":"RF motion và SOS dùng NONE↔ON; RF door dùng NONE→ON→OFF→NONE. UI tương ứng chuyển động/cảnh báo hoặc mở/đóng cửa.",
+    "aliases":["RF motion action","RF SOS action","RF door action"], "preconditions":["root_type là RF_MOTION, RF_SOS_BTN hoặc RF_DOOR"],
+    "steps":[{"action":"tap","target":"Item RF đúng loại theo state machine của chính root_type","expected_state":"Nhãn sự kiện RF tương ứng xuất hiện"}],
+    "success_criteria":["RF motion/SOS không bị áp dụng OFF", "RF door hỗ trợ ON và OFF"], "status":"draft",
+    "tags":["device_action","device_type:rf_event","interaction:cyclic_tap","source_verified"],
+    "metadata":{"namespace":"device_action.rf_event","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","variants":{"RF_MOTION":{"transitions":{"NONE":"ON","ON":"NONE"},"text":"Chuyển động"},"RF_SOS_BTN":{"transitions":{"NONE":"ON","ON":"NONE"},"text":"Cảnh báo"},"RF_DOOR":{"transitions":{"NONE":"ON","ON":"OFF","OFF":"NONE"},"text":{"ON":"Mở cửa","OFF":"Đóng cửa"}}},"evidence":["src/SelectDevice/ListDeviceSelect.js:2468-2483","src/SelectDevice/ListDeviceSelect.js:2508-2521","src/SelectDevice/ListDeviceSelect.js:1365-1403"]},
+    "change_note":"Tách variant để không áp dụng nhầm chu kỳ."
+  },
+  {
+    "id":"device_action.rf_button_collection", "app_id":"hunonic", "version_id":null,
+    "name":"Bottom sheet chọn nút RF collection", "description":"RF button collection mở BottomSheetCustom và chọn một nút vật lý hoặc Không chọn.",
+    "aliases":["chọn nút RF collection","RF button bottom sheet"], "preconditions":["root_type = ROOT_TYPE_RF_BTN_COLLECTION"],
+    "steps":[{"action":"tap","target":"Item RF button collection","expected_state":"Bottom sheet Chọn nút xuất hiện"},{"action":"tap","target":"Nút số mong muốn hoặc Không chọn","expected_state":"Item hiển thị Nút nhấn tương ứng hoặc Không chọn"}],
+    "success_criteria":["Giá trị dataPressModeCollectionRF được lưu"], "status":"draft",
+    "tags":["device_action","device_type:rf_button_collection","interaction:bottomsheet","source_verified"],
+    "metadata":{"namespace":"device_action.rf_button_collection","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","interaction_type":"bottomsheet","deselect_behavior":"Chọn item cuối Không chọn → ACTION_NULL","evidence":["src/SelectDevice/ListDeviceSelect.js:807-837","src/SelectDevice/ListDeviceSelect.js:2447-2452"]},
+    "change_note":"Số nút phụ thuộc FunctionCustom.getNumButtonCollection."
+  },
+  {
+    "id":"device_action.ir_rf_child", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn hành động thiết bị IR và RF child", "description":"Trong TYPE_ACTION, thiết bị IR/RF child điều hướng sang màn chuyên biệt theo category: AC, custom remote, learned AC/RF hoặc TV. Trong condition IR Pro có thể dùng state cycle theo source.",
+    "aliases":["chọn lệnh điều hòa TV IR","IR child action","RF child command"], "preconditions":["root_type thuộc IR_CHILD v1-v4 hoặc RF_CHILD", "category của thiết bị có dữ liệu"],
+    "steps":[{"action":"tap","target":"Item IR/RF child đúng tên","expected_state":"Màn chọn lệnh đúng category xuất hiện"},{"action":"tap","target":"Lệnh remote mong muốn trên màn chuyên biệt","expected_state":"Quay lại selector và item hiển thị lệnh đã chọn"}],
+    "success_criteria":["Callback changeSelectDevice nhận action object/lệnh thực tế", "Không tự suy ra lệnh từ tên category"], "status":"draft",
+    "tags":["device_action","device_type:ir_rf_child","interaction:navigation","source_verified"],
+    "metadata":{"namespace":"device_action.ir_rf_child","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","interaction_type":"navigate_specialized_selector","selection_contexts":{"TYPE_ACTION":"navigate by category","TYPE_CONDITION":"IR Pro branch may cycle NONE→ON→OFF→NONE"},"destinations":["KEY_NAME_AC","KEY_NAME_HOME_REMOTE_CUSTOM_IR","KEY_NAME_HOME_LEARN_AC","KEY_HSRF_CUSTOM_LEARN","KEY_NAME_TV"],"evidence":["src/SelectDevice/ListDeviceSelect.js:2549-2624"]},
+    "change_note":"Không mô tả chi tiết màn con ngoài bằng chứng selector."
+  },
+  {
+    "id":"device_action.driver_led_dali", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn hành động Driver LED và DALI", "description":"DALI master và DLED mở selector khác nhau theo TYPE, isTypeTwo và capability; có thể chọn bật, tắt, đảo trạng thái, độ sáng, độ ấm, cả hai hoặc chủ đề. Luồng lighting-only là single-select ON.",
+    "aliases":["DALI action","Driver LED action","DLED brightness warmth topic"], "preconditions":["root_type là GACH_DALI_MASTER hoặc GACH_SW_DLED", "Capability và collection context cho phép action tương ứng"],
+    "steps":[{"action":"tap","target":"Item Driver LED/DALI đúng tên","expected_state":"Bottom sheet phù hợp condition, one-led hoặc two-led xuất hiện; lighting-only chỉ đánh dấu item"},{"action":"tap","target":"Hành động LED được source cung cấp","expected_state":"Item hiển thị Bật/Tắt/Đảo trạng thái/độ sáng/độ ấm/chủ đề tương ứng"}],
+    "success_criteria":["Object select giữ action và tham số cần thiết", "Không chọn topic khi context cấm topic"], "status":"draft",
+    "tags":["device_action","device_type:driver_led","device_type:dali","interaction:bottomsheet","source_verified"],
+    "metadata":{"namespace":"device_action.driver_led_dali","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","variants":{"lighting_only":"single-select ACTION_ON, bỏ chọn item khác","condition":"refSelectDriverLed","isTypeTwo":"refSelectDLed","one_led":"refSelectDLedOneLed"},"actions":["ACTION_ON","ACTION_OFF","DLED_ACTION_TOGGLE","DLED_SET_BRIGHTNESS","DLED_SET_WARMTH","DLED_SET_BOTH","DLED_SET_TOPIC"],"deselect_behavior":"Action Không chọn/ACTION_NULL trong selector tương ứng","exceptions":["Topic bị giới hạn bởi allowDeviceTopicByCollection","Một số liên kết yêu cầu firmware VERSION_SUPPORT_LINK_SWITCH_V3_WITH_DRIVER_LED"],"evidence":["src/SelectDevice/ListDeviceSelect.js:1165-1215","src/SelectDevice/ListDeviceSelect.js:2665-2693","src/SelectDevice/ListDeviceSelect.js:3813-4002","src/SelectDevice/SelectDevice.js:293-303"]},
+    "change_note":"Capability-driven; chưa runtime_verified."
+  },
+  {
+    "id":"device_action.led_ht", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn hành động LED HT", "description":"LED HT mở action sheet; hỗ trợ bật, tắt và tùy context: độ sáng, RGB/nhiệt độ màu đơn, chủ đề hoặc chế độ. Các action tham số mở modal phụ.",
+    "aliases":["LED HT action","chọn RGB độ sáng LED HT"], "preconditions":["root_type = ROOT_TYPE_GACH_LED_HT"],
+    "steps":[{"action":"tap","target":"Item LED HT","expected_state":"Action sheet Chọn hành động xuất hiện"},{"action":"tap","target":"Bật, Tắt, Độ sáng, RGB/Nhiệt độ màu, Chủ đề, Chế độ hoặc Không chọn","expected_state":"Action đơn được lưu hoặc modal tham số tương ứng xuất hiện"},{"action":"confirm_if_present","target":"Nút lưu của modal độ sáng/màu/chủ đề","expected_state":"Item hiển thị thông số đã chọn"}],
+    "success_criteria":["select object chứa action và pcn/rgb/color/mode khi cần"], "status":"draft",
+    "tags":["device_action","device_type:led_ht","interaction:action_sheet","source_verified"],
+    "metadata":{"namespace":"device_action.led_ht","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","actions":["ALARM_LEDHT_ON","ALARM_LEDHT_OFF","ALARM_LEDHT_BRIGHTNESS","ALARM_LEDHT_RGB","ALARM_LEDHT_TOPIC","ALARM_LEDHT_BOTH","ACTION_NULL"],"overlays":["ActionSheetCustom","LedHTBrightnessRGBModal","topic selector"],"deselect_behavior":"Chọn Không chọn → ACTION_NULL","exceptions":["TYPE_CONDITION không đưa actionOptions tham số","COLLECTION_BASE đổi Topic thành Control mode"],"evidence":["src/SelectDevice/ListDeviceSelect.js:694-801","src/SelectDevice/ListDeviceSelect.js:2999-3067"]},
+    "change_note":"Các action và modal phụ source_verified."
+  },
+  {
+    "id":"device_action.meter_atm", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn hành động ATM và đồng hồ điện", "description":"ATM, ATM Wi-Fi v3, electric meter, K-meter và SK eMeter mở selector option riêng; danh sách action lấy từ các helper renderCollection theo đúng root_type.",
+    "aliases":["ATM action","electric meter action","đồng hồ điện hành động"], "preconditions":["root_type thuộc ATM/electric meter family"],
+    "steps":[{"action":"tap","target":"Item ATM hoặc meter đúng tên","expected_state":"Bottom sheet action đúng họ thiết bị xuất hiện"},{"action":"tap","target":"Hành động được liệt kê trong sheet","expected_state":"Item hiển thị tên action do helper tương ứng resolve"}],
+    "success_criteria":["Không dùng danh sách action ATM cho K-meter hoặc ElMeter khác loại"], "status":"draft",
+    "tags":["device_action","device_type:meter_atm","interaction:bottomsheet","source_verified"],
+    "metadata":{"namespace":"device_action.meter_atm","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","variants":{"ATM":"refSelectATM/getListATMActionItem","ATM_WIFI_V3":"refSelectAtmV3/getListAtmV3ActionItem","EL_METER":"refSelectElMeter/getListElMeterActionItem","K_METER":"refSelectEkMeter/getListEKMeterActionItem"},"deselect_behavior":"Action NO_SELECT/ACTION_NULL của danh sách tương ứng","evidence":["src/SelectDevice/ListDeviceSelect.js:2653-2661","src/SelectDevice/ListDeviceSelect.js:2697-2707","src/SelectDevice/ListDeviceSelect.js:3748-3764","src/SelectDevice/ListDeviceSelect.js:4004-4057"]},
+    "change_note":"Danh sách cụ thể delegated sang helper; không bịa nhãn chưa resolve."
+  },
+  {
+    "id":"device_action.ths_sensor", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn điều kiện cảm biến THS", "description":"Gạch THS và THS Wi-Fi mở ModalSelectOptionThsSensor để chọn điều kiện nhiệt độ và/hoặc độ ẩm; không có điều kiện thì ACTION_NULL.",
+    "aliases":["THS temperature humidity condition","chọn nhiệt độ độ ẩm"], "preconditions":["root_type là GACH_THS hoặc THS_WIFI"],
+    "steps":[{"action":"tap","target":"Item cảm biến THS","expected_state":"Modal chọn nhiệt độ/độ ẩm xuất hiện"},{"action":"confirm_if_present","target":"Lưu điều kiện nhiệt độ/độ ẩm","expected_state":"Item hiển thị toán tử, giá trị °C và/hoặc %"}],
+    "success_criteria":["select chứa temp và/hoặc humi", "Không có temp/humi thì item trở về Không chọn"], "status":"draft",
+    "tags":["device_action","device_type:ths","interaction:modal","source_verified"],
+    "metadata":{"namespace":"device_action.ths_sensor","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","interaction_type":"modal","deselect_behavior":"Lưu data không có humi/temp → ACTION_NULL","expected_ui":"<operator> <value>% | <operator> <value>°C tùy trường đã chọn","evidence":["src/SelectDevice/ListDeviceSelect.js:487-513","src/SelectDevice/ListDeviceSelect.js:648","src/SelectDevice/ListDeviceSelect.js:1322-1326","src/SelectDevice/ListDeviceSelect.js:2708-2711"]},
+    "change_note":"Condition object source_verified."
+  },
+  {
+    "id":"device_action.motion_rada_sensor", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn điều kiện MOS, Rada và stair sensor", "description":"MOS, MOS v2, stair sensor và sensor Rada mở modal option khi là sensor; child có type switch dùng chu kỳ NONE→ON→OFF→NONE.",
+    "aliases":["MOS sensor action","Rada condition","stair sensor condition"], "preconditions":["Đã phân biệt sensor root item với child type=switch"],
+    "steps":[{"action":"tap","target":"Item sensor hoặc child switch đúng tên","expected_state":"Sensor mở modal; child switch đổi nhãn theo chu kỳ"},{"action":"confirm_if_present","target":"Lưu lựa chọn trong modal sensor","expected_state":"Item hiển thị motion/no motion và mode lux nếu có"}],
+    "success_criteria":["Không áp dụng switch cycle cho sensor root", "Nút Xong của màn chính được hiện lại sau khi đóng/lưu modal"], "status":"draft",
+    "tags":["device_action","device_type:motion_sensor","device_type:rada","interaction:modal_or_cycle","source_verified"],
+    "metadata":{"namespace":"device_action.motion_rada_sensor","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","variants":{"sensor_root":"ModalSelectOptionSensor","child_switch":{"transitions":{"NONE":"ON","ON":"OFF","OFF":"NONE"}}},"expected_ui":["Chuyển động","Không chuyển động","Sáng","Tối","Bật","Tắt","Không chọn"],"evidence":["src/SelectDevice/ListDeviceSelect.js:632-648","src/SelectDevice/ListDeviceSelect.js:2750-2795","src/SelectDevice/ListRoomSelect.js:643-740"]},
+    "change_note":"Rule phân biệt item.type source_verified."
+  },
+  {
+    "id":"device_action.fan", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn hành động quạt", "description":"Fan Wi-Fi mở bottom sheet; Fan OEM trong TYPE_ACTION điều hướng màn collection chuyên biệt, context khác mở selector Fan OEM. Một số lựa chọn nhiệt độ/phần trăm mở modal phụ.",
+    "aliases":["fan action","quạt WiFi OEM action"], "preconditions":["root_type thuộc fan Wi-Fi hoặc Fan OEM family"],
+    "steps":[{"action":"tap","target":"Item quạt đúng tên","expected_state":"Bottom sheet hoặc màn Fan Collection đúng variant xuất hiện"},{"action":"tap","target":"Hành động quạt do UI cung cấp","expected_state":"Item hiển thị action/tốc độ/nhiệt độ/phần trăm đã chọn"}],
+    "success_criteria":["Callback changeSelectDevice nhận đúng action", "Không dùng rule Fan Wi-Fi cho Fan OEM"], "status":"draft",
+    "tags":["device_action","device_type:fan","interaction:bottomsheet_or_navigation","source_verified"],
+    "metadata":{"namespace":"device_action.fan","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","variants":{"FAN_WIFI":"refSelectFanWifi bottomsheet","FAN_OEM_TYPE_ACTION":"navigate KEY_NAV_FAN_COLLECTION_SCREEN","FAN_OEM_OTHER":"refSelectFanOEM"},"overlays":["ModalFanTemp","ModalFanControlPercent"],"evidence":["src/SelectDevice/ListDeviceSelect.js:2433-2436","src/SelectDevice/ListDeviceSelect.js:2913-2929","src/SelectDevice/ListDeviceSelect.js:3266-3555"]},
+    "change_note":"Variant theo family/context source_verified."
+  },
+  {
+    "id":"device_action.camera", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn hành động camera", "description":"Rayshap camera mở bottom sheet action lấy từ getActionOptionsRsCamera. Camera 2V dùng NONE↔ON và hiển thị Phát hiện chuyển động khi ON.",
+    "aliases":["camera action","Rayshap camera collection","camera motion action"], "preconditions":["root_type là CAMERA_RS hoặc CAMERA_2V"],
+    "steps":[{"action":"tap","target":"Item camera đúng tên","expected_state":"Camera RS mở sheet; Camera 2V đổi giữa Không chọn và Phát hiện chuyển động"}],
+    "success_criteria":["Không dùng toggle Camera 2V cho Camera RS"], "status":"draft",
+    "tags":["device_action","device_type:camera","source_verified"],
+    "metadata":{"namespace":"device_action.camera","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","variants":{"CAMERA_RS":{"interaction":"bottomsheet","actions_source":"getActionOptionsRsCamera"},"CAMERA_2V":{"interaction":"cyclic_tap","transitions":{"NONE":"ON","ON":"NONE"},"visible_text":{"ON":"Phát hiện chuyển động","NONE":"Không chọn"}}},"evidence":["src/SelectDevice/ListDeviceSelect.js:1523-1531","src/SelectDevice/ListDeviceSelect.js:2796-2799","src/SelectDevice/ListDeviceSelect.js:2856-2862","src/SelectDevice/ListDeviceSelect.js:3186-3203"]},
+    "change_note":"Hai camera variant tách rõ."
+  },
+  {
+    "id":"device_action.smart_lock", "app_id":"hunonic", "version_id":null,
+    "name":"Chu kỳ hành động smart lock", "description":"Khi smart lock/tadolock được bộ lọc context cho hiển thị, handler dùng NONE→ON→OFF→NONE; tên UI lấy từ getNameSlockSelect. Một số context lọc thiết bị lock hoàn toàn.",
+    "aliases":["slock action","tadolock action","smart lock collection"], "preconditions":["Item lock thực sự xuất hiện trong context hiện tại", "Không suy ra khả dụng chỉ từ root_type"],
+    "steps":[{"action":"tap","target":"Item smart lock đang hiển thị theo trạng thái hiện tại","expected_state":"Nhãn lock action đổi theo getNameSlockSelect"}],
+    "success_criteria":["NONE→ON→OFF→NONE chỉ dùng khi item khả dụng"], "status":"draft",
+    "tags":["device_action","device_type:smart_lock","interaction:cyclic_tap","source_verified"],
+    "metadata":{"namespace":"device_action.smart_lock","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","root_types":["slock","tadolock"],"state_transitions":{"NONE":"ON","ON":"OFF","OFF":"NONE"},"exceptions":["ListRoomSelect loại SMART_TADOLOCK khỏi một số collection","TYPE_ACTION loại SMART_LOOK/HUB lock trong filter","condition SMART_LOOK có thể yêu cầu data_extra.hubId"],"visible_text":"getNameSlockSelect(item), không resolve tĩnh trong entry này","evidence":["src/SelectDevice/ListDeviceSelect.js:1536-1539","src/SelectDevice/ListDeviceSelect.js:2864-2876","src/SelectDevice/ListRoomSelect.js:610-620","src/SelectDevice/ListRoomSelect.js:643-740"]},
+    "change_note":"Giữ cảnh báo filter; chưa runtime_verified."
+  },
+  {
+    "id":"device_action.io_gateway", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn input/output IO Gateway", "description":"Multi-function IO module không chọn trực tiếp trên item mà điều hướng sang màn IO Gateway collection; callback trả object select có input/output. Mỗi output có NONE/ON/OFF và được serialize thành mã lẻ/chẵn.",
+    "aliases":["IO gateway action","multi output collection"], "preconditions":["root_type = ROOT_TYPE_MULTI_FUNCTION_IO_MODULE"],
+    "steps":[{"action":"tap","target":"Item IO Gateway","expected_state":"Màn chọn IO Gateway collection xuất hiện"},{"action":"tap","target":"Input/output và action mong muốn trên màn chuyên biệt","expected_state":"Quay lại selector; item hiển thị số input/output đã chọn"}],
+    "success_criteria":["select.output chứa trạng thái từng output", "isDeselect cho phép bỏ chọn"], "status":"draft",
+    "tags":["device_action","device_type:io_gateway","interaction:navigation","source_verified"],
+    "metadata":{"namespace":"device_action.io_gateway","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","destination":"KEY_SELECT_IO_GATEWAY_COLLECTION_SCREEN","selection_context":"type_select = TYPE_CONDITION hoặc TYPE_ACTION","deselect_behavior":"isDeselect=true; output ACTION_NULL bị bỏ khi serialize","payload_rule":"output index i: ON→i*2+1, OFF→i*2+2","evidence":["src/SelectDevice/ListDeviceSelect.js:2274-2283","src/SelectDevice/ListDeviceSelect.js:2636-2642","src/Components/Collection/CollectionBase/EditCollectionBase.js:674-720","src/Components/Collection/CollectionTimer/EditCollectionTimer.js:600-645"]},
+    "change_note":"Navigation và serialize multi-output source_verified."
+  },
+  {
+    "id":"device_action.stair_led", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn hành động Stair LED", "description":"Stair LED 2 lines mở color/action bottom sheet. Callback lưu object colorInfo + action; ACTION_NULL bỏ chọn.",
+    "aliases":["stair led action","đèn cầu thang chọn màu"], "preconditions":["root_type = ROOT_TYPE_STAIR_LED_2_LINES"],
+    "steps":[{"action":"tap","target":"Item Stair LED","expected_state":"Bottom sheet chọn hành động/màu mở"},{"action":"confirm_if_present","target":"Hành động và màu Stair LED","expected_state":"Item hiển thị tên action/màu đã chọn"}],
+    "success_criteria":["select chứa action và colorInfo khi action cần màu"], "status":"draft",
+    "tags":["device_action","device_type:stair_led","interaction:bottomsheet","source_verified"],
+    "metadata":{"namespace":"device_action.stair_led","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","interaction_type":"bottomsheet","deselect_behavior":"actionData=ACTION_NULL → changeSelectDevice(item,ACTION_NULL)","evidence":["src/SelectDevice/ListDeviceSelect.js:470-485","src/SelectDevice/ListDeviceSelect.js:673-686","src/SelectDevice/ListDeviceSelect.js:2662-2664","src/SelectDevice/ListDeviceSelect.js:3766-3811"]},
+    "change_note":"Object action/color source_verified."
+  },
+  {
+    "id":"device_action.doorbell_hsrf", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn hành động doorbell và HSRF", "description":"RF doorbell trong condition dùng NONE↔ON; trong action và HSRF hợp lệ mở modal chọn âm thanh/hành động. Capability được check trước khi mở.",
+    "aliases":["doorbell action","HSRF sound action","chọn nhạc chuông RF"], "preconditions":["root_type thuộc RF_DOOR_BELL v1/v2 hoặc HS_RF v1/v2", "checkCollectionActionDoorBell/HSRF trả true cho action"],
+    "steps":[{"action":"tap","target":"Item doorbell/HSRF đúng tên","expected_state":"Condition đổi selected state; action mở modal chọn âm thanh"},{"action":"confirm_if_present","target":"Âm thanh hoặc hành động trong modal","expected_state":"Modal đóng và item hiển thị lựa chọn"}],
+    "success_criteria":["Không mở modal nếu capability check thất bại"], "status":"draft",
+    "tags":["device_action","device_type:doorbell_hsrf","interaction:modal_or_cycle","source_verified"],
+    "metadata":{"namespace":"device_action.doorbell_hsrf","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","variants":{"DOORBELL_CONDITION":{"transitions":{"NONE":"ON","ON":"NONE"}},"DOORBELL_ACTION":"SelectDoorBellRfMusicModal","HSRF":"SelectDoorBellRfMusicModal after capability check"},"evidence":["src/SelectDevice/ListDeviceSelect.js:758-768","src/SelectDevice/ListDeviceSelect.js:2878-2910"]},
+    "change_note":"Context/capability split source_verified."
+  },
+  {
+    "id":"device_action.buoy_thief_shock", "app_id":"hunonic", "version_id":null,
+    "name":"Chọn hành động phao, chống trộm và shock sensor", "description":"Buoy trong action và child switch của Thief/Shock dùng chu kỳ NONE→ON→OFF→NONE; sensor root trong condition mở selector chuyên biệt. Phải phân biệt item.type.",
+    "aliases":["buoy action","thief switch action","shock sensor action"], "preconditions":["Đã phân biệt sensor root với child type=switch và TYPE_ACTION/TYPE_CONDITION"],
+    "steps":[{"action":"tap","target":"Item đúng tên theo variant","expected_state":"Child switch đổi Bật/Tắt/Không chọn; sensor root mở selector condition"}],
+    "success_criteria":["Không áp dụng cycle cho sensor root"], "status":"draft",
+    "tags":["device_action","device_type:buoy_thief_shock","source_verified"],
+    "metadata":{"namespace":"device_action.buoy_thief_shock","type":"device_action_rule","screen":"screen.select_device","verification_level":"source_verified","variants":{"BUOY_ACTION":{"transitions":{"NONE":"ON","ON":"OFF","OFF":"NONE"}},"THIEF_SWITCH":{"transitions":{"NONE":"ON","ON":"OFF","OFF":"NONE"}},"THIEF_SENSOR_CONDITION":"refSelectThief","SHOCK_ACTION":{"transitions":{"NONE":"ON","ON":"OFF","OFF":"NONE"}},"SHOCK_CONDITION":"refSelectSwshock"},"evidence":["src/SelectDevice/ListDeviceSelect.js:2372-2387","src/SelectDevice/ListDeviceSelect.js:2800-2855","src/SelectDevice/ListDeviceSelect.js:3557-3700"]},
+    "change_note":"Variant theo item.type và context source_verified."
+  }
+]

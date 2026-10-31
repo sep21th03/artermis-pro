@@ -1,0 +1,210 @@
+[
+  {
+    "id": "device_action.selector",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1793
+  },
+  {
+    "id": "device_action.switch",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1218
+  },
+  {
+    "id": "device_action.sdoor",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1411
+  },
+  {
+    "id": "device_action.bottomsheet.sdoor",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1727
+  },
+  {
+    "id": "device_action.neo_r6",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1421
+  },
+  {
+    "id": "device_action.bottomsheet.neo_r6",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1446
+  },
+  {
+    "id": "device_action.ocs_wifi",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1720
+  },
+  {
+    "id": "device_action.blind",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1911
+  },
+  {
+    "id": "device_action.gate",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1543
+  },
+  {
+    "id": "device_action.gate_hun",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1495
+  },
+  {
+    "id": "device_action.rf_remote",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1577
+  },
+  {
+    "id": "device_action.rf_event",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1595
+  },
+  {
+    "id": "device_action.rf_button_collection",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1692
+  },
+  {
+    "id": "device_action.ir_rf_child",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1614
+  },
+  {
+    "id": "device_action.driver_led_dali",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1690
+  },
+  {
+    "id": "device_action.led_ht",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1722
+  },
+  {
+    "id": "device_action.meter_atm",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1630
+  },
+  {
+    "id": "device_action.ths_sensor",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1969
+  },
+  {
+    "id": "device_action.motion_rada_sensor",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1678
+  },
+  {
+    "id": "device_action.fan",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1716
+  },
+  {
+    "id": "device_action.camera",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1755
+  },
+  {
+    "id": "device_action.smart_lock",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1739
+  },
+  {
+    "id": "device_action.io_gateway",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1675
+  },
+  {
+    "id": "device_action.stair_led",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1642
+  },
+  {
+    "id": "device_action.doorbell_hsrf",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1643
+  },
+  {
+    "id": "device_action.buoy_thief_shock",
+    "result": "created",
+    "embedded": true,
+    "status": "draft",
+    "revision_no": 1,
+    "ms": 1596
+  }
+]

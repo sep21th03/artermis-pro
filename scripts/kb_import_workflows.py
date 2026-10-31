@@ -1,7 +1,7 @@
 """Import bộ workflow JSON vào Artemis KB qua API của console.
 
 Vì sao là script chứ không phải một lệnh curl: bộ dữ liệu KB được sinh theo lô (xem
-``artemis-kb-generated/import-instructions.md``) và quy tắc an toàn phải được cưỡng chế
+``kb/import-instructions.md``) và quy tắc an toàn phải được cưỡng chế
 bằng máy, không bằng trí nhớ người chạy:
 
 * **GET trước, PUT sau.** Bỏ qua mọi ID đã tồn tại — tuyệt đối không ghi đè bản
@@ -13,7 +13,7 @@ bằng máy, không bằng trí nhớ người chạy:
 
 Chạy::
 
-    .venv/bin/python scripts/kb_import_workflows.py ~/Developer/artemis-kb-generated/workflows.json
+    .venv/bin/python scripts/kb_import_workflows.py kb/workflows.json
     .venv/bin/python scripts/kb_import_workflows.py <file.json> --console http://127.0.0.1:8787
     .venv/bin/python scripts/kb_import_workflows.py <file.json> --dry-run
 """
@@ -115,13 +115,26 @@ def main() -> int:
     created = sum(1 for row in results if row["result"] == "created")
     embedded = sum(1 for row in results if row.get("embedded"))
     skipped = sum(1 for row in results if row["result"] == "skipped")
-    print(f"\nTạo mới {created} · bỏ qua {skipped} · đã index embedding {embedded}/{created}")
+    would_create = sum(1 for row in results if row["result"] == "would-create")
+    failed = sum(
+        1 for row in results if row["result"] not in ("created", "skipped", "would-create")
+    )
+
+    if args.dry_run:
+        # Dry-run không có dòng nào `created`, nên phải đếm `would-create` riêng: bản trước in
+        # "Tạo mới 0 · bỏ qua 60" trong khi log có 3 dòng "SẼ TẠO" — đúng lúc cần biết còn bao
+        # nhiêu việc thì tổng kết lại nói 0.
+        print(f"\nDry-run: sẽ tạo {would_create} · bỏ qua {skipped} · lỗi {failed}")
+    else:
+        print(f"\nTạo mới {created} · bỏ qua {skipped} · đã index embedding {embedded}/{created}")
+        if failed:
+            print(f"{failed} mục lỗi — xem cột kết quả phía trên.")
     if args.report:
-        args.report.write_text(
-            json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        args.report.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"Báo cáo: {args.report}")
-    return 0 if created == embedded else 1
+    if args.dry_run:
+        return 0 if failed == 0 else 1
+    return 0 if (created == embedded and failed == 0) else 1
 
 
 if __name__ == "__main__":

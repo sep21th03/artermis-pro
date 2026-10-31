@@ -110,6 +110,15 @@ không có KB thì task vẫn chạy, chỉ là prompt không có kiến thức 
 | **KB trên VPS qua HTTPS** | Máy tester / máy chỉ cắm điện thoại | 2 biến `ARTEMIS_KB_API` + `ARTEMIS_KB_API_KEY` (xem mục **B**) |
 | **Không dùng KB** | Chạy nhanh, hoặc máy chạy vai `server` (VPS nối PostgreSQL trực tiếp) | `KB_TUNNEL=0 sh apps/test_console/run.sh` |
 
+**Nội dung KB của app Hunonic nằm trong repo** — [`kb/`](../../kb/README.md): 63 workflow + 26
+`device_action.*` + nav graph + 96 ca kiểm tra retrieval + báo cáo review. Máy mới dựng lại KB từ đó
+(không cần dump database):
+
+```bash
+.venv/bin/python scripts/kb_import_workflows.py kb/workflows.json --dry-run   # xem trước, không ghi
+.venv/bin/python scripts/kb_import_workflows.py kb/workflows.json             # nạp thật
+```
+
 ### Cách 1 — KB local qua tunnel (3 bước)
 
 ```bash

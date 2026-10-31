@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Bộ Knowledge Base của app Hunonic được versioned trong repo ([`kb/`](./kb/README.md)).** 63 workflow
+  (62 `draft` + 1 `verified`) + 26 `device_action.*` + nav graph trích bằng AST (404 màn hình · 433 cạnh
+  có bằng chứng · 429 overlay · 1.084 điểm không phân tích được) + 96 ca kiểm tra retrieval + báo cáo
+  review/duplicate + trình tự import an toàn. Máy mới dựng lại KB **không cần dump database**, chỉ cần
+  các lệnh import (`scripts/kb_import_workflows.py`, `scripts/kb_import_nav_graph.py`). Đo trên KB đang
+  chạy: 89 workflow = 60 mục của `workflows.json` + 26 `device_action.*` + 3 bản `verified` có trước;
+  **3 mục của `workflows.json` chưa nạp** (`navigation.open_account_profile`, `room.sort_rooms`,
+  `scene.sort_press`). README chính và README console đều trỏ tới `kb/`.
+
 - **`scripts/install_tester.sh` — cài ARTEMIS lên một máy bằng một lệnh, và sinh `.env` đầy đủ.** Máy
   nhận không cần PostgreSQL, không cần khoá embedding, không cần key LLM thật — nhưng phải có **cùng
   model, cùng chuỗi xoay quota, cùng hạn mức** với máy đang cấu hình, nên gõ tay 4 dòng `.env` vừa dễ
@@ -235,6 +244,14 @@
     không còn mắt xích nào ra gateway bên thứ ba.
 
 ### Fixed
+
+- **`scripts/kb_import_workflows.py`: `--dry-run` không đếm số việc sẽ làm.** Tổng kết in *"Tạo mới 0 ·
+  bỏ qua 60"* trong khi log có 3 dòng *"SẼ TẠO"* — đúng lúc cần biết còn bao nhiêu việc thì tổng kết
+  lại nói 0 (phát hiện khi nạp bộ `kb/`). Nay dry-run in *"Dry-run: sẽ tạo N · bỏ qua M · lỗi K"*, đếm
+  cả mục lỗi (thiếu `id`, lỗi đọc HTTP) và thoát mã 1 khi có mục lỗi; chạy thật thoát mã 1 nếu có mục
+  lỗi hoặc có mục ghi xong mà chưa index embedding. 6 test mới
+  (`tests/unit/test_kb_import_workflows.py`) khoá cả luật **GET trước, PUT sau** và **không ghi đè bản
+  đã có** — trước đây chỉ có script, không có test.
 
 - **Console: mọi tab không bấm được (`apps/test_console/static/index.html`).** File có **2 thẻ
   `<script>`**; phần gắn sự kiện đăng nhập KB bị chèn vào script #1 (`$('kbLoginBtn').onclick =

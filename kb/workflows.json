@@ -1,0 +1,3748 @@
+[
+  {
+    "id": "auth.login_password",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Đăng nhập bằng tài khoản và mật khẩu",
+    "description": "Đăng nhập Hunonic bằng số điện thoại hoặc email và mật khẩu do tester cung cấp. Không dùng workflow này khi prompt chỉ nêu một tài khoản đã lưu mà không có mật khẩu.",
+    "aliases": [
+      "đăng nhập",
+      "login",
+      "đăng nhập bằng mật khẩu",
+      "đăng nhập số điện thoại",
+      "đăng nhập email"
+    ],
+    "preconditions": [
+      "Ứng dụng đang ở màn hình Đăng nhập",
+      "Tester đã cung cấp tài khoản và mật khẩu hợp lệ; không ghi thông tin bí mật vào KB"
+    ],
+    "steps": [
+      {
+        "action": "input_text",
+        "target": "Ô Số điện thoại hoặc Email",
+        "value": "<tài khoản do tester cung cấp>",
+        "expected_state": "Ô tài khoản hiển thị đúng giá trị đã nhập",
+        "optional": false
+      },
+      {
+        "action": "input_text",
+        "target": "Ô Mật khẩu",
+        "value": "<mật khẩu do tester cung cấp tại thời điểm chạy>",
+        "expected_state": "Ô mật khẩu đã có dữ liệu và được che",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Đăng nhập",
+        "expected_state": "Ứng dụng rời màn hình Đăng nhập hoặc hiển thị lỗi xác thực cụ thể",
+        "optional": false
+      },
+      {
+        "action": "confirm_if_present",
+        "target": "Các yêu cầu quyền hoặc giới thiệu xuất hiện lần đầu sau đăng nhập",
+        "expected_state": "Trang chủ có thể sử dụng",
+        "optional": true
+      }
+    ],
+    "success_criteria": [
+      "Màn hình chính có thanh điều hướng dưới cùng xuất hiện",
+      "Không còn ô tài khoản, mật khẩu và nút Đăng nhập"
+    ],
+    "status": "draft",
+    "tags": [
+      "auth",
+      "đăng nhập",
+      "mật khẩu",
+      "email",
+      "số điện thoại"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Auth/LoginScreen.js:620-741"
+      ],
+      "risk": "credential"
+    },
+    "change_note": "Tạo từ UI và logic LoginScreen hiện tại; chưa kiểm thử E2E trong lần phân tích này."
+  },
+  {
+    "id": "auth.forgot_password",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Khôi phục mật khẩu",
+    "description": "Mở luồng Quên mật khẩu từ màn hình đăng nhập để đặt lại thông tin xác thực theo hướng dẫn của ứng dụng.",
+    "aliases": [
+      "quên mật khẩu",
+      "lấy lại mật khẩu",
+      "khôi phục mật khẩu",
+      "forgot password",
+      "đặt lại mật khẩu"
+    ],
+    "preconditions": [
+      "Ứng dụng đang ở màn hình Đăng nhập",
+      "Tester có quyền truy cập số điện thoại hoặc email của tài khoản"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Liên kết Quên mật khẩu",
+        "expected_state": "Màn hình khôi phục mật khẩu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "input_text",
+        "target": "Ô tài khoản trên màn hình khôi phục",
+        "value": "<số điện thoại hoặc email do tester cung cấp>",
+        "expected_state": "Tài khoản cần khôi phục được điền",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút tiếp tục hoặc xác nhận trên màn hình khôi phục",
+        "expected_state": "Ứng dụng chuyển sang bước xác minh phù hợp hoặc báo lỗi dữ liệu rõ ràng",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Luồng xác minh tài khoản được mở",
+      "Không có mật khẩu, OTP hoặc mã xác minh nào được lưu vào KB"
+    ],
+    "status": "draft",
+    "tags": [
+      "auth",
+      "quên mật khẩu",
+      "khôi phục tài khoản"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Auth/LoginScreen.js:730-731",
+        "App.js:1141"
+      ]
+    },
+    "change_note": "Đường vào được xác nhận bằng source; các bước sau khi mở màn hình cần kiểm thử tay theo phương thức xác minh của tài khoản."
+  },
+  {
+    "id": "auth.register",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Đăng ký tài khoản mới",
+    "description": "Mở luồng đăng ký Hunonic từ màn hình đăng nhập và tạo tài khoản mới bằng dữ liệu thử nghiệm được cấp.",
+    "aliases": [
+      "đăng ký",
+      "tạo tài khoản",
+      "register",
+      "đăng ký tài khoản Hunonic",
+      "tạo người dùng mới"
+    ],
+    "preconditions": [
+      "Ứng dụng đang ở màn hình Đăng nhập",
+      "Có số điện thoại hoặc email thử nghiệm chưa đăng ký",
+      "Tester chấp thuận tạo dữ liệu tài khoản mới"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Liên kết Đăng ký ngay",
+        "expected_state": "Ứng dụng mở bước chọn quốc gia hoặc màn hình Đăng ký",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Quốc gia và mã vùng phù hợp",
+        "expected_state": "Mã vùng được chọn cho tài khoản mới",
+        "optional": true
+      },
+      {
+        "action": "input_text",
+        "target": "Các trường bắt buộc trên biểu mẫu đăng ký",
+        "value": "<dữ liệu tài khoản thử nghiệm do tester cung cấp>",
+        "expected_state": "Biểu mẫu có đủ dữ liệu bắt buộc",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Đăng ký hoặc Tiếp tục",
+        "expected_state": "Ứng dụng chuyển sang xác minh tài khoản hoặc báo lỗi dữ liệu cụ thể",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Ứng dụng chấp nhận biểu mẫu và mở bước xác minh hoặc hoàn tất đăng ký",
+      "Không lưu OTP hay mật khẩu trong workflow"
+    ],
+    "status": "draft",
+    "tags": [
+      "auth",
+      "đăng ký",
+      "tạo tài khoản"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Auth/LoginScreen.js:380-399",
+        "src/Components/Auth/LoginScreen.js:754-760",
+        "App.js:1140"
+      ]
+    },
+    "change_note": "Chức năng có trong navigation và LoginScreen; chưa xác minh toàn bộ biểu mẫu/OTP thực tế."
+  },
+  {
+    "id": "home.switch_house",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Chuyển sang nhà khác",
+    "description": "Chọn một nhà trong danh sách quản lý nhà để thay đổi nhà đang hoạt động; khác với modal gợi ý Chuyển nhà xuất hiện sau đăng nhập.",
+    "aliases": [
+      "chuyển nhà",
+      "đổi nhà",
+      "chọn nhà khác",
+      "switch house",
+      "sang nhà khác"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Tài khoản có ít nhất hai nhà hoặc một nhà khác có thể chọn"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu ở cuối thanh điều hướng",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Quản lý nhà",
+        "expected_state": "Màn hình Quản lý nhà hiển thị danh sách nhà",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Dòng có tên nhà đích trong tab Danh sách",
+        "expected_state": "Nhà đích được chọn và dữ liệu thiết bị của nhà đó bắt đầu tải",
+        "optional": false
+      },
+      {
+        "action": "back",
+        "target": "Nút quay lại",
+        "expected_state": "Trở về giao diện chính của nhà vừa chọn",
+        "optional": true
+      }
+    ],
+    "success_criteria": [
+      "Tên nhà hiện tại khớp nhà đích",
+      "Danh sách phòng hoặc thiết bị thuộc nhà đích được hiển thị"
+    ],
+    "status": "draft",
+    "tags": [
+      "nhà",
+      "chuyển nhà",
+      "quản lý nhà"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:729-733",
+        "src/Components/House/ListHouse.js:462",
+        "src/Components/House/HouseManagerScreen.js:38-75"
+      ]
+    },
+    "change_note": "Tạo workflow riêng để tránh retrieval nhầm với home.switch_house_modal hiện có."
+  },
+  {
+    "id": "home.create_house",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Thêm nhà mới",
+    "description": "Tạo một nhà mới từ màn hình Quản lý nhà bằng tên, địa chỉ và múi giờ.",
+    "aliases": [
+      "thêm nhà",
+      "tạo nhà",
+      "thêm ngôi nhà mới",
+      "add house",
+      "tạo home mới"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Tester chấp thuận tạo dữ liệu nhà mới",
+      "Có tên và địa chỉ thử nghiệm"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu trên thanh điều hướng dưới cùng",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Quản lý nhà",
+        "expected_state": "Màn hình Quản lý nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút dấu cộng trên thanh tiêu đề Quản lý nhà",
+        "expected_state": "Màn hình Thêm nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "input_text",
+        "target": "Ô Tên nhà",
+        "value": "<tên nhà thử nghiệm>",
+        "expected_state": "Tên nhà được điền",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Trường Địa chỉ nhà",
+        "expected_state": "Giao diện chọn hoặc nhập địa chỉ xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Địa chỉ thử nghiệm hợp lệ",
+        "expected_state": "Địa chỉ được gắn vào nhà mới",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Múi giờ của nhà",
+        "expected_state": "Múi giờ được hiển thị trên biểu mẫu",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Nút Thêm nhà hoặc Lưu",
+        "expected_state": "Nhà mới được tạo và xuất hiện trong danh sách",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Danh sách Quản lý nhà có nhà vừa tạo",
+      "Tên, địa chỉ và múi giờ khớp dữ liệu đã nhập"
+    ],
+    "status": "draft",
+    "tags": [
+      "nhà",
+      "thêm nhà",
+      "địa chỉ",
+      "múi giờ"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/DeviceShare/ManagerShareHouse/ManagerShareHouseScreen.js:76-84",
+        "src/Components/House/AddHouseScreen.js:196-341"
+      ]
+    },
+    "change_note": "Source xác nhận các trường và nút; thao tác chọn địa chỉ có thể khác theo quyền vị trí."
+  },
+  {
+    "id": "home.edit_house",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Đổi thông tin nhà",
+    "description": "Sửa tên, địa chỉ hoặc múi giờ của nhà do tài khoản sở hữu.",
+    "aliases": [
+      "sửa nhà",
+      "đổi thông tin nhà",
+      "đổi tên nhà",
+      "edit house",
+      "cập nhật địa chỉ nhà"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Tài khoản là chủ nhà cần sửa"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Quản lý nhà",
+        "expected_state": "Danh sách nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút ba chấm hoặc thao tác của nhà cần sửa",
+        "expected_state": "Danh sách thao tác của nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Đổi thông tin",
+        "expected_state": "Biểu mẫu thông tin nhà được mở với dữ liệu hiện tại",
+        "optional": false
+      },
+      {
+        "action": "input_text",
+        "target": "Trường thông tin cần đổi",
+        "value": "<giá trị mới do tester cung cấp>",
+        "expected_state": "Biểu mẫu hiển thị giá trị mới",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Lưu",
+        "expected_state": "Thông tin nhà được cập nhật",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Danh sách nhà hiển thị thông tin mới",
+      "Nhà đang hoạt động vẫn đúng nhà vừa sửa"
+    ],
+    "status": "draft",
+    "tags": [
+      "nhà",
+      "sửa nhà",
+      "địa chỉ nhà"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/House/ListHouse.js:194-203",
+        "src/Components/House/AddHouseScreen.js:196-341"
+      ]
+    },
+    "change_note": "Chỉ áp dụng cho nhà có quyền sở hữu; cần xác minh nhãn nút thao tác trên UI thật."
+  },
+  {
+    "id": "home.set_default_house",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Đặt nhà mặc định",
+    "description": "Đặt một nhà do tài khoản sở hữu làm nhà mặc định khi vào ứng dụng.",
+    "aliases": [
+      "đặt nhà mặc định",
+      "chọn nhà mặc định",
+      "default house",
+      "mặc định nhà này"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Nhà đích thuộc tài khoản và chưa là nhà mặc định"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Quản lý nhà",
+        "expected_state": "Danh sách nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút ba chấm hoặc thao tác của nhà đích",
+        "expected_state": "Danh sách thao tác xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Đặt làm nhà mặc định",
+        "expected_state": "Ứng dụng cập nhật nhà mặc định hoặc thông báo nhà đã là mặc định",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Nhà đích có nhãn Mặc định",
+      "Chỉ một nhà mang trạng thái mặc định"
+    ],
+    "status": "draft",
+    "tags": [
+      "nhà",
+      "nhà mặc định",
+      "quản lý nhà"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/House/ListHouse.js:207-217",
+        "src/Components/House/ListHouse.js:506"
+      ]
+    },
+    "change_note": "Luồng và trạng thái mặc định có trong ListHouse; chưa chạy trên tài khoản nhiều nhà."
+  },
+  {
+    "id": "home.share_house",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Chia sẻ nhà cho thành viên",
+    "description": "Mời một tài khoản khác vào nhà và chọn quyền chia sẻ phù hợp. Đây là thao tác thay đổi quyền truy cập.",
+    "aliases": [
+      "chia sẻ nhà",
+      "mời thành viên vào nhà",
+      "share house",
+      "thêm người dùng vào nhà",
+      "phân quyền nhà"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Tài khoản là chủ nhà",
+      "Có định danh tài khoản người nhận hợp lệ",
+      "Tester chấp thuận thay đổi quyền truy cập"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Quản lý nhà",
+        "expected_state": "Danh sách nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút thao tác của nhà cần chia sẻ",
+        "expected_state": "Menu thao tác của nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Chia sẻ nhà",
+        "expected_state": "Màn hình chia sẻ nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "input_text",
+        "target": "Ô tài khoản người nhận",
+        "value": "<số điện thoại hoặc email người nhận>",
+        "expected_state": "Người nhận được nhập",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mức quyền chia sẻ theo yêu cầu",
+        "expected_state": "Mức quyền mong muốn được chọn",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Chia sẻ hoặc Xác nhận",
+        "expected_state": "Lời mời chia sẻ được gửi hoặc lỗi cụ thể được hiển thị",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Người nhận xuất hiện trong danh sách chia sẻ hoặc có thông báo gửi thành công",
+      "Quyền của người nhận khớp lựa chọn"
+    ],
+    "status": "draft",
+    "tags": [
+      "nhà",
+      "chia sẻ nhà",
+      "thành viên",
+      "phân quyền"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/House/ListHouse.js:220-235",
+        "src/Components/House/ListHouse.js:450-451"
+      ],
+      "risk": "permission_change"
+    },
+    "change_note": "Source xác nhận đường vào và loại quyền; biểu mẫu chia sẻ cần test tay."
+  },
+  {
+    "id": "home.delete_house",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Xóa nhà",
+    "description": "Xóa một nhà khỏi tài khoản. Đây là thao tác phá hủy có thể ảnh hưởng phòng, thiết bị và quyền chia sẻ trong nhà.",
+    "aliases": [
+      "xóa nhà",
+      "xoá nhà",
+      "delete house",
+      "xóa ngôi nhà"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã xác định đúng nhà cần xóa",
+      "Tester xác nhận rõ ràng thao tác xóa và chấp nhận hậu quả"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Quản lý nhà",
+        "expected_state": "Danh sách nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút thao tác của đúng nhà cần xóa",
+        "expected_state": "Menu thao tác của nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Xóa nhà",
+        "expected_state": "Hộp thoại cảnh báo xóa nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút xác nhận Xóa trong hộp thoại, chỉ sau khi đối chiếu lại tên nhà",
+        "expected_state": "Nhà bị xóa hoặc ứng dụng báo điều kiện ngăn xóa",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Nhà đích không còn trong danh sách nếu thao tác thành công",
+      "Nhà khác không bị thay đổi"
+    ],
+    "status": "draft",
+    "tags": [
+      "nhà",
+      "xóa nhà",
+      "thao tác nguy hiểm"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/House/ListHouse.js:259-282",
+        "src/Components/House/ListHouse.js:319-327"
+      ],
+      "risk": "destructive"
+    },
+    "change_note": "Đánh dấu phá hủy; không được tự chạy nếu prompt không yêu cầu xóa rõ ràng."
+  },
+  {
+    "id": "device.view_all",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Xem tất cả thiết bị",
+    "description": "Mở danh sách toàn bộ thiết bị của nhà đang chọn từ Menu.",
+    "aliases": [
+      "tất cả thiết bị",
+      "xem danh sách thiết bị",
+      "all devices",
+      "thiết bị trong nhà",
+      "mở danh sách thiết bị"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã chọn đúng nhà"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "scroll",
+        "target": "Danh sách chức năng trong Menu",
+        "direction": "down",
+        "until": "Mục Tất cả thiết bị xuất hiện",
+        "expected_state": "Mục Tất cả thiết bị nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Mục Tất cả thiết bị",
+        "expected_state": "Màn hình danh sách thiết bị của nhà xuất hiện",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Màn hình Tất cả thiết bị được mở",
+      "Các thiết bị hiển thị thuộc nhà hiện tại"
+    ],
+    "status": "draft",
+    "tags": [
+      "thiết bị",
+      "danh sách thiết bị",
+      "menu"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:779-781",
+        "App.js:1145"
+      ]
+    },
+    "change_note": "Đường vào được xác nhận bằng source."
+  },
+  {
+    "id": "device.add_device",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Thêm thiết bị mới",
+    "description": "Mở bộ chọn loại thiết bị và bắt đầu cấu hình thiết bị mới cho nhà hiện tại. Các bước kết nối tiếp theo thay đổi theo loại thiết bị và phương thức SmartConfig, AP, Bluetooth, LAN hoặc QR.",
+    "aliases": [
+      "thêm thiết bị",
+      "cài thiết bị mới",
+      "kết nối thiết bị",
+      "add device",
+      "ghép thiết bị"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập và chọn đúng nhà",
+      "Thiết bị vật lý ở trạng thái sẵn sàng ghép nối",
+      "Điện thoại có các quyền Wi-Fi, Bluetooth hoặc vị trí cần thiết"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Nút dấu cộng hoặc Thêm thiết bị trên Trang chủ hay phòng hiện tại",
+        "expected_state": "Màn hình chọn loại thiết bị xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Đúng loại và mẫu thiết bị cần cấu hình",
+        "expected_state": "Ứng dụng mở hướng dẫn cấu hình tương ứng",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Phương thức kết nối được ứng dụng đề xuất cho loại thiết bị",
+        "expected_state": "Màn hình cấu hình SmartConfig, AP, Bluetooth, LAN hoặc QR phù hợp xuất hiện",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Nút Tiếp tục sau khi thiết bị vật lý đã ở chế độ ghép nối",
+        "expected_state": "Ứng dụng bắt đầu tìm hoặc cấu hình thiết bị",
+        "optional": false
+      },
+      {
+        "action": "wait",
+        "target": "Tiến trình cấu hình thiết bị",
+        "expected_state": "Ứng dụng báo cấu hình thành công hoặc lỗi có thể chẩn đoán",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Thiết bị mới xuất hiện trong đúng nhà hoặc phòng",
+      "Tên và loại thiết bị nhận diện khớp thiết bị vật lý"
+    ],
+    "status": "draft",
+    "tags": [
+      "thiết bị",
+      "thêm thiết bị",
+      "cấu hình",
+      "smartconfig",
+      "bluetooth",
+      "wifi"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "App.js:1149-1151",
+        "src/Components/Room/DetailRoom.js:176"
+      ],
+      "variant_note": "Nhánh sau bước chọn loại phụ thuộc thiết bị"
+    },
+    "change_note": "Chỉ mô tả phần chung đã xác minh trong navigation; cần workflow con theo từng họ thiết bị trước khi dùng để test cấu hình sâu."
+  },
+  {
+    "id": "device.move_house",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Chuyển thiết bị sang nhà khác",
+    "description": "Di chuyển một hoặc nhiều thiết bị giữa các nhà mà tài khoản có quyền quản lý.",
+    "aliases": [
+      "chuyển thiết bị",
+      "chuyển thiết bị sang nhà khác",
+      "move device",
+      "đổi nhà cho thiết bị"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Có nhà nguồn và nhà đích",
+      "Tài khoản có quyền quản lý thiết bị và nhà đích"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Chuyển thiết bị",
+        "expected_state": "Màn hình chọn thiết bị cần chuyển xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Thiết bị cần chuyển",
+        "expected_state": "Thiết bị được đánh dấu chọn",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nhà đích",
+        "expected_state": "Nhà đích được chọn",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Xác nhận hoặc Chuyển",
+        "expected_state": "Ứng dụng thực hiện chuyển hoặc báo điều kiện không cho phép",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Thiết bị xuất hiện trong nhà đích",
+      "Thiết bị không còn ở nhà nguồn sau khi dữ liệu được tải lại"
+    ],
+    "status": "draft",
+    "tags": [
+      "thiết bị",
+      "chuyển thiết bị",
+      "nhà"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:756-764",
+        "src/Modal/ModalHouse/ModalMoveDevice.js"
+      ],
+      "risk": "state_change"
+    },
+    "change_note": "Đường vào có trong Menu; cần xác minh thứ tự màn chọn thiết bị/nhà trên bản chạy thật."
+  },
+  {
+    "id": "device.share_multiple",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Chia sẻ nhiều thiết bị",
+    "description": "Chọn nhiều thiết bị của nhà hiện tại và chia sẻ cho một tài khoản khác.",
+    "aliases": [
+      "chia sẻ nhiều thiết bị",
+      "share multiple devices",
+      "gửi nhiều thiết bị",
+      "chia sẻ thiết bị hàng loạt"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Có quyền chia sẻ các thiết bị",
+      "Có tài khoản người nhận hợp lệ",
+      "Tester chấp thuận thay đổi quyền"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Chia sẻ nhiều thiết bị",
+        "expected_state": "Màn hình chọn nhiều thiết bị xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Các thiết bị cần chia sẻ",
+        "expected_state": "Đúng các thiết bị được đánh dấu",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Tiếp tục hoặc Chia sẻ",
+        "expected_state": "Ứng dụng mở bước nhập người nhận",
+        "optional": false
+      },
+      {
+        "action": "input_text",
+        "target": "Ô tài khoản người nhận",
+        "value": "<số điện thoại hoặc email người nhận>",
+        "expected_state": "Tài khoản người nhận được điền",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút xác nhận Chia sẻ",
+        "expected_state": "Lời mời được gửi hoặc lỗi cụ thể được hiển thị",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Danh sách thiết bị đã chia sẻ có đúng các thiết bị được chọn",
+      "Người nhận và quyền chia sẻ đúng yêu cầu"
+    ],
+    "status": "draft",
+    "tags": [
+      "thiết bị",
+      "chia sẻ thiết bị",
+      "nhiều thiết bị",
+      "phân quyền"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:747-751",
+        "App.js:1161"
+      ],
+      "risk": "permission_change"
+    },
+    "change_note": "Đường vào được xác nhận; các bước biểu mẫu cần test tay."
+  },
+  {
+    "id": "device.manage_shares",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Xem quản lý chia sẻ thiết bị",
+    "description": "Mở màn hình quản lý chia sẻ gồm các tab Chờ nhận, Thiết bị đã nhận và Thiết bị đã chia sẻ.",
+    "aliases": [
+      "quản lý chia sẻ thiết bị",
+      "thiết bị đã chia sẻ",
+      "thiết bị đã nhận",
+      "lời mời thiết bị",
+      "device sharing"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Quản lý chia sẻ thiết bị",
+        "expected_state": "Màn hình quản lý chia sẻ xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Tab Chờ nhận, Thiết bị đã nhận hoặc Thiết bị đã chia sẻ theo yêu cầu",
+        "expected_state": "Danh sách tương ứng được hiển thị",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Tiêu đề Quản lý chia sẻ thiết bị xuất hiện",
+      "Tab được yêu cầu đang hoạt động"
+    ],
+    "status": "draft",
+    "tags": [
+      "thiết bị",
+      "chia sẻ",
+      "lời mời",
+      "quản lý quyền"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:738-742",
+        "src/Components/DeviceShare/ManageShareDeviceScreen.js:38-58"
+      ]
+    },
+    "change_note": "Source xác nhận ba tab và đường vào."
+  },
+  {
+    "id": "room.edit_room",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Chỉnh sửa phòng",
+    "description": "Đổi tên, biểu tượng, màu hoặc danh sách thiết bị của một phòng trong nhà hiện tại.",
+    "aliases": [
+      "sửa phòng",
+      "đổi tên phòng",
+      "chỉnh sửa phòng",
+      "edit room",
+      "đổi biểu tượng phòng"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã chọn đúng nhà và phòng",
+      "Tài khoản có quyền chỉnh sửa phòng"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Phòng cần chỉnh sửa",
+        "expected_state": "Chi tiết phòng xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút chỉnh sửa phòng",
+        "expected_state": "Màn hình Chỉnh sửa phòng xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "input_text",
+        "target": "Ô tên phòng",
+        "value": "<tên mới nếu được yêu cầu>",
+        "expected_state": "Tên mới hiển thị trong ô",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Biểu tượng hoặc màu phòng theo yêu cầu",
+        "expected_state": "Lựa chọn mới được đánh dấu",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Nút Lưu chỉnh sửa",
+        "expected_state": "Ứng dụng lưu và quay về phòng",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Thông tin phòng hiển thị đúng giá trị mới",
+      "Danh sách thiết bị không bị thay đổi ngoài yêu cầu"
+    ],
+    "status": "draft",
+    "tags": [
+      "phòng",
+      "sửa phòng",
+      "thiết bị trong phòng"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Room/EditRoom.js:691-763",
+        "App.js:1148"
+      ]
+    },
+    "change_note": "Biểu mẫu được xác nhận bằng source; đường vào nút chỉnh sửa cần đối chiếu UI thật."
+  },
+  {
+    "id": "room.toggle_all_devices",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Bật hoặc tắt toàn bộ thiết bị trong phòng",
+    "description": "Điều khiển hàng loạt các thiết bị hỗ trợ trong một phòng bằng Bật tất cả hoặc Tắt tất cả, có hộp thoại xác nhận.",
+    "aliases": [
+      "bật hết thiết bị trong phòng",
+      "tắt hết thiết bị trong phòng",
+      "bật tất cả",
+      "tắt tất cả",
+      "điều khiển cả phòng"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã mở đúng phòng",
+      "Phòng có thiết bị hỗ trợ điều khiển hàng loạt"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Nút Bật tất cả hoặc Tắt tất cả theo yêu cầu",
+        "expected_state": "Hộp thoại xác nhận thao tác hàng loạt xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Xác nhận trong hộp thoại",
+        "expected_state": "Ứng dụng gửi lệnh tới các thiết bị trong phòng",
+        "optional": false
+      },
+      {
+        "action": "wait",
+        "target": "Trạng thái thiết bị trong phòng",
+        "expected_state": "Các thiết bị có phản hồi cập nhật sang trạng thái yêu cầu",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Các thiết bị hỗ trợ trong phòng có trạng thái đúng yêu cầu",
+      "Thiết bị ngoài phòng không bị thay đổi"
+    ],
+    "status": "draft",
+    "tags": [
+      "phòng",
+      "bật tất cả",
+      "tắt tất cả",
+      "điều khiển thiết bị"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Room/DetailRoom.js:208-272"
+      ],
+      "risk": "device_control"
+    },
+    "change_note": "Source xác nhận hộp thoại và hai lệnh; cần test với từng loại thiết bị trong phòng."
+  },
+  {
+    "id": "room.delete_room",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Xóa phòng",
+    "description": "Xóa một phòng sau cảnh báo xác nhận. Đây là thao tác phá hủy; cần kiểm tra cách ứng dụng xử lý thiết bị còn trong phòng.",
+    "aliases": [
+      "xóa phòng",
+      "xoá phòng",
+      "delete room",
+      "bỏ phòng"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã mở Chỉnh sửa của đúng phòng",
+      "Tester xác nhận rõ ràng việc xóa"
+    ],
+    "steps": [
+      {
+        "action": "scroll",
+        "target": "Màn hình Chỉnh sửa phòng",
+        "direction": "down",
+        "until": "Nút Xóa phòng xuất hiện",
+        "expected_state": "Nút Xóa phòng nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Nút Xóa phòng",
+        "expected_state": "Hộp thoại xác nhận xóa đúng tên phòng xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Có hoặc Xác nhận xóa",
+        "expected_state": "Phòng được xóa hoặc ứng dụng báo điều kiện ngăn xóa",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Phòng đích không còn trong danh sách phòng",
+      "Các phòng khác không bị thay đổi"
+    ],
+    "status": "draft",
+    "tags": [
+      "phòng",
+      "xóa phòng",
+      "thao tác nguy hiểm"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Room/EditRoom.js:672",
+        "src/Components/Room/EditRoom.js:769-783"
+      ],
+      "risk": "destructive"
+    },
+    "change_note": "Cần xác minh thủ công nơi thiết bị được chuyển đến sau khi xóa phòng."
+  },
+  {
+    "id": "timer.create_device_timer",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Tạo lịch hẹn giờ cho thiết bị",
+    "description": "Tạo lịch bật, tắt hoặc hành động hỗ trợ cho một thiết bị; lịch có thể lưu trên server hoặc thiết bị tùy loại và lựa chọn trong ứng dụng.",
+    "aliases": [
+      "tạo lịch hẹn giờ",
+      "thêm hẹn giờ",
+      "tạo lịch bật đèn",
+      "đặt giờ tắt thiết bị",
+      "add timer"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Thiết bị đích hỗ trợ hẹn giờ",
+      "Đã mở màn hình chi tiết của đúng thiết bị"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Mục Hẹn giờ hoặc Lịch của thiết bị",
+        "expected_state": "Danh sách hẹn giờ của thiết bị xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút dấu cộng để thêm hẹn giờ",
+        "expected_state": "Màn hình Thêm hẹn giờ cho đúng thiết bị xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Loại thời điểm: giờ cụ thể, bình minh hoặc hoàng hôn",
+        "expected_state": "Loại thời điểm được chọn",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Thời gian và các ngày lặp lại theo yêu cầu",
+        "expected_state": "Thời gian và lịch lặp hiển thị đúng",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Hành động của thiết bị, ví dụ Bật hoặc Tắt",
+        "expected_state": "Hành động được chọn",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nơi lưu Server hoặc Thiết bị khi ứng dụng yêu cầu",
+        "expected_state": "Nơi lưu phù hợp được chọn",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Nút Lưu",
+        "expected_state": "Ứng dụng báo thêm hẹn giờ thành công và quay về danh sách",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Lịch mới xuất hiện trong danh sách hẹn giờ của đúng thiết bị",
+      "Thời gian, ngày lặp và hành động khớp yêu cầu"
+    ],
+    "status": "draft",
+    "tags": [
+      "hẹn giờ",
+      "lịch",
+      "thiết bị",
+      "bật tắt"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Alarm/ListAlarm.js:2288-2314",
+        "src/Components/Alarm/EditAlarmNew.js:2260-2449",
+        "src/Components/Alarm/EditAlarmNew.js:2529-2571"
+      ],
+      "variant_note": "Trường hành động và nơi lưu phụ thuộc loại thiết bị"
+    },
+    "change_note": "Workflow chung; nên bổ sung biến thể đã verified cho từng họ thiết bị quan trọng."
+  },
+  {
+    "id": "timer.edit_device_timer",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Chỉnh sửa lịch hẹn giờ thiết bị",
+    "description": "Mở một lịch hiện có của thiết bị và cập nhật thời gian, lặp lại hoặc hành động.",
+    "aliases": [
+      "sửa lịch hẹn giờ",
+      "đổi giờ bật thiết bị",
+      "edit timer",
+      "chỉnh lịch thiết bị"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Thiết bị có lịch hẹn giờ hiện có",
+      "Đã mở danh sách hẹn giờ của đúng thiết bị"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Dòng lịch hẹn giờ cần sửa",
+        "expected_state": "Màn hình Chỉnh sửa hẹn giờ xuất hiện với dữ liệu hiện tại",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Thời gian, ngày lặp hoặc hành động cần thay đổi",
+        "expected_state": "Giá trị mới hiển thị trên biểu mẫu",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Lưu",
+        "expected_state": "Ứng dụng báo chỉnh sửa thành công và quay về danh sách",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Lịch đích hiển thị giá trị mới",
+      "Các lịch khác không bị thay đổi"
+    ],
+    "status": "draft",
+    "tags": [
+      "hẹn giờ",
+      "sửa lịch",
+      "thiết bị"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Alarm/EditAlarmNew.js:2260-2449",
+        "src/Components/Alarm/EditAlarmNew.js:2145-2148"
+      ]
+    },
+    "change_note": "Source xác nhận chế độ add/edit dùng chung màn hình; chưa E2E."
+  },
+  {
+    "id": "timer.delete_device_timer",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Xóa lịch hẹn giờ thiết bị",
+    "description": "Xóa một lịch hẹn giờ hiện có sau hộp thoại xác nhận. Đây là thao tác phá hủy lịch.",
+    "aliases": [
+      "xóa lịch hẹn giờ",
+      "xoá hẹn giờ",
+      "delete timer",
+      "bỏ lịch bật đèn",
+      "xóa lịch thiết bị"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã mở đúng lịch cần xóa",
+      "Tester yêu cầu xóa rõ ràng"
+    ],
+    "steps": [
+      {
+        "action": "scroll",
+        "target": "Màn hình Chỉnh sửa hẹn giờ",
+        "direction": "down",
+        "until": "Nút Xóa hẹn giờ xuất hiện",
+        "expected_state": "Nút Xóa hẹn giờ nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Nút Xóa hẹn giờ",
+        "expected_state": "Hộp thoại xác nhận xóa hẹn giờ xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Có hoặc Xác nhận xóa",
+        "expected_state": "Lịch bị xóa và ứng dụng quay về danh sách",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Lịch đích không còn trong danh sách",
+      "Các lịch khác giữ nguyên"
+    ],
+    "status": "draft",
+    "tags": [
+      "hẹn giờ",
+      "xóa lịch",
+      "thiết bị",
+      "thao tác nguy hiểm"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Alarm/EditAlarmNew.js:1105-1134",
+        "src/Components/Alarm/EditAlarmNew.js:2486-2500"
+      ],
+      "risk": "destructive"
+    },
+    "change_note": "Có hai nhánh xóa server/thiết bị trong source; UI chung cần test theo loại thiết bị."
+  },
+  {
+    "id": "scene.create_press",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Tạo ngữ cảnh chạy khi nhấn",
+    "description": "Tạo ngữ cảnh thủ công gồm một hoặc nhiều hành động và chạy khi người dùng chạm vào ngữ cảnh.",
+    "aliases": [
+      "tạo ngữ cảnh",
+      "ngữ cảnh chạy khi nhấn",
+      "scene thủ công",
+      "tạo kịch bản bật nhiều thiết bị",
+      "tap to run"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã chọn đúng nhà",
+      "Có ít nhất một thiết bị hoặc ngữ cảnh con làm hành động"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Ngữ cảnh trên thanh điều hướng",
+        "expected_state": "Danh sách ngữ cảnh xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút dấu cộng trong danh sách Ngữ cảnh chạy khi nhấn",
+        "expected_state": "Danh sách loại ngữ cảnh hoặc màn hình tạo ngữ cảnh xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Loại Ngữ cảnh chạy khi nhấn",
+        "expected_state": "Màn hình tạo ngữ cảnh thủ công xuất hiện",
+        "optional": true
+      },
+      {
+        "action": "input_text",
+        "target": "Ô tên ngữ cảnh",
+        "value": "<tên ngữ cảnh do tester cung cấp>",
+        "expected_state": "Tên ngữ cảnh được điền",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục thêm hành động",
+        "expected_state": "Màn hình chọn thiết bị hoặc ngữ cảnh có sẵn xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Thiết bị và hành động theo yêu cầu",
+        "expected_state": "Hành động xuất hiện trong danh sách của ngữ cảnh",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Lưu",
+        "expected_state": "Ngữ cảnh mới xuất hiện trong danh sách",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Ngữ cảnh mới có đúng tên và hành động",
+      "Ngữ cảnh nằm trong nhóm chạy khi nhấn"
+    ],
+    "status": "draft",
+    "tags": [
+      "ngữ cảnh",
+      "scene",
+      "chạy khi nhấn",
+      "hành động"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Collection/CollectionPressList.js:312-349",
+        "src/Components/Collection/CollectionBase/EditCollectionBase.js:400-422",
+        "src/Components/Collection/CollectionAI/LearnMoreCollectionAiScreen.js:15"
+      ]
+    },
+    "change_note": "Các thành phần và navigation có trong source; vị trí nút cộng cần xác minh UI thật."
+  },
+  {
+    "id": "scene.create_automation",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Tạo ngữ cảnh tự động",
+    "description": "Tạo tự động hóa gồm điều kiện kích hoạt và hành động; có thể dùng thiết bị, thời gian hoặc vị trí nếu tài khoản và thiết bị hỗ trợ.",
+    "aliases": [
+      "tạo tự động hóa",
+      "ngữ cảnh tự động",
+      "automation",
+      "nếu thì",
+      "tạo điều kiện thiết bị"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã chọn đúng nhà",
+      "Có nguồn điều kiện và hành động hỗ trợ"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Ngữ cảnh",
+        "expected_state": "Danh sách ngữ cảnh xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút dấu cộng trong phần Ngữ cảnh tự động",
+        "expected_state": "Màn hình tạo tự động hóa xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "input_text",
+        "target": "Ô tên ngữ cảnh",
+        "value": "<tên do tester cung cấp>",
+        "expected_state": "Tên được điền",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục thêm điều kiện",
+        "expected_state": "Các loại điều kiện hỗ trợ xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Điều kiện thiết bị, thời gian hoặc vị trí theo yêu cầu",
+        "expected_state": "Điều kiện xuất hiện trong ngữ cảnh",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục thêm hành động",
+        "expected_state": "Màn hình chọn hành động xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Thiết bị hoặc ngữ cảnh và hành động theo yêu cầu",
+        "expected_state": "Hành động xuất hiện trong ngữ cảnh",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Lưu",
+        "expected_state": "Ngữ cảnh tự động mới được lưu",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Ngữ cảnh có đúng điều kiện và hành động",
+      "Ngữ cảnh xuất hiện trong danh sách tự động hóa"
+    ],
+    "status": "draft",
+    "tags": [
+      "ngữ cảnh",
+      "tự động hóa",
+      "điều kiện",
+      "hành động"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Collection/CollectionAutoList.js:552-556",
+        "src/Components/Collection/CollectionAuto/EditCollectionAuto.js:1106-1180"
+      ]
+    },
+    "change_note": "Workflow tổng quát; điều kiện hợp lệ phụ thuộc thiết bị và quyền vị trí."
+  },
+  {
+    "id": "scene.create_scheduled",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Tạo ngữ cảnh hẹn giờ",
+    "description": "Tạo ngữ cảnh chạy nhiều hành động theo một thời điểm và lịch lặp; khác với lịch hẹn giờ của một thiết bị đơn lẻ.",
+    "aliases": [
+      "tạo ngữ cảnh hẹn giờ",
+      "lịch nhiều thiết bị",
+      "scheduled scene",
+      "hẹn giờ ngữ cảnh",
+      "tạo lịch bật nhiều đèn"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã chọn đúng nhà",
+      "Có thiết bị hoặc ngữ cảnh con làm hành động"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Ngữ cảnh",
+        "expected_state": "Danh sách ngữ cảnh xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút dấu cộng trong phần Ngữ cảnh tự động",
+        "expected_state": "Các loại ngữ cảnh xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Loại Ngữ cảnh hẹn giờ",
+        "expected_state": "Màn hình tạo ngữ cảnh hẹn giờ xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "input_text",
+        "target": "Ô tên ngữ cảnh",
+        "value": "<tên do tester cung cấp>",
+        "expected_state": "Tên được điền",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Thời gian và ngày lặp",
+        "expected_state": "Lịch chạy hiển thị đúng",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục thêm hành động",
+        "expected_state": "Màn hình chọn hành động xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Các hành động theo yêu cầu",
+        "expected_state": "Danh sách hành động được cập nhật",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Lưu",
+        "expected_state": "Ngữ cảnh hẹn giờ được lưu",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Ngữ cảnh mới có đúng thời gian, lặp lại và hành động",
+      "Ngữ cảnh xuất hiện trong danh sách tự động hóa"
+    ],
+    "status": "draft",
+    "tags": [
+      "ngữ cảnh",
+      "hẹn giờ",
+      "lịch",
+      "nhiều thiết bị"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Collection/CollectionAutoList.js:595-599",
+        "src/Components/Collection/CollectionTimer/EditCollectionTimer.js:309-327",
+        "old session 2026-10-22 collectionTimer analysis"
+      ]
+    },
+    "change_note": "Phân biệt rõ với timer.create_device_timer để tránh retrieval nhầm."
+  },
+  {
+    "id": "scene.delete",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Xóa ngữ cảnh",
+    "description": "Xóa một ngữ cảnh chạy khi nhấn, tự động hoặc hẹn giờ sau cảnh báo xác nhận.",
+    "aliases": [
+      "xóa ngữ cảnh",
+      "xoá tự động hóa",
+      "delete scene",
+      "xóa automation",
+      "bỏ kịch bản"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã mở chỉnh sửa đúng ngữ cảnh",
+      "Tester yêu cầu xóa rõ ràng"
+    ],
+    "steps": [
+      {
+        "action": "scroll",
+        "target": "Màn hình chỉnh sửa ngữ cảnh",
+        "direction": "down",
+        "until": "Nút Xóa ngữ cảnh xuất hiện",
+        "expected_state": "Nút Xóa nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Nút Xóa ngữ cảnh",
+        "expected_state": "Hộp thoại xác nhận xóa xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút xác nhận Xóa",
+        "expected_state": "Ứng dụng xóa ngữ cảnh và quay về danh sách",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Ngữ cảnh đích không còn trong danh sách",
+      "Các ngữ cảnh khác giữ nguyên"
+    ],
+    "status": "draft",
+    "tags": [
+      "ngữ cảnh",
+      "xóa ngữ cảnh",
+      "tự động hóa",
+      "thao tác nguy hiểm"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Collection/CollectionBase/EditCollectionBase.js:313-314",
+        "src/Components/Collection/CollectionAuto/EditCollectionAuto.js:749-754",
+        "src/Components/Collection/CollectionTimer/EditCollectionTimer.js:229-230"
+      ],
+      "risk": "destructive"
+    },
+    "change_note": "Các loại ngữ cảnh có màn chỉnh sửa riêng nhưng cùng xác nhận xóa."
+  },
+  {
+    "id": "settings.change_language",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Đổi ngôn ngữ tại màn hình đăng nhập",
+    "description": "Chọn tiếng Việt, tiếng Anh, tiếng Lào hoặc tiếng Nhật từ bộ chọn ngôn ngữ trên màn hình đăng nhập.",
+    "aliases": [
+      "đổi ngôn ngữ",
+      "chuyển tiếng Việt",
+      "change language",
+      "đổi sang tiếng Anh",
+      "chọn tiếng Nhật"
+    ],
+    "preconditions": [
+      "Ứng dụng đang ở màn hình Đăng nhập"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Bộ chọn ngôn ngữ ở màn hình Đăng nhập",
+        "expected_state": "Danh sách ngôn ngữ xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Ngôn ngữ đích: Tiếng Việt, English, ລາວ hoặc 日本語",
+        "expected_state": "Danh sách đóng và nhãn giao diện đổi ngôn ngữ",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Các nhãn chính của màn hình đăng nhập dùng ngôn ngữ đích",
+      "Bộ chọn hiển thị ngôn ngữ đã chọn"
+    ],
+    "status": "draft",
+    "tags": [
+      "cài đặt",
+      "ngôn ngữ",
+      "đăng nhập"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Auth/LoginScreen.js:462-499",
+        "src/Components/Auth/LoginScreen.js:544-547"
+      ]
+    },
+    "change_note": "Workflow giới hạn ở bộ chọn ngôn ngữ đã thấy rõ trong LoginScreen."
+  },
+  {
+    "id": "settings.change_wifi",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Đổi Wi-Fi cho thiết bị",
+    "description": "Mở chức năng Đổi Wi-Fi từ Menu để cấu hình lại kết nối mạng cho thiết bị hỗ trợ.",
+    "aliases": [
+      "đổi wifi",
+      "thay mạng thiết bị",
+      "change wifi",
+      "cấu hình lại wifi",
+      "đổi mạng"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Thiết bị đích hỗ trợ đổi Wi-Fi",
+      "Có thông tin mạng thử nghiệm và thiết bị ở trạng thái phù hợp"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "scroll",
+        "target": "Danh sách Menu",
+        "direction": "down",
+        "until": "Mục Đổi Wi-Fi xuất hiện",
+        "expected_state": "Mục Đổi Wi-Fi nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Mục Đổi Wi-Fi",
+        "expected_state": "Màn hình chọn thiết bị hoặc hướng dẫn đổi Wi-Fi xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Đúng thiết bị cần đổi Wi-Fi",
+        "expected_state": "Ứng dụng mở quy trình cấu hình phù hợp",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Tiếp tục sau khi đã chuẩn bị thiết bị và mạng",
+        "expected_state": "Ứng dụng bắt đầu đổi Wi-Fi hoặc hiển thị yêu cầu còn thiếu",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Ứng dụng báo đổi Wi-Fi thành công",
+      "Thiết bị trở lại online trên mạng mới"
+    ],
+    "status": "draft",
+    "tags": [
+      "thiết bị",
+      "wifi",
+      "cấu hình mạng",
+      "đổi mạng"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:869-871",
+        "App.js:1160"
+      ],
+      "variant_note": "Quy trình tiếp theo phụ thuộc loại thiết bị"
+    },
+    "change_note": "Chỉ mô tả đường chung; cần workflow con theo phương thức cấu hình."
+  },
+  {
+    "id": "notification.view_center",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Xem trung tâm thông báo",
+    "description": "Mở danh sách thông báo Hunonic từ màn hình Menu và xem chi tiết một thông báo.",
+    "aliases": [
+      "xem thông báo",
+      "trung tâm thông báo",
+      "notification center",
+      "mở thông báo",
+      "thông báo Hunonic"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Thông báo hoặc biểu tượng thông báo có huy hiệu số",
+        "expected_state": "Trung tâm thông báo xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Dòng thông báo cần xem",
+        "expected_state": "Chi tiết thông báo xuất hiện",
+        "optional": true
+      }
+    ],
+    "success_criteria": [
+      "Danh sách thông báo được hiển thị",
+      "Nếu chọn một thông báo, nội dung chi tiết tương ứng xuất hiện"
+    ],
+    "status": "draft",
+    "tags": [
+      "thông báo",
+      "notification",
+      "menu"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:525-527",
+        "App.js:1138-1139"
+      ]
+    },
+    "change_note": "Đường vào và màn chi tiết được xác nhận trong source."
+  },
+  {
+    "id": "navigation.bottom_tabs_overview",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Bản đồ thanh điều hướng chính",
+    "description": "Giải thích các khu vực chính sau khi đăng nhập: Trang chủ, Phòng, Ngữ cảnh, Cửa hàng và Menu. Một số tab như Phòng hoặc Ngữ cảnh không xuất hiện với nhà trọ; tab camera nhiều màn hình chỉ xuất hiện khi đã bật cấu hình tương ứng.",
+    "aliases": [
+      "các tab chính",
+      "thanh điều hướng dưới",
+      "bottom navigation",
+      "app có những màn nào",
+      "bản đồ màn hình Hunonic"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập và đang ở khu vực có thanh điều hướng dưới cùng"
+    ],
+    "steps": [
+      {
+        "action": "assert",
+        "target": "Thanh điều hướng dưới cùng",
+        "expected_state": "Có các tab phù hợp với loại nhà và cấu hình tài khoản",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Tab phù hợp với khu vực cần mở: Trang chủ, Phòng, Ngữ cảnh, Cửa hàng hoặc Menu",
+        "expected_state": "Màn hình tương ứng được chọn và tab có trạng thái đang hoạt động",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Agent xác định đúng tab trước khi đi sâu vào chức năng",
+      "Không giả định tab tùy chọn luôn tồn tại"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "thanh điều hướng",
+      "màn hình chính",
+      "tab"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/HomeTabs.js:299-317",
+        "src/Components/HomeTab/TabbarCustom/HomeTabBar.js"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Bổ sung workflow định hướng màn hình; ghi rõ tab thay đổi theo loại nhà và feature flag."
+  },
+  {
+    "id": "navigation.open_home",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở màn hình Trang chủ",
+    "description": "Đi tới Trang chủ của nhà đang hoạt động. Đây là nơi hiển thị tổng quan, thiết bị nổi bật và các cảnh báo hoặc modal của nhà.",
+    "aliases": [
+      "mở trang chủ",
+      "về home",
+      "đi tới màn hình chính",
+      "open home screen"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Thanh điều hướng dưới cùng đang hiển thị"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Trang chủ trên thanh điều hướng dưới cùng",
+        "expected_state": "Trang chủ của nhà hiện tại xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "confirm_if_present",
+        "target": "Modal Chuyển nhà hoặc thông báo phủ trên Trang chủ",
+        "expected_state": "Modal được xử lý theo mục tiêu hiện tại và Trang chủ có thể sử dụng",
+        "optional": true
+      }
+    ],
+    "success_criteria": [
+      "Tab Trang chủ đang hoạt động",
+      "Tên hoặc dữ liệu tổng quan thuộc nhà hiện tại được hiển thị"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "trang chủ",
+      "home",
+      "nhà hiện tại"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/HomeTabs.js:299",
+        "src/Components/HomeTab/HomeScreen/HomeScreenNew.js"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Hướng dẫn điều hướng tới Trang chủ, không điều khiển thiết bị."
+  },
+  {
+    "id": "navigation.open_rooms",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở màn hình Phòng",
+    "description": "Đi tới danh sách phòng của nhà thường để xem và chọn phòng. Tab Phòng không được đăng ký khi nhà hiện tại là nhà trọ.",
+    "aliases": [
+      "mở màn hình phòng",
+      "xem các phòng",
+      "đi tới tab phòng",
+      "open rooms",
+      "danh sách phòng ở đâu"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Nhà hiện tại không phải nhà trọ",
+      "Thanh điều hướng dưới cùng đang hiển thị"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Phòng trên thanh điều hướng dưới cùng",
+        "expected_state": "Màn hình danh sách phòng của nhà hiện tại xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Thẻ phòng có tên cần xem",
+        "expected_state": "Chi tiết phòng và các thiết bị thuộc phòng xuất hiện",
+        "optional": true
+      }
+    ],
+    "success_criteria": [
+      "Tab Phòng đang hoạt động hoặc chi tiết đúng phòng đã mở",
+      "Dữ liệu phòng thuộc nhà hiện tại"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "phòng",
+      "danh sách phòng"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/HomeTabs.js:303-305",
+        "src/Components/HomeTab/RoomScreenNew.js"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Không áp dụng cho nhà trọ vì source không đăng ký tab Phòng ở chế độ đó."
+  },
+  {
+    "id": "navigation.open_collections",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở màn hình Ngữ cảnh",
+    "description": "Đi tới màn hình Ngữ cảnh để xem ngữ cảnh chạy khi nhấn và các tự động hóa. Tab này chỉ xuất hiện với nhà thường, không xuất hiện trong navigator của nhà trọ.",
+    "aliases": [
+      "mở màn hình ngữ cảnh",
+      "đi tới tab ngữ cảnh",
+      "xem automation",
+      "open scenes",
+      "ngữ cảnh nằm ở đâu"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Nhà hiện tại không phải nhà trọ",
+      "Thanh điều hướng dưới cùng đang hiển thị"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Ngữ cảnh trên thanh điều hướng dưới cùng",
+        "expected_state": "Màn hình Ngữ cảnh xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "assert",
+        "target": "Các khu vực ngữ cảnh chạy khi nhấn và ngữ cảnh tự động",
+        "expected_state": "Danh sách hoặc trạng thái trống của từng khu vực được hiển thị",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Tab Ngữ cảnh đang hoạt động",
+      "Có danh sách ngữ cảnh hoặc trạng thái chưa có dữ liệu"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "ngữ cảnh",
+      "automation",
+      "scene"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/HomeTabs.js:306-308",
+        "src/Components/Collection/CollectionScreen.js"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Hướng dẫn tìm màn Ngữ cảnh; không gộp với workflow tạo/sửa ngữ cảnh."
+  },
+  {
+    "id": "navigation.open_menu",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở màn hình Menu",
+    "description": "Đi tới Menu, nơi chứa thông tin tài khoản và các đường dẫn quản lý nhà, chia sẻ thiết bị, chuyển thiết bị, đổi Wi-Fi, thông báo, hỗ trợ và đăng xuất.",
+    "aliases": [
+      "mở menu",
+      "màn hình cài đặt ở đâu",
+      "vào trang cá nhân",
+      "open menu",
+      "mở tab cuối"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Thanh điều hướng dưới cùng đang hiển thị"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu ở ngoài cùng bên phải của thanh điều hướng dưới cùng",
+        "expected_state": "Màn hình Menu và thông tin tài khoản xuất hiện",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Tab Menu đang hoạt động",
+      "Các mục quản lý tài khoản hoặc nhà được hiển thị"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "menu",
+      "cài đặt",
+      "tài khoản"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/HomeTabs.js:317",
+        "src/Components/HomeTab/MenuScreen.js"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Workflow chỉ mở Menu; các chức năng bên trong vẫn dùng workflow riêng."
+  },
+  {
+    "id": "navigation.open_device_settings",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở thông tin và cài đặt thiết bị",
+    "description": "Mở màn hình chi tiết/cài đặt của một thiết bị. ĐO TRÊN MÁY THẬT: ở Trang chủ/Phòng, CHẠM vào thẻ thiết bị là BẬT/TẮT thiết bị — KHÔNG mở chi tiết. Muốn vào chi tiết/cài đặt phải NHẤN GIỮ thẻ thiết bị ít nhất 2 giây. Nội dung cài đặt thay đổi theo loại thiết bị.",
+    "aliases": [
+      "mở cài đặt thiết bị",
+      "thông tin thiết bị ở đâu",
+      "vào setting thiết bị",
+      "device settings",
+      "mở màn hình info thiết bị"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã chọn đúng nhà",
+      "Thiết bị đích đang hiển thị trong Trang chủ, Phòng hoặc Tất cả thiết bị"
+    ],
+    "steps": [
+      {
+        "action": "long_press",
+        "target": "Thẻ hoặc tên của thiết bị đích — NHẤN GIỮ ít nhất 2 giây (chạm thường chỉ bật/tắt thiết bị, không mở chi tiết)",
+        "expected_state": "Màn hình chi tiết/cài đặt của thiết bị mở ra",
+        "direction": null,
+        "until": "",
+        "value": "",
+        "timeout_s": null,
+        "optional": false
+      },
+      {
+        "action": "confirm_if_present",
+        "target": "Nếu sau khi nhấn giữ vẫn ở Trang chủ: mở biểu tượng bánh răng hoặc mục Thông tin/Cài đặt thiết bị trên thẻ thiết bị",
+        "expected_state": "Màn hình chi tiết/cài đặt của thiết bị mở ra",
+        "direction": null,
+        "until": "",
+        "value": "",
+        "timeout_s": null,
+        "optional": true
+      }
+    ],
+    "success_criteria": [
+      "Màn hình chi tiết/cài đặt của đúng thiết bị đang hiển thị"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "thiết bị",
+      "cài đặt thiết bị",
+      "thông tin thiết bị"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "App.js:1199-1200",
+        "src/Components/DetailScreen/InfoDeviceScreen.js",
+        "src/Components/DetailScreen/DetailSkEmeter/DetailSkEmeterScreen.js:645-646"
+      ],
+      "screen_guide": true,
+      "variant_note": "Điểm vào thay đổi theo loại thiết bị"
+    },
+    "change_note": "Hướng dẫn chung tới màn info; không mô tả các setting riêng của từng root_type."
+  },
+  {
+    "id": "navigation.open_device_timers",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở danh sách hẹn giờ của thiết bị",
+    "description": "Từ màn thông tin/cài đặt của một thiết bị, mở mục Hẹn giờ để xem lịch server và lịch lưu trên thiết bị nếu loại thiết bị hỗ trợ.",
+    "aliases": [
+      "mở danh sách hẹn giờ",
+      "lịch của thiết bị ở đâu",
+      "xem timer thiết bị",
+      "open device timers",
+      "vào màn hẹn giờ"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã mở Thông tin/Cài đặt của đúng thiết bị",
+      "Thiết bị hỗ trợ hẹn giờ"
+    ],
+    "steps": [
+      {
+        "action": "scroll",
+        "target": "Danh sách mục trong Thông tin/Cài đặt thiết bị",
+        "direction": "down",
+        "until": "Mục Hẹn giờ xuất hiện",
+        "expected_state": "Mục Hẹn giờ nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Mục Hẹn giờ",
+        "expected_state": "Danh sách hẹn giờ của đúng thiết bị xuất hiện",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Tiêu đề hoặc nội dung màn hình gắn với đúng thiết bị",
+      "Danh sách lịch hoặc trạng thái chưa có lịch được hiển thị"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "hẹn giờ",
+      "thiết bị",
+      "danh sách lịch"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/DetailScreen/InfoDeviceScreenCommonView.js:1350-1390",
+        "App.js:1186-1187"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Tách việc mở màn danh sách khỏi các workflow tạo/sửa/xóa lịch."
+  },
+  {
+    "id": "navigation.open_all_devices",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở màn hình Tất cả thiết bị",
+    "description": "Đi từ Menu tới danh sách toàn bộ thiết bị của nhà hiện tại. Workflow này chỉ hướng dẫn mở màn hình, không thêm hoặc điều khiển thiết bị.",
+    "aliases": [
+      "mở tất cả thiết bị",
+      "màn tất cả thiết bị ở đâu",
+      "đi tới danh sách thiết bị",
+      "open all devices screen"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã chọn đúng nhà"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "scroll",
+        "target": "Danh sách Menu",
+        "direction": "down",
+        "until": "Mục Tất cả thiết bị xuất hiện",
+        "expected_state": "Mục Tất cả thiết bị nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Mục Tất cả thiết bị",
+        "expected_state": "Danh sách toàn bộ thiết bị của nhà hiện tại xuất hiện",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Màn hình Tất cả thiết bị được mở",
+      "Không thực hiện điều khiển hoặc thay đổi thiết bị"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "thiết bị",
+      "tất cả thiết bị"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:779-781",
+        "App.js:1145"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Tách yêu cầu mở màn hình khỏi device.view_all dùng cho mục tiêu xem danh sách."
+  },
+  {
+    "id": "navigation.open_house_management",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở màn hình Quản lý nhà",
+    "description": "Đi tới Quản lý nhà. Màn hình có các tab Danh sách, Nhà đã nhận và Nhà đã chia sẻ; nút dấu cộng dùng để mở luồng thêm nhà.",
+    "aliases": [
+      "mở quản lý nhà",
+      "quản lý nhà ở đâu",
+      "xem nhà đã nhận",
+      "xem nhà đã chia sẻ",
+      "open house management"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Quản lý nhà",
+        "expected_state": "Màn hình Quản lý nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Tab Danh sách, Nhà đã nhận hoặc Nhà đã chia sẻ theo nội dung cần xem",
+        "expected_state": "Danh sách tương ứng được hiển thị",
+        "optional": true
+      }
+    ],
+    "success_criteria": [
+      "Tiêu đề Quản lý nhà xuất hiện",
+      "Tab được yêu cầu đang hoạt động"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "quản lý nhà",
+      "nhà đã nhận",
+      "nhà đã chia sẻ"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:729-733",
+        "src/Components/DeviceShare/ManagerShareHouse/ManagerShareHouseScreen.js:36-93"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Bổ sung bản đồ ba tab của màn Quản lý nhà."
+  },
+  {
+    "id": "navigation.open_device_share_manager",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở màn hình Quản lý chia sẻ thiết bị",
+    "description": "Đi tới màn quản lý chia sẻ và chọn tab Chờ nhận, Thiết bị đã nhận hoặc Thiết bị đã chia sẻ.",
+    "aliases": [
+      "mở quản lý chia sẻ thiết bị",
+      "xem lời mời thiết bị",
+      "màn thiết bị đã chia sẻ ở đâu",
+      "open device sharing manager"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Quản lý chia sẻ thiết bị",
+        "expected_state": "Màn hình quản lý chia sẻ thiết bị xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Tab Chờ nhận, Thiết bị đã nhận hoặc Thiết bị đã chia sẻ",
+        "expected_state": "Danh sách của tab được chọn hiển thị",
+        "optional": true
+      }
+    ],
+    "success_criteria": [
+      "Đúng màn quản lý chia sẻ được mở",
+      "Không chấp nhận hoặc hủy lời mời nếu prompt chỉ yêu cầu xem"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "chia sẻ thiết bị",
+      "lời mời"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:738-742",
+        "src/Components/DeviceShare/ManageShareDeviceScreen.js:38-58"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Chỉ mở và chọn tab; không thay đổi quyền chia sẻ."
+  },
+  {
+    "id": "navigation.open_notifications",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở Trung tâm thông báo",
+    "description": "Đi tới danh sách thông báo từ mục Thông báo trong Menu hoặc lối tắt thông báo trên Trang chủ nếu đang hiển thị.",
+    "aliases": [
+      "mở trung tâm thông báo",
+      "thông báo nằm ở đâu",
+      "xem danh sách notification",
+      "open notifications screen"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Mục hoặc biểu tượng Thông báo có thể kèm huy hiệu số",
+        "expected_state": "Trung tâm thông báo xuất hiện",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Danh sách thông báo hoặc trạng thái trống được hiển thị",
+      "Chưa mở chi tiết nếu prompt chỉ yêu cầu tới màn hình"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "thông báo",
+      "notification center"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:525-527",
+        "src/Components/HomeTab/HomeScreen/HomeScreenNew.js:1081",
+        "App.js:1138"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Ghi nhận hai lối vào nhưng ưu tiên phần tử đang hiện trên UI."
+  },
+  {
+    "id": "navigation.open_change_wifi",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở màn hình Đổi Wi-Fi",
+    "description": "Tìm và mở chức năng Đổi Wi-Fi trong Menu. Dừng ở màn chọn thiết bị hoặc hướng dẫn cấu hình nếu prompt chưa yêu cầu thay đổi mạng.",
+    "aliases": [
+      "mở màn đổi wifi",
+      "đổi wifi nằm ở đâu",
+      "tìm chức năng đổi mạng",
+      "open change wifi screen"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "scroll",
+        "target": "Danh sách Menu",
+        "direction": "down",
+        "until": "Mục Đổi Wi-Fi xuất hiện",
+        "expected_state": "Mục Đổi Wi-Fi nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Mục Đổi Wi-Fi",
+        "expected_state": "Màn hình chọn thiết bị hoặc hướng dẫn đổi Wi-Fi xuất hiện",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Đã tới màn hình thuộc luồng Đổi Wi-Fi",
+      "Chưa gửi cấu hình mạng mới"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "wifi",
+      "đổi mạng"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:869-871",
+        "src/Components/HomeTab/GroupMenuScreen.js:271-272"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Tách việc mở màn khỏi settings.change_wifi là workflow thực hiện cấu hình."
+  },
+  {
+    "id": "navigation.open_device_history",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở lịch sử hoạt động thiết bị",
+    "description": "Từ Thông tin/Cài đặt của thiết bị, mở mục Lịch sử nếu loại thiết bị hỗ trợ. Không phải mọi thiết bị đều có mục này.",
+    "aliases": [
+      "mở lịch sử thiết bị",
+      "xem lịch sử bật tắt",
+      "device history ở đâu",
+      "open device history"
+    ],
+    "preconditions": [
+      "Đã mở Thông tin/Cài đặt của đúng thiết bị",
+      "Thiết bị hỗ trợ lịch sử hoạt động"
+    ],
+    "steps": [
+      {
+        "action": "scroll",
+        "target": "Danh sách cài đặt thiết bị",
+        "direction": "down",
+        "until": "Mục Lịch sử xuất hiện",
+        "expected_state": "Mục Lịch sử nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Mục Lịch sử",
+        "expected_state": "Màn hình lịch sử của đúng thiết bị xuất hiện",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Tên thiết bị hoặc dữ liệu lịch sử khớp thiết bị đích",
+      "Nếu mục không tồn tại, báo thiết bị không hỗ trợ thay vì đoán đường khác"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "thiết bị",
+      "lịch sử hoạt động"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Common/NavigatorManage.js:249",
+        "src/Components/DetailScreen/SettingSwitchView.js:1212",
+        "src/Components/DetailScreen/SmartLock/InfoDeviceSmartLockViewMemo.js:337"
+      ],
+      "screen_guide": true,
+      "variant_note": "Chỉ xuất hiện với loại thiết bị hỗ trợ"
+    },
+    "change_note": "Workflow có điều kiện; không khẳng định mọi thiết bị đều có lịch sử."
+  },
+  {
+    "id": "navigation.open_device_share",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở màn hình chia sẻ một thiết bị",
+    "description": "Từ Thông tin/Cài đặt của thiết bị, mở mục Chia sẻ để xem người đang được chia sẻ hoặc chuẩn bị chia sẻ. Chỉ chủ thiết bị mới có quyền đầy đủ.",
+    "aliases": [
+      "mở chia sẻ thiết bị",
+      "xem ai đang dùng thiết bị",
+      "device share screen",
+      "màn phân quyền thiết bị"
+    ],
+    "preconditions": [
+      "Đã mở Thông tin/Cài đặt của đúng thiết bị",
+      "Tài khoản có quyền xem thông tin chia sẻ"
+    ],
+    "steps": [
+      {
+        "action": "scroll",
+        "target": "Danh sách cài đặt thiết bị",
+        "direction": "down",
+        "until": "Mục Chia sẻ xuất hiện",
+        "expected_state": "Mục Chia sẻ nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Mục Chia sẻ",
+        "expected_state": "Màn hình chia sẻ của đúng thiết bị xuất hiện hoặc ứng dụng báo thiếu quyền",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Thiết bị trên màn chia sẻ khớp thiết bị đích",
+      "Không thêm/xóa người dùng nếu prompt chỉ yêu cầu mở hoặc xem"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "chia sẻ thiết bị",
+      "phân quyền"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/DetailScreen/InfoDeviceScreenCommonView.js:1390-1430"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Chỉ mở màn; quyền và biểu mẫu thay đổi theo quyền sở hữu/loại thiết bị."
+  },
+  {
+    "id": "navigation.open_scene_editor",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở chỉnh sửa một ngữ cảnh",
+    "description": "Từ màn Ngữ cảnh, chọn đúng ngữ cảnh hiện có để mở trình chỉnh sửa tương ứng với loại chạy khi nhấn, tự động hoặc hẹn giờ.",
+    "aliases": [
+      "mở sửa ngữ cảnh",
+      "xem chi tiết automation",
+      "scene editor ở đâu",
+      "open scene editor"
+    ],
+    "preconditions": [
+      "Đã mở màn Ngữ cảnh",
+      "Ngữ cảnh đích đang tồn tại"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Đúng dòng hoặc nút chỉnh sửa của ngữ cảnh đích",
+        "expected_state": "Trình chỉnh sửa mở với đúng tên, loại và dữ liệu hiện tại",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Tên ngữ cảnh trong trình chỉnh sửa khớp mục đã chọn",
+      "Chưa lưu hoặc xóa nếu prompt chỉ yêu cầu mở"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "ngữ cảnh",
+      "chỉnh sửa",
+      "automation"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Collection/CollectionPressList.js:147-161",
+        "src/Components/Collection/CollectionAutoList.js:277-365"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Dùng entry hiện có để app tự chọn editor đúng loại ngữ cảnh."
+  },
+  {
+    "id": "navigation.open_timer_editor",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở chỉnh sửa một lịch hẹn giờ",
+    "description": "Từ danh sách hẹn giờ của thiết bị, mở một lịch hiện có để xem cấu hình hoặc chuẩn bị chỉnh sửa.",
+    "aliases": [
+      "mở chi tiết lịch hẹn giờ",
+      "xem cấu hình timer",
+      "timer editor ở đâu",
+      "open timer editor"
+    ],
+    "preconditions": [
+      "Đã mở danh sách hẹn giờ của đúng thiết bị",
+      "Lịch đích đang tồn tại"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Dòng lịch có thời gian hoặc tên khớp lịch đích",
+        "expected_state": "Màn hình Chỉnh sửa hẹn giờ mở với dữ liệu hiện tại của lịch",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Thời gian và hành động trên editor khớp lịch đã chọn",
+      "Chưa lưu hoặc xóa nếu prompt chỉ yêu cầu mở"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "hẹn giờ",
+      "chỉnh sửa lịch"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Alarm/ListAlarm.js:1185",
+        "App.js:1187"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Tách mở editor khỏi timer.edit_device_timer có thay đổi dữ liệu."
+  },
+  {
+    "id": "navigation.open_language_settings",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở cài đặt ngôn ngữ sau đăng nhập",
+    "description": "Từ Menu, mở phần cài đặt có mục Ngôn ngữ và bộ chọn Tiếng Việt, English, Lào hoặc Nhật.",
+    "aliases": [
+      "mở cài đặt ngôn ngữ",
+      "ngôn ngữ trong menu ở đâu",
+      "language settings screen",
+      "tìm chỗ đổi tiếng"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "scroll",
+        "target": "Danh sách Menu hoặc phần Cài đặt",
+        "direction": "down",
+        "until": "Mục Ngôn ngữ xuất hiện",
+        "expected_state": "Mục Ngôn ngữ nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Mục Ngôn ngữ",
+        "expected_state": "Bộ chọn ngôn ngữ xuất hiện",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Danh sách ngôn ngữ hỗ trợ được hiển thị",
+      "Chưa đổi ngôn ngữ nếu prompt chỉ yêu cầu mở"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "cài đặt",
+      "ngôn ngữ"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/GroupMenuScreen.js:128-175",
+        "src/Components/HomeTab/SettingMenuComponent.js:198-245,878-881"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Bổ sung đường vào sau đăng nhập; khác settings.change_language ở màn login."
+  },
+  {
+    "id": "navigation.open_display_settings",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở cài đặt hiển thị",
+    "description": "Từ Menu/Cài đặt, tìm các tùy chọn giao diện như chế độ sáng-tối và số thiết bị trên mỗi hàng.",
+    "aliases": [
+      "mở cài đặt hiển thị",
+      "chế độ tối ở đâu",
+      "số thiết bị mỗi hàng",
+      "display settings",
+      "giao diện sáng tối"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "scroll",
+        "target": "Phần Cài đặt trong Menu",
+        "direction": "down",
+        "until": "Tùy chọn Giao diện tối hoặc Số thiết bị mỗi hàng xuất hiện",
+        "expected_state": "Ít nhất một tùy chọn hiển thị nhìn thấy được",
+        "optional": true
+      }
+    ],
+    "success_criteria": [
+      "Các tùy chọn hiển thị hiện tại được nhìn thấy",
+      "Chưa thay đổi công tắc hoặc giá trị nếu prompt chỉ yêu cầu mở"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "cài đặt hiển thị",
+      "dark mode",
+      "bố cục"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/SettingMenuComponent.js:732-763",
+        "src/Components/HomeTab/GroupMenuScreen.js:310"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Chỉ hướng dẫn tìm nhóm cài đặt; không đổi giá trị."
+  },
+  {
+    "id": "navigation.open_qr_device_scanner",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở quét QR thông tin thiết bị",
+    "description": "Từ Menu/Cài đặt, mở trình quét QR dùng để đọc thông tin thiết bị. Không quét mã hoặc liên kết thiết bị nếu prompt chỉ yêu cầu mở màn hình.",
+    "aliases": [
+      "mở quét qr thiết bị",
+      "scanner qr ở đâu",
+      "quét thông tin thiết bị",
+      "open device qr scanner"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Ứng dụng được cấp quyền camera khi cần"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "scroll",
+        "target": "Danh sách Menu hoặc phần Cài đặt",
+        "direction": "down",
+        "until": "Mục Quét QR thông tin thiết bị xuất hiện",
+        "expected_state": "Mục quét QR nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Mục Quét QR thông tin thiết bị",
+        "expected_state": "Màn hình quét QR hoặc yêu cầu quyền camera xuất hiện",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Khung quét QR hoặc yêu cầu cấp quyền camera được hiển thị",
+      "Chưa xử lý mã QR ngoài phạm vi yêu cầu"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "qr",
+      "thiết bị",
+      "camera"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/GroupMenuScreen.js:450-451",
+        "src/Components/HomeTab/SettingMenuComponent.js:922-924",
+        "src/Common/NavigatorManage.js:149"
+      ],
+      "screen_guide": true
+    },
+    "change_note": "Hướng dẫn mở scanner; không mô tả payload QR hay thao tác liên kết."
+  },
+  {
+    "id": "navigation.open_firmware_updates",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Mở danh sách thiết bị cần cập nhật",
+    "description": "Đi tới danh sách thiết bị có bản cập nhật firmware từ banner thông báo hoặc mục cập nhật trong Menu khi phần tử đó đang được hiển thị.",
+    "aliases": [
+      "mở danh sách cập nhật thiết bị",
+      "thiết bị cần update",
+      "firmware update screen",
+      "xem bản cập nhật thiết bị"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Ứng dụng đang hiển thị banner hoặc mục cập nhật cho ít nhất một thiết bị"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Banner hoặc mục Cập nhật thiết bị đang hiển thị",
+        "expected_state": "Danh sách thiết bị cần cập nhật xuất hiện",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Danh sách hoặc trạng thái cập nhật thiết bị được mở",
+      "Chưa bắt đầu cập nhật firmware nếu prompt chỉ yêu cầu xem"
+    ],
+    "status": "draft",
+    "tags": [
+      "navigation",
+      "firmware",
+      "cập nhật thiết bị"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/MenuScreen.js:401,880-888",
+        "src/Components/HomeTab/HomeScreen/NotifyDeviceUpdate.js",
+        "src/Common/NavigatorManage.js:128"
+      ],
+      "screen_guide": true,
+      "variant_note": "Điểm vào chỉ có khi app phát hiện thiết bị cần cập nhật"
+    },
+    "change_note": "Không coi việc thiếu mục cập nhật là lỗi khi không có thiết bị đủ điều kiện."
+  },
+  {
+    "id": "device.card_tap_vs_hold",
+    "app_id": "hunonic",
+    "name": "Thẻ thiết bị: chạm để bật/tắt, nhấn giữ để mở chi tiết",
+    "description": "ĐO TRÊN MÁY THẬT: ở Trang chủ và màn Phòng, CHẠM vào thẻ thiết bị là bật/tắt thiết bị (mỗi lần chạm đổi trạng thái). Muốn mở màn chi tiết/cài đặt của thiết bị phải NHẤN GIỮ thẻ đó ít nhất 2 giây. Vì vậy: muốn ĐỔI TRẠNG THÁI thì chạm; muốn VÀO CÀI ĐẶT thì nhấn giữ. Chạm để vào cài đặt là lỗi đã gặp: thiết bị bị bật/tắt ngoài ý muốn và màn hình không đổi sang cài đặt.",
+    "aliases": [
+      "chạm thẻ thiết bị",
+      "nhấn giữ thẻ thiết bị",
+      "vào chi tiết thiết bị",
+      "mở cài đặt thiết bị",
+      "bật tắt thiết bị trên trang chủ",
+      "long press thiết bị"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã chọn đúng nhà",
+      "Thiết bị đích đang hiển thị trong Trang chủ hoặc Phòng"
+    ],
+    "steps": [
+      {
+        "action": "long_press",
+        "target": "Thẻ thiết bị cần mở chi tiết — NHẤN GIỮ ít nhất 2 giây",
+        "expected_state": "Màn hình chi tiết/cài đặt của thiết bị mở ra",
+        "direction": null,
+        "until": "",
+        "value": "",
+        "timeout_s": null,
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Thẻ thiết bị cần đổi trạng thái — CHẠM (không giữ)",
+        "expected_state": "Trạng thái bật/tắt của thiết bị đổi",
+        "direction": null,
+        "until": "",
+        "value": "",
+        "timeout_s": null,
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Vào được màn chi tiết/cài đặt khi nhấn giữ thẻ thiết bị",
+      "Trạng thái thiết bị đổi khi chạm thẻ thiết bị"
+    ],
+    "status": "verified",
+    "tags": [
+      "device",
+      "navigation"
+    ],
+    "metadata": {
+      "warnings": [
+        "Chạm thẻ thiết bị là bật/tắt — đừng chạm khi mục tiêu là vào cài đặt, vì thiết bị sẽ bị đổi trạng thái ngoài ý muốn."
+      ]
+    }
+  },
+  {
+    "id": "room.create_room",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Tạo phòng mới",
+    "description": "Tạo một phòng trong nhà hiện tại bằng tên, biểu tượng và màu. Chức năng nằm trong tab Phòng và không áp dụng cho navigation nhà trọ.",
+    "aliases": [
+      "thêm phòng",
+      "tạo phòng mới",
+      "add room",
+      "tạo phòng khách",
+      "thêm phòng ngủ"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Nhà hiện tại không phải nhà trọ",
+      "Tài khoản có quyền quản lý phòng"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Phòng trên thanh điều hướng dưới cùng",
+        "expected_state": "Màn hình Quản lý phòng xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút thêm phòng trên thanh tiêu đề Quản lý phòng",
+        "expected_state": "Hộp thoại Thêm phòng xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "input_text",
+        "target": "Ô Tên phòng",
+        "value": "<tên phòng do tester cung cấp>",
+        "expected_state": "Tên phòng được điền và không vượt giới hạn 100 ký tự",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Biểu tượng phòng mong muốn",
+        "expected_state": "Biểu tượng được đánh dấu chọn",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Màu phòng mong muốn",
+        "expected_state": "Màu được đánh dấu chọn",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Nút Lưu",
+        "expected_state": "Hộp thoại đóng và phòng mới xuất hiện trong danh sách",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Phòng mới xuất hiện trong đúng nhà",
+      "Tên, biểu tượng và màu khớp dữ liệu đã chọn"
+    ],
+    "status": "draft",
+    "tags": [
+      "phòng",
+      "tạo phòng",
+      "quản lý phòng"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/RoomScreenNew.js:119-340"
+      ]
+    },
+    "change_note": "Source xác nhận toàn bộ modal thêm phòng và giới hạn tên."
+  },
+  {
+    "id": "device.toggle_power",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Bật hoặc tắt một thiết bị",
+    "description": "Điều khiển trạng thái nguồn của một thiết bị hỗ trợ bật/tắt. Nút có thể nằm ngay trên thẻ thiết bị hoặc trong màn chi tiết — muốn mở màn chi tiết thì NHẤN GIỮ thẻ thiết bị ít nhất 2 giây, KHÔNG chạm (chạm là bật/tắt). Phải đối chiếu đúng tên thiết bị trước khi thao tác.",
+    "aliases": [
+      "bật thiết bị",
+      "tắt thiết bị",
+      "bật đèn",
+      "tắt công tắc",
+      "toggle device",
+      "điều khiển nguồn"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập và chọn đúng nhà",
+      "Thiết bị đích hỗ trợ điều khiển nguồn",
+      "Đã xác định đúng tên/phòng của thiết bị"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Điều khiển nguồn gắn với đúng thẻ thiết bị đích. Nếu thẻ không có nút nguồn: NHẤN GIỮ thẻ thiết bị ít nhất 2 giây để mở màn chi tiết (chạm thường chỉ bật/tắt), rồi dùng nút nguồn trong màn chi tiết",
+        "expected_state": "Ứng dụng gửi lệnh và trạng thái hiển thị bắt đầu thay đổi",
+        "optional": false
+      },
+      {
+        "action": "wait",
+        "target": "Trạng thái của đúng thiết bị",
+        "expected_state": "Thiết bị hiển thị Bật/ON hoặc Tắt/OFF đúng yêu cầu, hoặc báo mất kết nối rõ ràng",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Chỉ thiết bị đích đổi sang trạng thái yêu cầu",
+      "Tên thiết bị và trạng thái sau thao tác được xác minh trên UI"
+    ],
+    "status": "draft",
+    "tags": [
+      "thiết bị",
+      "bật",
+      "tắt",
+      "nguồn",
+      "điều khiển"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/DetailScreen/InfoDeviceScreenCommonView.js",
+        "src/Components/Room/DetailRoom.js"
+      ],
+      "variant_note": "Vị trí và kiểu điều khiển phụ thuộc root_type",
+      "risk": "device_control"
+    },
+    "change_note": "Workflow chung chỉ dành cho thiết bị có trạng thái nguồn; không áp dụng camera/cảm biến chỉ đọc."
+  },
+  {
+    "id": "device.rename",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Đổi tên thiết bị",
+    "description": "Đổi tên một thiết bị từ màn Thông tin/Cài đặt. Nhóm DALI có thể hiển thị nhãn Đổi tên nhóm thay vì Đổi tên thiết bị.",
+    "aliases": [
+      "đổi tên thiết bị",
+      "sửa tên công tắc",
+      "rename device",
+      "đổi tên đèn",
+      "đổi tên nhóm DALI"
+    ],
+    "preconditions": [
+      "Đã mở Thông tin/Cài đặt của đúng thiết bị",
+      "Tài khoản có quyền chỉnh sửa",
+      "Có tên mới hợp lệ"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tên thiết bị, biểu tượng chỉnh sửa cạnh tên hoặc mục Đổi tên thiết bị/Đổi tên nhóm",
+        "expected_state": "Hộp thoại đổi tên xuất hiện với tên hiện tại",
+        "optional": false
+      },
+      {
+        "action": "input_text",
+        "target": "Ô Tên thiết bị",
+        "value": "<tên mới do tester cung cấp>",
+        "expected_state": "Ô tên hiển thị giá trị mới không rỗng",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Lưu",
+        "expected_state": "Hộp thoại đóng và tên mới được cập nhật",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Tên thiết bị trên màn cài đặt và danh sách thiết bị khớp tên mới",
+      "Thiết bị khác không bị đổi tên"
+    ],
+    "status": "draft",
+    "tags": [
+      "thiết bị",
+      "đổi tên",
+      "cài đặt thiết bị"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/DetailScreen/InfoDeviceCommonView.js:658-680,1231-1245",
+        "src/Components/DetailScreen/InfoDeviceScreenCommonView.js:796-815"
+      ]
+    },
+    "change_note": "Có validation tên rỗng trong source; nhóm DALI dùng nhãn riêng."
+  },
+  {
+    "id": "device.delete",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Xóa thiết bị",
+    "description": "Xóa thiết bị khỏi tài khoản/nhà từ màn Thông tin/Cài đặt. Đây là thao tác phá hủy; một số thiết bị con, gateway hoặc DALI có quy trình và điều kiện riêng.",
+    "aliases": [
+      "xóa thiết bị",
+      "xoá công tắc",
+      "delete device",
+      "gỡ thiết bị khỏi nhà",
+      "xóa đèn"
+    ],
+    "preconditions": [
+      "Đã mở Thông tin/Cài đặt của đúng thiết bị",
+      "Tester yêu cầu xóa rõ ràng",
+      "Đã đối chiếu tên và loại thiết bị",
+      "Tài khoản có quyền xóa"
+    ],
+    "steps": [
+      {
+        "action": "scroll",
+        "target": "Màn hình Thông tin/Cài đặt thiết bị",
+        "direction": "down",
+        "until": "Mục Xóa thiết bị xuất hiện",
+        "expected_state": "Mục Xóa thiết bị nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Mục Xóa thiết bị của đúng thiết bị đích",
+        "expected_state": "Hộp thoại cảnh báo xóa thiết bị xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút xác nhận Xóa sau khi kiểm tra lại tên thiết bị",
+        "expected_state": "Ứng dụng thực hiện quy trình xóa hoặc báo điều kiện không cho phép",
+        "optional": false
+      },
+      {
+        "action": "wait",
+        "target": "Danh sách thiết bị của nhà",
+        "expected_state": "Thiết bị đích biến mất nếu xóa thành công",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Thiết bị đích không còn trong danh sách",
+      "Thiết bị khác không bị ảnh hưởng"
+    ],
+    "status": "draft",
+    "tags": [
+      "thiết bị",
+      "xóa thiết bị",
+      "thao tác nguy hiểm"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/DetailScreen/InfoDeviceCommonView.js:634-649,1279-1288"
+      ],
+      "risk": "destructive",
+      "variant_note": "Thiết bị con/gateway có nhánh xóa riêng"
+    },
+    "change_note": "Không được tự chạy nếu prompt chỉ yêu cầu xem cài đặt hoặc xử lý thiết bị offline."
+  },
+  {
+    "id": "device.share_one",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Chia sẻ một thiết bị",
+    "description": "Chia sẻ đúng một thiết bị cho tài khoản khác từ màn Thông tin/Cài đặt và chọn quyền nếu thiết bị hỗ trợ.",
+    "aliases": [
+      "chia sẻ một thiết bị",
+      "share device",
+      "gửi công tắc cho tài khoản khác",
+      "phân quyền thiết bị"
+    ],
+    "preconditions": [
+      "Đã mở Thông tin/Cài đặt của đúng thiết bị",
+      "Tài khoản là chủ thiết bị",
+      "Có tài khoản người nhận hợp lệ",
+      "Tester chấp thuận thay đổi quyền"
+    ],
+    "steps": [
+      {
+        "action": "scroll",
+        "target": "Danh sách mục trong Thông tin/Cài đặt thiết bị",
+        "direction": "down",
+        "until": "Mục Chia sẻ xuất hiện",
+        "expected_state": "Mục Chia sẻ nhìn thấy được",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Mục Chia sẻ",
+        "expected_state": "Màn hình hoặc hộp thoại chia sẻ đúng thiết bị xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "input_text",
+        "target": "Ô tài khoản người nhận",
+        "value": "<số điện thoại hoặc email người nhận>",
+        "expected_state": "Tài khoản người nhận được điền",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Quyền chia sẻ theo yêu cầu nếu có",
+        "expected_state": "Quyền mong muốn được chọn",
+        "optional": true
+      },
+      {
+        "action": "tap",
+        "target": "Nút Chia sẻ hoặc Xác nhận",
+        "expected_state": "Lời mời được gửi hoặc lỗi cụ thể được hiển thị",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Người nhận xuất hiện trong danh sách chia sẻ hoặc có thông báo gửi thành công",
+      "Chỉ thiết bị đích được chia sẻ"
+    ],
+    "status": "draft",
+    "tags": [
+      "thiết bị",
+      "chia sẻ",
+      "phân quyền",
+      "tài khoản"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/DetailScreen/InfoDeviceScreenCommonView.js:1412-1430",
+        "src/Components/DetailScreen/InfoDeviceCommonView.js"
+      ],
+      "risk": "permission_change"
+    },
+    "change_note": "Tách khỏi device.share_multiple; biểu mẫu có thể khác theo thiết bị."
+  },
+  {
+    "id": "scene.run_press",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Chạy ngữ cảnh khi nhấn",
+    "description": "Thực thi một ngữ cảnh thủ công bằng nút phát ở bên phải dòng ngữ cảnh. Chạm vào thân dòng mở chỉnh sửa, không chạy; cần chọn đúng nút phát.",
+    "aliases": [
+      "chạy ngữ cảnh",
+      "thực thi scene",
+      "bấm ngữ cảnh",
+      "run scene",
+      "chạy kịch bản nhà thông minh"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã mở tab Ngữ cảnh",
+      "Ngữ cảnh đích thuộc nhóm chạy khi nhấn",
+      "Thiết bị liên quan sẵn sàng hoặc app có kết nối mạng khi cần"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Biểu tượng phát hình tròn ở bên phải đúng dòng ngữ cảnh đích, không chạm vào thân dòng",
+        "expected_state": "Ứng dụng bắt đầu chạy các hành động của ngữ cảnh hoặc báo thiếu kết nối",
+        "optional": false
+      },
+      {
+        "action": "wait",
+        "target": "Trạng thái các thiết bị/hành động thuộc ngữ cảnh",
+        "expected_state": "Các hành động hoàn tất hoặc lỗi cụ thể được hiển thị",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Các hành động của đúng ngữ cảnh được thực hiện",
+      "Trình chỉnh sửa ngữ cảnh không bị mở nhầm"
+    ],
+    "status": "draft",
+    "tags": [
+      "ngữ cảnh",
+      "chạy khi nhấn",
+      "thực thi",
+      "scene"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Collection/CollectionPressList.js:36-58,247-261"
+      ],
+      "risk": "device_control"
+    },
+    "change_note": "Source phân biệt rõ onPressRun ở icon play và onPress thân dòng để sửa."
+  },
+  {
+    "id": "timer.toggle_active",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Bật hoặc tắt một lịch hẹn giờ",
+    "description": "Thay đổi trạng thái hoạt động của một lịch ngay trong danh sách bằng công tắc trên đúng dòng lịch; không sửa nội dung thời gian hoặc hành động.",
+    "aliases": [
+      "bật lịch hẹn giờ",
+      "tắt lịch hẹn giờ",
+      "kích hoạt timer",
+      "vô hiệu hóa lịch",
+      "enable timer",
+      "disable timer"
+    ],
+    "preconditions": [
+      "Đã mở danh sách hẹn giờ của đúng thiết bị",
+      "Lịch đích có công tắc trạng thái",
+      "Tài khoản có quyền quản lý lịch"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Công tắc ở bên phải đúng dòng lịch đích",
+        "expected_state": "Công tắc đổi trạng thái và ứng dụng gửi cập nhật",
+        "optional": false
+      },
+      {
+        "action": "wait",
+        "target": "Công tắc của lịch đích",
+        "expected_state": "Trạng thái ổn định ở Bật hoặc Tắt đúng yêu cầu, hoặc hiện lỗi cụ thể",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Chỉ lịch đích đổi trạng thái",
+      "Thời gian, ngày lặp và hành động của lịch không thay đổi"
+    ],
+    "status": "draft",
+    "tags": [
+      "hẹn giờ",
+      "bật lịch",
+      "tắt lịch",
+      "trạng thái"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Alarm/ListAlarm.js:727,873-909"
+      ],
+      "variant_note": "Lịch server và lịch local dùng backend khác"
+    },
+    "change_note": "Workflow trạng thái riêng, tránh retrieval nhầm với sửa lịch."
+  },
+  {
+    "id": "timer.toggle_all",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Bật hoặc tắt tất cả lịch của thiết bị",
+    "description": "Dùng menu hành động trong danh sách hẹn giờ để bật hoặc tắt toàn bộ lịch của thiết bị. Lịch server được cập nhật theo API; lịch local được gửi lần lượt tới thiết bị.",
+    "aliases": [
+      "bật tất cả lịch",
+      "tắt tất cả hẹn giờ",
+      "enable all timers",
+      "disable all timers",
+      "kích hoạt toàn bộ lịch"
+    ],
+    "preconditions": [
+      "Đã mở danh sách hẹn giờ của đúng thiết bị",
+      "Có ít nhất một lịch",
+      "Tài khoản có quyền quản lý toàn bộ lịch"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Nút menu hành động hoặc biểu tượng quản lý tất cả lịch",
+        "expected_state": "Danh sách Bật tất cả, Tắt tất cả, Xóa tất cả và Hủy xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Bật tất cả lịch hoặc Tắt tất cả lịch theo yêu cầu; không chọn Xóa tất cả",
+        "expected_state": "Ứng dụng cập nhật các lịch server và local",
+        "optional": false
+      },
+      {
+        "action": "wait",
+        "target": "Danh sách lịch",
+        "expected_state": "Các công tắc lịch ổn định ở cùng trạng thái yêu cầu hoặc lỗi được báo",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Tất cả lịch có thể điều khiển của thiết bị mang trạng thái yêu cầu",
+      "Không có lịch nào bị xóa"
+    ],
+    "status": "draft",
+    "tags": [
+      "hẹn giờ",
+      "bật tất cả",
+      "tắt tất cả",
+      "thiết bị"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/Alarm/ListAlarm.js:500-565,2296"
+      ],
+      "risk": "bulk_state_change"
+    },
+    "change_note": "Cảnh báo rõ menu có Xóa tất cả gần hai lựa chọn trạng thái."
+  },
+  {
+    "id": "home.respond_share_invitation",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Chấp nhận hoặc từ chối lời mời chia sẻ nhà",
+    "description": "Xử lý một lời mời nhà trong tab Nhà đã nhận. Phải đối chiếu người gửi, tên nhà và mức quyền trước khi chấp nhận hoặc từ chối.",
+    "aliases": [
+      "chấp nhận nhà được chia sẻ",
+      "từ chối lời mời nhà",
+      "accept shared house",
+      "nhận nhà từ tài khoản khác",
+      "duyệt lời mời nhà"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Có lời mời nhà đang chờ",
+      "Tester chỉ rõ cần chấp nhận hay từ chối"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu",
+        "expected_state": "Màn hình Menu xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Mục Quản lý nhà",
+        "expected_state": "Màn hình Quản lý nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Tab Nhà đã nhận",
+        "expected_state": "Danh sách lời mời nhà xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "assert",
+        "target": "Lời mời có đúng tên nhà, người gửi và mức quyền",
+        "expected_state": "Đã xác định chính xác lời mời đích",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Nút Chấp nhận hoặc Từ chối trên đúng lời mời theo yêu cầu",
+        "expected_state": "Lời mời được xử lý và ứng dụng báo thành công hoặc lỗi cụ thể",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Nếu chấp nhận, nhà xuất hiện trong danh sách có thể truy cập",
+      "Nếu từ chối, lời mời biến mất và nhà không được thêm"
+    ],
+    "status": "draft",
+    "tags": [
+      "nhà",
+      "chia sẻ nhà",
+      "lời mời",
+      "chấp nhận",
+      "từ chối"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/DeviceShare/ManagerShareHouse/HouseReceivedScreen.js:58-126"
+      ],
+      "risk": "permission_change"
+    },
+    "change_note": "Gộp accept/deny vì cùng một màn nhưng yêu cầu bắt buộc phải nêu rõ nhánh."
+  },
+  {
+    "id": "settings.change_theme",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Đổi giao diện sáng hoặc tối",
+    "description": "Đổi chế độ hiển thị của ứng dụng giữa Theo hệ thống, Sáng và Tối từ phần cài đặt trong Menu.",
+    "aliases": [
+      "bật chế độ tối",
+      "đổi giao diện sáng",
+      "change theme",
+      "dark mode",
+      "light mode",
+      "theo giao diện hệ thống"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Đã mở phần cài đặt hiển thị trong Menu"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Mục Giao diện tối hoặc lựa chọn chế độ hiển thị",
+        "expected_state": "Bộ chọn Theo hệ thống, Sáng và Tối xuất hiện",
+        "optional": false
+      },
+      {
+        "action": "tap",
+        "target": "Chế độ Theo hệ thống, Sáng hoặc Tối theo yêu cầu",
+        "expected_state": "Bộ chọn đóng và màu giao diện được cập nhật",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Giao diện hiển thị đúng chế độ đã chọn",
+      "Nội dung và navigation vẫn sử dụng được sau đổi theme"
+    ],
+    "status": "draft",
+    "tags": [
+      "cài đặt",
+      "giao diện",
+      "dark mode",
+      "light mode"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20 / iOS 4.0.21",
+      "evidence": [
+        "src/Components/HomeTab/GroupMenuScreen.js:207-213,530-577",
+        "src/Components/HomeTab/SettingMenuComponent.js:589-667"
+      ]
+    },
+    "change_note": "Ba chế độ được xác nhận từ source; chưa kiểm tra persistence sau restart."
+  },
+  {
+    "id": "auth.current_account",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Xem tài khoản đang đăng nhập",
+    "description": "Đọc tài khoản đang đăng nhập trên app Hunonic mà KHÔNG thay đổi gì. ĐO TRÊN MÁY THẬT 28/10/2026 (SM-A066B, Android 15, màn 720x1600) bằng uiautomator dump: ở màn Menu, khối trên cùng ngay dưới thanh trạng thái hiển thị tên người dùng, SỐ ĐIỆN THOẠI của tài khoản đang đăng nhập và hạng thành viên. Chỉ ĐỌC khối đó, không cần bấm vào khối.",
+    "aliases": [
+      "tài khoản đang đăng nhập",
+      "xem tài khoản hiện tại",
+      "đang đăng nhập bằng tài khoản nào",
+      "kiểm tra tài khoản đăng nhập",
+      "current account"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Thanh điều hướng dưới cùng đang hiển thị"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Menu ở ngoài cùng bên phải của thanh điều hướng dưới cùng",
+        "expected_state": "Màn hình Menu hiện ra, khối tài khoản ở trên cùng",
+        "optional": false
+      },
+      {
+        "action": "assert",
+        "target": "Số điện thoại hoặc email ở khối tài khoản trên cùng màn Menu",
+        "expected_state": "Đọc được đúng số điện thoại/email của tài khoản đang đăng nhập",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Tài khoản đang đăng nhập đã đọc thấy trên màn Menu (số điện thoại hoặc email)",
+      "Không tài khoản nào bị đăng xuất hay đổi"
+    ],
+    "status": "draft",
+    "tags": [
+      "auth",
+      "tài khoản",
+      "kiểm tra trạng thái"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20",
+      "evidence": [
+        "ĐO TRÊN MÁY THẬT 28/10/2026 (SM-A066B, Android 15, màn 720x1600) bằng uiautomator dump: màn Menu, khối tài khoản bounds [45,116][664,257] gồm tên 'Hoà RD' [187,116][551,170], số điện thoại '0972842548' [187,178][343,214], hạng 'Thành viên thường' [187,221][592,257]; tab Menu bounds [576,1465][720,1563]"
+      ],
+      "state_dimension": {
+        "id": "account",
+        "label": "tài khoản đang đăng nhập",
+        "value_hint": "tài khoản",
+        "clear_workflow": "auth.logout",
+        "set_workflows": [
+          "auth.login_password",
+          "auth.switch_account"
+        ]
+      }
+    },
+    "change_note": "Workflow chỉ ĐỌC tài khoản đang đăng nhập. Thêm 28/10/2026 vì KB chưa có cách nào quan sát giá trị này, nên điều kiện 'chỉ khi chưa đăng nhập' không thể kiểm được: đo trên máy thật, prompt yêu cầu đăng nhập tài khoản 0999 nhưng máy đang đăng nhập 0972842548 và agent bỏ qua việc đăng nhập. Khai state_dimension để prompt nói được cách quan sát."
+  },
+  {
+    "id": "home.current_house",
+    "app_id": "hunonic",
+    "version_id": null,
+    "name": "Xem nhà đang chọn",
+    "description": "Đọc nhà đang chọn trên app Hunonic mà KHÔNG đổi nhà. ĐO TRÊN MÁY THẬT 28/10/2026 (SM-A066B, Android 15, màn 720x1600) bằng uiautomator dump: ở Trang chủ, khối trên cùng bên trái hiển thị TÊN NHÀ đang chọn kèm địa chỉ; cả khối bấm được (có mũi tên trỏ xuống) để mở danh sách nhà — chỉ đọc tên nhà, KHÔNG bấm nếu không cần đổi nhà.",
+    "aliases": [
+      "nhà đang chọn",
+      "đang ở nhà nào",
+      "xem nhà hiện tại",
+      "kiểm tra nhà đang dùng",
+      "current house"
+    ],
+    "preconditions": [
+      "Người dùng đã đăng nhập",
+      "Thanh điều hướng dưới cùng đang hiển thị"
+    ],
+    "steps": [
+      {
+        "action": "tap",
+        "target": "Tab Trang chủ ở ngoài cùng bên trái của thanh điều hướng dưới cùng",
+        "expected_state": "Trang chủ của nhà hiện tại hiện ra, tên nhà ở góc trên bên trái",
+        "optional": false
+      },
+      {
+        "action": "assert",
+        "target": "Tên nhà ở góc trên bên trái Trang chủ (kèm địa chỉ ngay dưới)",
+        "expected_state": "Đọc được đúng tên nhà đang chọn",
+        "optional": false
+      }
+    ],
+    "success_criteria": [
+      "Tên nhà đang chọn đã đọc thấy ở góc trên bên trái Trang chủ",
+      "Nhà đang chọn không bị thay đổi"
+    ],
+    "status": "draft",
+    "tags": [
+      "home",
+      "nhà",
+      "kiểm tra trạng thái"
+    ],
+    "metadata": {
+      "app_version": "Android 4.0.20",
+      "evidence": [
+        "ĐO TRÊN MÁY THẬT 28/10/2026 (SM-A066B, Android 15, màn 720x1600) bằng uiautomator dump: Trang chủ, khối nhà bounds [126,71][289,171] gồm tên nhà 'Dled' [138,79][201,117], địa chỉ 'Thái Nguyên' [172,125][288,153], mũi tên trỏ xuống [201,71][253,125]; tab Trang chủ bounds [0,1465][144,1563]"
+      ],
+      "state_dimension": {
+        "id": "house",
+        "label": "nhà đang chọn",
+        "value_hint": "nhà",
+        "set_workflow": "home.switch_house"
+      }
+    },
+    "change_note": "Workflow chỉ ĐỌC nhà đang chọn. Thêm 28/10/2026 vì điều kiện trước 'Đã chọn đúng nhà' của scene.create_press không có cách nào kiểm: prompt chỉ nói 'đã chọn đúng nhà' mà không nói đọc ở đâu."
+  },
+  {
+    "id": "navigation.open_account_profile", "app_id": "hunonic", "version_id": null,
+    "name": "Mở hồ sơ tài khoản", "description": "Mở màn hình thông tin cá nhân từ ảnh đại diện ở Trang chủ hoặc Menu; chỉ điều hướng, chưa thay đổi dữ liệu tài khoản.",
+    "aliases": ["mở hồ sơ cá nhân", "xem thông tin tài khoản", "mở trang cá nhân", "vào đổi ảnh đại diện", "account profile"],
+    "preconditions": ["Người dùng đã đăng nhập", "Thanh điều hướng dưới cùng đang hiển thị"],
+    "steps": [
+      {"action": "tap", "target": "Tab Menu", "expected_state": "Màn hình Menu xuất hiện với khối tài khoản ở trên cùng", "optional": false},
+      {"action": "tap", "target": "Ảnh đại diện hoặc khối tài khoản ở đầu màn Menu", "expected_state": "Màn hình hồ sơ cá nhân xuất hiện", "optional": false}
+    ],
+    "success_criteria": ["Màn hình hồ sơ hiển thị thông tin tài khoản", "Chưa có trường thông tin nào bị thay đổi"],
+    "status": "draft", "tags": ["điều hướng", "tài khoản", "hồ sơ", "ảnh đại diện"],
+    "metadata": {"app_version": "Android 4.0.20 / iOS 4.0.21", "evidence": ["src/Components/HomeTab/MenuScreen.js:487-500", "src/Components/HomeTab/HomeScreen/HomeHeader.js:171", "src/Components/HomeTab/ChangeAvatar.js"]},
+    "change_note": "Tách thao tác mở hồ sơ khỏi workflow chỉ đọc tài khoản auth.current_account."
+  },
+  {
+    "id": "room.sort_rooms", "app_id": "hunonic", "version_id": null,
+    "name": "Sắp xếp thứ tự phòng", "description": "Mở màn hình Sắp xếp phòng từ tab Phòng, thay đổi thứ tự và lưu lại cho nhà hiện tại.",
+    "aliases": ["sắp xếp phòng", "đổi thứ tự phòng", "sort rooms", "kéo phòng lên trên"],
+    "preconditions": ["Người dùng đã đăng nhập", "Đã chọn đúng nhà", "Nhà có từ hai phòng trở lên"],
+    "steps": [
+      {"action": "tap", "target": "Tab Phòng", "expected_state": "Danh sách phòng xuất hiện", "optional": false},
+      {"action": "tap", "target": "Biểu tượng bánh răng ở góc trên màn Phòng", "expected_state": "Màn hình Sắp xếp phòng xuất hiện", "optional": false},
+      {"action": "long_press", "target": "Tay nắm hoặc dòng của phòng cần di chuyển", "expected_state": "Phòng sẵn sàng được kéo đổi vị trí", "optional": false},
+      {"action": "swipe", "target": "Phòng đích tới vị trí mới", "expected_state": "Thứ tự phòng trên danh sách thay đổi", "optional": false},
+      {"action": "confirm_if_present", "target": "Nút Lưu hoặc Xong", "expected_state": "Thứ tự mới được lưu", "optional": true}
+    ],
+    "success_criteria": ["Danh sách phòng hiển thị đúng thứ tự mới", "Không phòng nào bị xóa hoặc đổi tên"],
+    "status": "draft", "tags": ["phòng", "sắp xếp", "thứ tự"],
+    "metadata": {"app_version": "Android 4.0.20 / iOS 4.0.21", "evidence": ["src/Components/HomeTab/RoomScreenNew.js:130-139", "src/Components/Room/SortRoom.js", "src/Translations/Language/vi.json:823"]},
+    "change_note": "Cách kéo và nhãn lưu cần xác minh trên thiết bị thật."
+  },
+  {
+    "id": "scene.sort_press", "app_id": "hunonic", "version_id": null,
+    "name": "Sắp xếp ngữ cảnh chạy khi nhấn", "description": "Đổi thứ tự các ngữ cảnh thủ công trong tab Ngữ cảnh; chỉ chủ nhà mới được mở màn sắp xếp.",
+    "aliases": ["sắp xếp ngữ cảnh", "đổi thứ tự scene", "sort scenes", "sắp xếp kịch bản"],
+    "preconditions": ["Người dùng đã đăng nhập", "Tài khoản là chủ nhà", "Có từ hai ngữ cảnh chạy khi nhấn trở lên"],
+    "steps": [
+      {"action": "tap", "target": "Tab Ngữ cảnh", "expected_state": "Màn hình Ngữ cảnh xuất hiện", "optional": false},
+      {"action": "tap", "target": "Tab chạy khi nhấn nếu chưa được chọn", "expected_state": "Danh sách ngữ cảnh thủ công xuất hiện", "optional": true},
+      {"action": "tap", "target": "Biểu tượng Sắp xếp ở góc trên", "expected_state": "Màn hình Sắp xếp ngữ cảnh xuất hiện", "optional": false},
+      {"action": "long_press", "target": "Ngữ cảnh cần di chuyển", "expected_state": "Ngữ cảnh sẵn sàng được kéo", "optional": false},
+      {"action": "swipe", "target": "Ngữ cảnh tới vị trí mới", "expected_state": "Thứ tự danh sách thay đổi", "optional": false},
+      {"action": "confirm_if_present", "target": "Nút Lưu hoặc Xong", "expected_state": "Thứ tự mới được lưu", "optional": true}
+    ],
+    "success_criteria": ["Các ngữ cảnh hiển thị đúng thứ tự mới", "Nội dung và trạng thái ngữ cảnh không thay đổi"],
+    "status": "draft", "tags": ["ngữ cảnh", "sắp xếp", "scene", "chủ nhà"],
+    "metadata": {"app_version": "Android 4.0.20 / iOS 4.0.21", "evidence": ["src/Components/HomeTab/CollectionScreen.js:1079-1090", "src/Components/Collection/CollectionBase/SortCollectionScreen.js", "src/Translations/Language/vi.json:653"]},
+    "change_note": "Không áp dụng cho tab tự động/hẹn giờ; source chỉ mở sort cho collectionBase."
+  }
+]

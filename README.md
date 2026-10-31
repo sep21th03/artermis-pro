@@ -264,6 +264,15 @@ của máy:
 | Chạy console — đọc DB trực tiếp (điều kiện để tab Knowledge hoạt động) | **SSH tunnel** `127.0.0.1:5433 → VPS:5432` | `ARTEMIS_KB_DSN` (+ `KB_VPS_*` nếu khác mặc định) |
 | Chỉ cắm điện thoại — máy tester | **HTTP** tới console | `ARTEMIS_KB_API` + `ARTEMIS_KB_API_KEY` |
 
+**Nội dung KB của app Hunonic nằm trong repo** — [`kb/`](./kb/README.md): 63 workflow + 26
+`device_action.*` + nav graph + 96 ca kiểm tra retrieval + báo cáo review, kèm trình tự import an toàn.
+Máy mới dựng lại được KB từ đó, không cần dump database:
+
+```bash
+.venv/bin/python scripts/kb_import_workflows.py kb/workflows.json --dry-run   # xem trước, không ghi
+.venv/bin/python scripts/kb_import_workflows.py kb/workflows.json             # nạp thật
+```
+
 Không có tunnel thì console báo *"Không kết nối được PostgreSQL: port 5433 → Connection refused"* và
 tab Knowledge bị khoá (prompt vẫn chạy được, chỉ là không ghép kiến thức).
 
@@ -531,6 +540,7 @@ artermis-pro/
 ├── third_party/mobile_use/  # Vòng lặp automation gốc + helper CLI
 ├── packages/artemis-client/ # SDK Python để gọi HunonicTest từ ngoài
 ├── config/artemis.jsonc     # Cấu hình model & profile
+├── kb/                      # Knowledge Base app Hunonic: workflow, nav graph, ca retrieval, báo cáo review
 ├── scripts/                 # installer, quality ratchet…
 ├── tests/                   # unit / integration / e2e
 ├── traces/                  # (runtime) trace & replay — không commit
