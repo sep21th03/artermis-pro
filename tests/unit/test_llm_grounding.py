@@ -43,6 +43,44 @@ def test_model_factory_openai_instantiation():
     assert getattr(model, "reasoning_effort", None) == "medium"
 
 
+def test_provider_sdk_retries_are_capped(monkeypatch):
+    """SDK nhà cung cấp không được tự retry 6 lần: mặc định 1, chỉnh bằng env.
+
+    Đo trên máy thật 31/10/2026 (task 3110_1018): SDK tự retry 19 lần 429 **quota ngày** + 5 lần
+    503 ⇒ 105,6s / 274,5s (38%) session chỉ để chờ, trong khi retry một 429 quota ngày **không bao
+    giờ** thành công — phải để bộ phân loại của ta thấy lỗi và đổi model ngay.
+    """
+    monkeypatch.delenv("ARTEMIS_LLM_SDK_RETRIES", raising=False)
+    google = ModelFactory.create_model(
+        ModelEndpoint(
+            provider=ModelProvider.GOOGLE, model_name="gemini-3.5-flash-lite", api_key="test-key"
+        )
+    )
+    assert google.max_retries == 1
+
+    monkeypatch.setenv("ARTEMIS_LLM_SDK_RETRIES", "0")
+    google0 = ModelFactory.create_model(
+        ModelEndpoint(
+            provider=ModelProvider.GOOGLE, model_name="gemini-3.1-flash-lite", api_key="test-key"
+        )
+    )
+    assert google0.max_retries == 0
+
+    openai0 = ModelFactory.create_model(
+        ModelEndpoint(provider=ModelProvider.OPENAI, model_name="gpt-4o-mini", api_key="sk-test")
+    )
+    assert openai0.max_retries == 0
+
+    # Giá trị rác không được làm hỏng cấu hình: quay về mặc định 1.
+    monkeypatch.setenv("ARTEMIS_LLM_SDK_RETRIES", "khong-phai-so")
+    google_bad = ModelFactory.create_model(
+        ModelEndpoint(
+            provider=ModelProvider.GOOGLE, model_name="gemini-3.0-flash", api_key="test-key"
+        )
+    )
+    assert google_bad.max_retries == 1
+
+
 def test_robust_chat_model_wrapper_grounding_google():
     """Verify RobustChatModelWrapper auto-injects google_search and server-side tool config for Gemini."""
     from artemis.services.llm import RobustChatModelWrapper

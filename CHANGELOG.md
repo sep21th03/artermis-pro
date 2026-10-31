@@ -78,6 +78,14 @@
 
 ### Changed
 
+- **Cắt 38% thời gian chết vì SDK tự retry: `ARTEMIS_LLM_SDK_RETRIES` (mặc định 1, SDK mặc định 6).**
+  Đo trên task `3110_1018` (274,5s): SDK nhà cung cấp tự retry **19 lần 429 quota ngày + 5 lần 503**
+  = **105,6s chờ** — mà 429 quota ngày thì retry **không bao giờ** thành công, nó chỉ chặn đúng việc
+  cần làm là để `classify_failure` đổi model. Nay `ModelFactory` truyền `max_retries` cho mọi provider
+  (Google/Vertex/OpenAI/OpenRouter/XAI/Anthropic), đọc từ `ARTEMIS_LLM_SDK_RETRIES` (0 = lỗi nổi lên
+  ngay). Trong cùng session, phần **model thật sự trả lời chỉ 2,5–7s/lượt** (operator với 16–19,4k
+  token vào) — nút cổ chai là retry và quota, không phải tốc độ model.
+
 - **Đổi thương hiệu sang HunonicTest.** Banner mới `docs/assets/hunonic-banner.png`, sinh bằng
   `docs/assets/generate_banner.py` từ logo trong repo (`docs/assets/logo/hunonic-logo.png`) — nền gần
   đen, logo kèm quầng xanh, chữ "HUNONIC" mảnh giãn rộng; generator tự dò font hệ thống nên không cần

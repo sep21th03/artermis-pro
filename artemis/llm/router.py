@@ -195,6 +195,21 @@ def _patch_langchain_google_genai():
         logger.warning(f"Could not patch ChatGoogleGenerativeAI._process_tool_config: {e}")
 
 
+#: Số lần SDK nhà cung cấp **tự** thử lại trước khi lỗi nổi lên cho bộ phân loại của ta.
+#:
+#: Mặc định 1, không phải 6 như SDK: đo trên máy thật 31/10/2026 (task 3110_1018), SDK tự retry
+#: 19 lần 429 **quota ngày** + 5 lần 503 ⇒ **105,6s / 274,5s (38%)** session chỉ để chờ. Retry một
+#: 429 quota ngày không bao giờ thành công, nên chờ ở đó là chặn đúng việc cần làm: để
+#: ``classify_failure`` thấy lỗi và **đổi model** (hoặc xoay sang model dự phòng) ngay.
+#: Đặt ``ARTEMIS_LLM_SDK_RETRIES=0`` để mọi lỗi nổi lên ngay, hoặc cao hơn khi mạng chập chờn.
+def _sdk_retries() -> int:
+    raw = os.environ.get("ARTEMIS_LLM_SDK_RETRIES", "1")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 1
+
+
 class ModelFactory:
     """Unified factory for instantiating and caching LangChain chat models across providers."""
 
@@ -249,6 +264,7 @@ class ModelFactory:
                 "thinking_budget": endpoint.thinking_budget,
                 "thinking_level": thinking_level,
                 "include_thoughts": endpoint.include_thoughts,
+                "max_retries": _sdk_retries(),
                 "safety_settings": {
                     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
                     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
@@ -271,6 +287,7 @@ class ModelFactory:
                 "max_output_tokens": endpoint.max_tokens,
                 "timeout": endpoint.timeout_seconds,
                 "thinking_budget": endpoint.thinking_budget,
+                "max_retries": _sdk_retries(),
                 "safety_settings": {
                     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
                     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
@@ -298,6 +315,7 @@ class ModelFactory:
                 "api_key": api_key,
                 "base_url": base_url,
                 "timeout": endpoint.timeout_seconds,
+                "max_retries": _sdk_retries(),
             }
             if endpoint.reasoning_effort:
                 kwargs["reasoning_effort"] = endpoint.reasoning_effort
@@ -320,6 +338,7 @@ class ModelFactory:
                 "temperature": endpoint.temperature,
                 "api_key": api_key,
                 "timeout": endpoint.timeout_seconds,
+                "max_retries": _sdk_retries(),
             }
             budget = endpoint.thinking_budget
             if not budget and endpoint.reasoning_effort:
@@ -348,6 +367,7 @@ class ModelFactory:
                 api_key=api_key,
                 base_url=endpoint.api_base or "https://openrouter.ai/api/v1",
                 timeout=endpoint.timeout_seconds,
+                max_retries=_sdk_retries(),
             )
 
         elif provider == ModelProvider.XAI:
@@ -364,6 +384,7 @@ class ModelFactory:
                 api_key=api_key,
                 base_url=endpoint.api_base or "https://api.x.ai/v1",
                 timeout=endpoint.timeout_seconds,
+                max_retries=_sdk_retries(),
             )
 
         elif provider in (ModelProvider.OLLAMA, ModelProvider.VLLM, ModelProvider.CUSTOM):
@@ -380,6 +401,7 @@ class ModelFactory:
                 "api_key": api_key,
                 "base_url": base_url,
                 "timeout": endpoint.timeout_seconds,
+                "max_retries": _sdk_retries(),
             }
             if endpoint.reasoning_effort:
                 kwargs["reasoning_effort"] = endpoint.reasoning_effort
