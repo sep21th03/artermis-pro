@@ -78,6 +78,29 @@
 
 ### Changed
 
+- **Phase 1 tối ưu độ trễ Planner (theo session `67eafbb7`).** Hai thay đổi, đo lại trên máy thật:
+  - `config/artemis.jsonc`: `planner.thinking_level` **high → low**. Đo A/B trên **cùng model**
+    (`gemini-3.5-flash`) và cùng prompt (goal 4.104 ký tự của task 3110_1035, 1 ảnh, check gates ON):
+    | | lượt LLM | output token | ttft (s) | planner wall |
+    |---|---|---|---|---|
+    | high | 3 | 1.494+476+265 = **2.235** | 17,4 / 9,4 / 3,6 | 45,9s |
+    | low | **2** | 511+159 = **670** | 10,3 / 37,8 | 49,1s |
+    Cả hai đều **validate PASS** và plan **có `verify:`/`assert:`** (4 milestone). Bản low giảm
+    hẳn *khối lượng* (2 lượt thay vì 3, ~3× ít token ra) nhưng wall time một lượt đo **không** đủ
+    tin cậy: cùng config cho ra 15,6s và 49,1s, và ttft trên cùng prompt/model dao động **2,1–47,3s**
+    do tải phía Google. Baseline 101,5s **không tái lập được** ngay cả khi giữ `high` (45,9s) ⇒ phần
+    chênh của baseline là nghẽn nhà cung cấp lúc 10:36 (503/504, ttft 50,4s), không phải config.
+  - `ARTEMIS_LLM_CHAIN_PLANNER`: `gemini-3.5-flash,gemini-3.1-flash-lite` →
+    **`gemini-3.1-flash-lite,gemini-3.5-flash`**. Trước khi đổi đã xác minh implementation: router
+    ghép ứng viên theo **đúng thứ tự khai** (primary → chuỗi → `fallback` trong config), nhánh
+    `use_fallback=True` bắt đầu từ **mục #1**, và `_pick_healthy` bỏ qua model đang mở mạch. Kiểm
+    chứng bằng thực thi: khi primary `gemini-3.5-flash-lite` cạn quota ngày, `main`/`fallback` đều
+    resolve sang `gemini-3.1-flash-lite` (1,6–9,1s/lượt đo được) thay vì `gemini-3.5-flash` + thinking
+    high (20–50s/lượt) như trước.
+  - Operator/Explorer/Checker giữ nguyên model + thinking. Safety gate, KB production không đụng.
+  - Chưa đo được (nêu rõ để không ngoại suy): chất lượng plan khi planner chạy trên
+    `gemini-3.1-flash-lite` — cửa sổ đo gặp 503 "high demand" của model này.
+
 - **Cắt 38% thời gian chết vì SDK tự retry: `ARTEMIS_LLM_SDK_RETRIES` (mặc định 1, SDK mặc định 6).**
   Đo trên task `3110_1018` (274,5s): SDK nhà cung cấp tự retry **19 lần 429 quota ngày + 5 lần 503**
   = **105,6s chờ** — mà 429 quota ngày thì retry **không bao giờ** thành công, nó chỉ chặn đúng việc

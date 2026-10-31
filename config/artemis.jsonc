@@ -62,7 +62,11 @@
     "planner": {
       "provider": "${env:GEMINI35FLASH_PLANNER_PROVIDER:-google}",
       "model": "${env:GEMINI35FLASH_PLANNER:-gemini-3.5-flash-lite}",
-      "thinking_level": "high" // LƯU Ý: thinking_level chỉ có tác dụng với provider "google"
+      "thinking_level": "low" // LƯU Ý: thinking_level chỉ có tác dụng với provider "google"
+      // Đo trên máy thật 31/10/2026 (session 67eafbb7): planner để "high" tốn 101,5s cho 3 lượt,
+      // TTFT 20,2/29,1/47,3s — gần như toàn bộ thời gian là "suy nghĩ" trước token đầu tiên.
+      // Mọi mục trong ARTEMIS_LLM_CHAIN_PLANNER thừa hưởng giá trị này (endpoint = primary.model_copy),
+      // nên hạ ở đây là hạ cho cả model dự phòng.
     },
 
     // 🎯 Operator: Screen perception, element interaction, and direct execution
