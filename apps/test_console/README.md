@@ -7,6 +7,26 @@ Nằm ngay trong repo ARTEMIS (`apps/test_console/`), dùng song song với UI g
 Không cần source app Android: console chỉ gọi `artemis run ... --locked-app <package>`,
 nên dùng được cho bất kỳ app nào bạn nhập ở ô **Package**.
 
+## ⚡ Chạy nhanh (3 lệnh)
+
+```bash
+# 1) Clone
+git clone <repo-url> artermis-pro && cd artermis-pro
+
+# 2) Cài dependency + tạo .env (điền API key; thêm ARTEMIS_KB_DSN nếu dùng tab Knowledge)
+uv sync --extra knowledge
+cp .env.example .env && open -e .env
+
+# 3) Chạy web + tunnel Knowledge — tự mở http://127.0.0.1:8787
+sh apps/test_console/run.sh
+```
+
+- `run.sh` **tự gọi tunnel KB (`ensure`) rồi mới khởi động web** ⇒ bình thường chỉ cần lệnh số 3.
+- Tunnel riêng (kiểm tra / mở lại khi đứt): `sh scripts/kb_tunnel.sh status | start | restart | ensure`
+- Cần có: `adb` trong PATH + điện thoại Android đã bật **USB debugging** (đã bấm *Allow*).
+- Chưa có `uv`: `brew install uv` (macOS) hoặc `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+- Tắt bước tunnel khi chạy: `KB_TUNNEL=0 sh apps/test_console/run.sh`.
+
 ## Tính năng
 
 - **Timeline bước chạy**: ảnh Trước → Sau, nhãn hành động tiếng Việt, bấm ảnh phóng to.

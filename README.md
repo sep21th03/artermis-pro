@@ -28,6 +28,28 @@
 > và chuyển toàn bộ model routing sang một gateway OpenAI-compatible.
 > Toàn bộ hướng dẫn cài đặt – cấu hình – chạy nằm trong tài liệu này; bản dịch tiếng Anh ở [README_EN.md](./README_EN.md).
 
+## ⚡ Chạy nhanh (3 lệnh)
+
+```bash
+# 1) Clone
+git clone <repo-url> artermis-pro && cd artermis-pro
+
+# 2) Cài dependency + tạo .env (điền API key; thêm ARTEMIS_KB_DSN nếu dùng Knowledge)
+uv sync --extra knowledge
+cp .env.example .env && open -e .env
+
+# 3) Chạy web + tunnel Knowledge — tự mở http://127.0.0.1:8787
+sh apps/test_console/run.sh
+```
+
+- `run.sh` **tự mở tunnel KB rồi mới khởi động web** ⇒ bình thường chỉ cần chạy lệnh số 3.
+- Tunnel riêng (khi cần kiểm tra / mở lại): `sh scripts/kb_tunnel.sh status | start | restart | ensure`
+- Cần có: `adb` trong PATH và điện thoại Android đã bật **USB debugging** (đã bấm *Allow*).
+- Chưa có `uv`: `brew install uv` (macOS) hoặc `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+- Muốn chạy UI gốc của ARTEMIS (cổng 8000) thay vì Test Console: `./start.sh`.
+
+Phần còn lại của tài liệu này là chi tiết đầy đủ (cấu hình model, Knowledge base, thiết bị, CLI, MCP, xử lý lỗi).
+
 ## Mục lục
 
 1. [ARTEMIS Pro làm được gì](#1-artemis-pro-làm-được-gì)
