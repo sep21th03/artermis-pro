@@ -210,7 +210,7 @@ ARTEMIS_WEB_HOST=0.0.0.0 sh apps/test_console/run.sh
 
 rồi mở firewall cho cổng 8787 — **chỉ trong LAN, đừng mở ra Internet**.
 
-Hoặc để script làm hết (kiểm tra công cụ → `uv sync` → ghi `.env` → **thử gọi console** để biết ngay
+Hoặc để script làm hết (kiểm tra công cụ → `uv sync` → dựng `.env` → **thử gọi console** để biết ngay
 URL/khoá có đúng):
 
 ```bash
@@ -218,9 +218,20 @@ sh scripts/install_tester.sh --console http://<ip-máy-chạy-console>:8787 --ke
 sh scripts/install_tester.sh --console https://sep21th03.com/artemis --key 21092003   # console trên VPS
 ```
 
-Script ghi đúng **4 dòng** của mục trên, `chmod 600`, **không** ghi key LLM thật và **không** ghi
-`ARTEMIS_KB_DSN`. `--dry-run` in `.env` ra mà không ghi; `--force` ghi đè `.env` đang có (bản cũ được
-sao lưu `.bak.<thời-gian>`); `--no-sync` / `--no-verify` bỏ hai bước tương ứng; `--help` xem đủ tham số.
+Mặc định script ghi **cả file `.env`** chứ không phải 4 dòng: lấy mẫu theo thứ tự `--from <file>` →
+`.env` của repo (nếu có) → `.env.example`, rồi
+
+- **ghi đè 5 biến** thuộc máy này: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CONSOLE_ACCESS_KEY`,
+  `ARTEMIS_KB_API`, `ARTEMIS_KB_API_KEY`;
+- **bỏ giá trị** các khoá chỉ thuộc máy chạy console (`GEMINI_API_KEY`, `ARTEMIS_KB_DSN`,
+  `KB_ADMIN_PASSWORD`, `KB_AUTH_SECRET`, `KB_VPS_KEY`) ⇒ file sinh ra **gửi cho người khác được**;
+- giữ nguyên phần còn lại ⇒ máy nhận có **cùng model, cùng chuỗi xoay quota, cùng hạn mức** như máy
+  đang cấu hình, nên không phải chép `.env` đi gửi từng người.
+
+Ghi bằng `chmod 600`. `--minimal` để chỉ ghi 4 dòng tối thiểu; `--keep-secrets` giữ cả khoá bí mật (chỉ
+khi máy này cũng chạy console — **đừng gửi file đó cho ai**); `--dry-run` in ra mà không ghi; `--force`
+ghi đè `.env` đang có (bản cũ được sao lưu `.bak.<thời-gian>`); `--no-sync` / `--no-verify` bỏ hai bước
+tương ứng; `--help` xem đủ tham số.
 
 **Vì sao chỉ một máy cần PostgreSQL.** Toàn bộ kiến thức — các Workflow của app — nằm trong
 một PostgreSQL trên máy chạy console (hoặc trên VPS của bạn). Máy tester trước mỗi lần chạy hỏi

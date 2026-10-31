@@ -81,9 +81,10 @@ sh apps/test_console/run.sh
   khoá embedding, **không** cần key LLM thật. Một lệnh:
   `sh scripts/install_tester.sh --console https://sep21th03.com/artemis --key 21092003`
   (console chạy trong LAN: `--console http://<ip-máy-chạy-console>:8787`). Script tự kiểm tra `adb`/`uv`,
-  `uv sync` khi chưa có `.venv`, ghi `.env` **4 dòng** (`chmod 600`) rồi **thử gọi console** để URL/khoá
-  sai lộ ra ngay. `--dry-run` xem trước, `--force` ghi đè `.env` cũ (có sao lưu),
-  `--no-sync`/`--no-verify` bỏ bớt bước, `--help` xem đủ tham số.
+  `uv sync` khi chưa có `.venv`, **dựng cả file `.env`** (mẫu: `.env` của repo → `.env.example`) trong đó
+  5 biến của máy này được ghi đè còn các khoá bí mật (`GEMINI_API_KEY`, `ARTEMIS_KB_DSN`…) bị **bỏ giá
+  trị** ⇒ **không phải chép `.env` đi gửi từng người**; sau đó **thử gọi console** để URL/khoá sai lộ ra
+  ngay. `--minimal` (chỉ 4 dòng), `--from <file>`, `--keep-secrets`, `--dry-run`, `--force`, `--help`.
 - Cần có: `adb` trong PATH và điện thoại Android đã bật **USB debugging** (đã bấm *Allow*).
 - Chưa có `uv`: `brew install uv` (macOS) hoặc `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 - Muốn chạy UI gốc của ARTEMIS (cổng 8000) thay vì Test Console: `./start.sh`.
@@ -582,9 +583,11 @@ LOCAL_LLM=1 sh apps/test_console/run.sh                     # Ollama, 0đ
   Chỉ máy chạy console cần database và khoá embedding; máy tester chỉ cần ARTEMIS và điện thoại.
   Xem `apps/test_console/README.md`.
 - **Cài trên máy khác (máy tester)**: một lệnh —
-  `sh scripts/install_tester.sh --console <url-console> --key <khoá>`; script ghi `.env` 4 dòng rồi
-  **thử gọi console** (`/llm/v1/models` + `/api/knowledge/context`) để URL/khoá sai lộ ra ngay. Chi tiết
-  từng tình huống (chạy console tại chỗ / chỉ cắm điện thoại / đặt trên VPS):
+  `sh scripts/install_tester.sh --console <url-console> --key <khoá>`; script **dựng cả `.env`** (mẫu là
+  `.env` của repo hoặc `.env.example`), ghi đè 5 biến của máy này, **bỏ giá trị** các khoá bí mật nên
+  file sinh ra gửi cho người khác được, rồi **thử gọi console** (`/llm/v1/models` +
+  `/api/knowledge/context`) để URL/khoá sai lộ ra ngay. Chi tiết từng tình huống (chạy console tại chỗ /
+  chỉ cắm điện thoại / đặt trên VPS):
   [`apps/test_console/README.md`](./apps/test_console/README.md#cài-trên-máy-khác).
 - **Tài liệu**: [`apps/test_console/README.md`](./apps/test_console/README.md).
 - **Wrapper CLI**: [`scripts/artemis.sh`](./scripts/artemis.sh) (tự thêm `adb` vào PATH, tự dùng

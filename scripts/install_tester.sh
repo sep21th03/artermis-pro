@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
-# Cài ARTEMIS lên MÁY TESTER — máy chỉ cắm điện thoại, chạy console ở máy khác.
-#
-# Máy tester KHÔNG cần PostgreSQL, KHÔNG cần khoá embedding, KHÔNG cần key LLM thật:
-# mọi request LLM đi qua proxy của console và mọi truy vấn kiến thức đi qua API RAG
-# của console, cả hai đều chỉ cần một **khoá truy cập** dùng chung.
+# Cài ARTEMIS cho một máy chạy console: sinh `.env` **đầy đủ mọi biến**, chỉ thay đúng
+# những biến thuộc về máy này — nên không phải chép `.env` đi gửi từng người.
 #
 #   sh scripts/install_tester.sh --console https://sep21th03.com/artemis --key 21092003
 #   sh scripts/install_tester.sh --console http://192.168.1.10:8787 --key 21092003
 #
-#   --dry-run      chỉ IN .env sẽ ghi, không đụng đĩa (dùng để xem trước)
-#   --force        ghi đè .env đang có (mặc định: dừng lại và báo, .env cũ được giữ)
-#   --no-sync      bỏ qua `uv sync` (máy đã cài dependency)
-#   --no-verify    bỏ qua bước thử gọi console ở cuối
-#   --env-file F   ghi .env vào đường dẫn khác (mặc định <repo>/.env)
-#   -h | --help    in trợ giúp
+# Mẫu `.env` lấy theo thứ tự: `--from <file>` → `.env` của repo (nếu có) → `.env.example`.
+# Trên mẫu đó script ghi đè 5 biến (OPENAI_API_KEY, OPENAI_BASE_URL, CONSOLE_ACCESS_KEY,
+# ARTEMIS_KB_API, ARTEMIS_KB_API_KEY) và **bỏ giá trị** các khoá chỉ thuộc máy chạy console
+# (GEMINI_API_KEY, ARTEMIS_KB_DSN, KB_ADMIN_PASSWORD, KB_AUTH_SECRET, KB_VPS_KEY…) nên file
+# sinh ra gửi cho người khác được: máy nhận không có key LLM thật, không có mật khẩu DB.
 #
-# Sau khi chạy xong: cắm điện thoại (đã bật USB debugging + bấm Allow), rồi
-#   sh apps/test_console/run.sh
-# Chạy trên chính máy đó thì console của máy đó là `http://127.0.0.1:8787`.
+#   --from FILE      lấy mẫu từ FILE (mặc định: `.env` của repo, không có thì `.env.example`)
+#   --minimal        chỉ ghi 4 dòng tối thiểu thay vì cả file
+#   --keep-secrets   GIỮ giá trị khoá bí mật trong mẫu (chỉ khi máy này cũng chạy console;
+#                    gửi file này cho người khác là lộ key)
+#   --dry-run        in `.env` sẽ ghi ra màn hình, không đụng đĩa
+#   --force          ghi đè `.env` đang có (mặc định dừng lại; bản cũ được sao lưu `.bak.<giờ>`)
+#   --no-sync        bỏ qua `uv sync` (máy đã cài dependency)
+#   --no-verify      bỏ qua bước thử gọi console ở cuối
+#   --env-file F     ghi `.env` vào đường dẫn khác (mặc định `<repo>/.env`)
+#   -h | --help      in trợ giúp này
+#
+# Sau khi chạy: cắm điện thoại (bật USB debugging + bấm Allow) rồi `sh apps/test_console/run.sh`.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,13 +32,21 @@ export PATH="$HOME/Library/Android/sdk/platform-tools:$HOME/.local/bin:$PATH"
 CONSOLE_URL=""
 ACCESS_KEY=""
 ENV_FILE="$REPO_ROOT/.env"
+FROM_FILE=""
+MINIMAL=0
+KEEP_SECRETS=0
 DRY_RUN=0
 FORCE=0
 DO_SYNC=1
 DO_VERIFY=1
 
+#: Biến thuộc về máy này — ghi đè giá trị của mẫu.
+OVERRIDE_KEYS="OPENAI_API_KEY OPENAI_BASE_URL CONSOLE_ACCESS_KEY ARTEMIS_KB_API ARTEMIS_KB_API_KEY"
+#: Khoá chỉ dùng trên máy chạy console — bỏ **giá trị** khi sinh .env cho máy khác.
+SECRET_KEYS="GEMINI_API_KEY GOOGLE_API_KEY ARTEMIS_KB_DSN KB_ADMIN_PASSWORD KB_AUTH_SECRET KB_VPS_KEY"
+
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() { echo "$*" >&2; exit 1; }
@@ -43,6 +56,9 @@ while [ $# -gt 0 ]; do
     --console)   CONSOLE_URL="${2:-}"; shift 2 ;;
     --key)       ACCESS_KEY="${2:-}"; shift 2 ;;
     --env-file)  ENV_FILE="${2:-}"; shift 2 ;;
+    --from)      FROM_FILE="${2:-}"; shift 2 ;;
+    --minimal)   MINIMAL=1; shift ;;
+    --keep-secrets) KEEP_SECRETS=1; shift ;;
     --dry-run)   DRY_RUN=1; shift ;;
     --force)     FORCE=1; shift ;;
     --no-sync)   DO_SYNC=0; shift ;;
@@ -54,14 +70,34 @@ done
 
 [ -n "$CONSOLE_URL" ] || die "Thiếu --console <url console>. Ví dụ: --console https://sep21th03.com/artemis"
 [ -n "$ACCESS_KEY" ] || die "Thiếu --key <khoá truy cập>. Khoá này do quản trị console đưa (mặc định 21092003)."
+[ -z "$FROM_FILE" ] || [ -f "$FROM_FILE" ] || die "Không thấy mẫu --from $FROM_FILE"
 
 # Chuẩn hoá URL: bỏ '/' cuối để ghép đường dẫn không thành '//llm/v1'.
 CONSOLE_URL="${CONSOLE_URL%/}"
 
-echo "== Cài ARTEMIS cho máy tester =="
+# Mẫu để dựng .env: --from → .env của repo (máy đang cấu hình) → .env.example (máy mới clone).
+if [ -n "$FROM_FILE" ]; then
+  BASE_FILE="$FROM_FILE"
+elif [ -f "$REPO_ROOT/.env" ]; then
+  BASE_FILE="$REPO_ROOT/.env"
+else
+  BASE_FILE="$REPO_ROOT/.env.example"
+fi
+[ -f "$BASE_FILE" ] || die "Không thấy mẫu .env: $BASE_FILE (chỉ định bằng --from <file>)"
+
+if [ "$MINIMAL" = "1" ]; then
+  MODE="4 dòng tối thiểu"
+else
+  MODE="đầy đủ (mẫu: ${BASE_FILE#$REPO_ROOT/})"
+fi
+
+echo "== Cài ARTEMIS cho máy này =="
 echo "   repo    : $REPO_ROOT"
 echo "   console : $CONSOLE_URL"
-echo "   .env    : $ENV_FILE"
+echo "   .env    : $ENV_FILE  [$MODE]"
+if [ "$KEEP_SECRETS" = "1" ]; then
+  echo "   ⚠ --keep-secrets: khoá bí mật được GIỮ NGUYÊN — đừng gửi file này cho ai." >&2
+fi
 echo
 
 # --- 1. Công cụ cần có ---------------------------------------------------------
@@ -91,10 +127,56 @@ else
   echo "[1/4] (bỏ qua) uv sync — theo --no-sync"
 fi
 
-# --- 3. Ghi .env ---------------------------------------------------------------
-# Máy tester chỉ 4 dòng. Cố ý KHÔNG ghi key LLM thật, KHÔNG ghi ARTEMIS_KB_DSN:
-# tester không đọc database, không cần SSH tunnel.
-ENV_BODY="$(cat <<EOF
+# --- 3. Dựng .env --------------------------------------------------------------
+# Giá trị của 5 biến thuộc máy này; mọi biến khác giữ nguyên như mẫu ⇒ máy nhận có cùng
+# model, cùng chuỗi xoay quota, cùng hạn mức như máy đang cấu hình.
+OV_FILE="$(mktemp)"
+TMP_OUT="$(mktemp)"
+{
+  printf 'OPENAI_API_KEY=%s\n' "$ACCESS_KEY"
+  printf 'OPENAI_BASE_URL=%s\n' "$CONSOLE_URL/llm/v1"
+  printf 'CONSOLE_ACCESS_KEY=%s\n' "$ACCESS_KEY"
+  printf 'ARTEMIS_KB_API=%s\n' "$CONSOLE_URL"
+  printf 'ARTEMIS_KB_API_KEY=%s\n' "$ACCESS_KEY"
+} > "$OV_FILE"
+
+# Đọc mẫu, ghi ra stdout: (1) thay 5 biến của máy này, (2) bỏ GIÁ TRỊ khoá bí mật,
+# (3) thêm vào cuối những biến mẫu không có, đúng thứ tự OVERRIDE_KEYS.
+# Giá trị truyền qua file (không qua -v) nên '/', '#', '&' trong URL/khoá không phải escape.
+build_env() {
+  awk -v ovf="$OV_FILE" -v secrets="$SECRET_KEYS" -v keep="$KEEP_SECRETS" '
+    function key_of(s) { return (s ~ /^[A-Za-z_][A-Za-z0-9_]*=/) ? substr(s, 1, index(s, "=") - 1) : "" }
+    BEGIN {
+      n = split(secrets, s, " "); for (i = 1; i <= n; i++) sec[s[i]] = 1
+      while ((getline line < ovf) > 0) {
+        k = key_of(line)
+        if (k != "") { ov[k] = substr(line, index(line, "=") + 1); order[++m] = k }
+      }
+      close(ovf)
+    }
+    {
+      k = key_of($0)
+      if (k != "" && k in ov) { print k "=" ov[k]; seen[k] = 1; next }
+      if (k != "" && k in sec && keep != "1") {
+        print "# " k "=   # bỏ giá trị khi sinh .env cho máy khác (--keep-secrets để giữ)"
+        next
+      }
+      print
+    }
+    END {
+      for (i = 1; i <= m; i++) {
+        k = order[i]
+        if (!(k in seen)) {
+          if (!head) { print ""; print "# ── Biến của máy này (scripts/install_tester.sh thêm) ──"; head = 1 }
+          print k "=" ov[k]
+        }
+      }
+    }
+  ' "$BASE_FILE"
+}
+
+if [ "$MINIMAL" = "1" ]; then
+  cat > "$TMP_OUT" <<EOF
 # Máy tester — sinh bởi scripts/install_tester.sh ($(date '+%Y-%m-%d %H:%M'))
 # Không có key LLM thật ở đây: console giữ key và thay vào mỗi request.
 OPENAI_API_KEY=$ACCESS_KEY
@@ -102,13 +184,20 @@ OPENAI_BASE_URL=$CONSOLE_URL/llm/v1
 ARTEMIS_KB_API=$CONSOLE_URL
 ARTEMIS_KB_API_KEY=$ACCESS_KEY
 EOF
-)"
+else
+  build_env > "$TMP_OUT"
+fi
+
+LINES="$(wc -l < "$TMP_OUT" | tr -d ' ')"
+KEYS="$(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' "$TMP_OUT" || true)"
+DROPPED_KEYS="$(sed -n 's/^# \([A-Za-z_][A-Za-z0-9_]*\)= *# bỏ giá trị.*/\1/p' "$TMP_OUT" | paste -sd, - | sed 's/,/, /g')"
 
 if [ "$DRY_RUN" = "1" ]; then
-  echo "[2/4] --dry-run: .env sẽ ghi như sau (chưa đụng đĩa):"
+  echo "[2/4] --dry-run: $MODE — $LINES dòng, $KEYS biến (chưa đụng đĩa):"
   echo "----------------------------------------"
-  printf '%s\n' "$ENV_BODY"
+  cat "$TMP_OUT"
   echo "----------------------------------------"
+  [ -z "$DROPPED_KEYS" ] || echo "      (sẽ bỏ giá trị: $DROPPED_KEYS)"
 else
   if [ -f "$ENV_FILE" ] && [ "$FORCE" != "1" ]; then
     die "$ENV_FILE đã tồn tại — giữ nguyên. Dùng --force để ghi đè (bản cũ sẽ được sao lưu .bak.<thời-gian>)."
@@ -119,10 +208,13 @@ else
     echo "[2/4] Đã sao lưu .env cũ → $backup"
   fi
   mkdir -p "$(dirname "$ENV_FILE")"
-  printf '%s\n' "$ENV_BODY" > "$ENV_FILE"
+  cp "$TMP_OUT" "$ENV_FILE"
   chmod 600 "$ENV_FILE"
-  echo "[2/4] Đã ghi $ENV_FILE (600)."
+  echo "[2/4] Đã ghi $ENV_FILE (600): $LINES dòng, $KEYS biến — $MODE."
+  [ -z "$DROPPED_KEYS" ] || echo "      Đã bỏ giá trị khoá chỉ thuộc máy chạy console: $DROPPED_KEYS"
+  [ "$KEEP_SECRETS" != "1" ] || echo "      (--keep-secrets: khoá bí mật giữ nguyên — KHÔNG gửi file này cho ai)"
 fi
+rm -f "$OV_FILE" "$TMP_OUT"
 
 # --- 4. Thử gọi console --------------------------------------------------------
 verify() {
@@ -166,3 +258,4 @@ echo "      export PATH=\"\$HOME/Library/Android/sdk/platform-tools:\$PATH\""
 echo "      adb devices -l          # phải thấy 'device' (không phải 'unauthorized')"
 echo "      cd $REPO_ROOT && sh apps/test_console/run.sh"
 echo "   Giao diện: http://127.0.0.1:8787 (run.sh tự mở)"
+echo "   Muốn đổi model / hạn mức / ADB… thì mở thẳng $ENV_FILE — mọi biến đều có sẵn ở đó."

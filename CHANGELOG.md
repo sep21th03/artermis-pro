@@ -4,15 +4,21 @@
 
 ### Added
 
-- **`scripts/install_tester.sh` — cài ARTEMIS lên máy tester bằng một lệnh.** Máy chỉ cắm điện thoại
-  không cần PostgreSQL, không cần khoá embedding, không cần key LLM thật; gõ tay `.env` 4 dòng rất dễ
-  sai (thừa/thiếu dấu `/`, quên `ARTEMIS_KB_API`, dán nhầm key thật). Script kiểm tra `adb`/`uv` trước,
-  `uv sync` khi chưa có `.venv`, ghi `.env` `chmod 600` (không key thật, không `ARTEMIS_KB_DSN`) rồi
-  **thử gọi console** (`/llm/v1/models` + `/api/knowledge/context`) ⇒ URL/khoá sai lộ ra ngay thay vì
-  đợi tới lúc chạy task mới thấy 401. Không ghi đè `.env` đang có (cần `--force`, bản cũ được sao lưu
-  `.bak.<thời-gian>`); `--dry-run` in ra mà không ghi; `--no-sync`/`--no-verify` bỏ hai bước tương ứng;
-  `--env-file` để ghi vào đường dẫn khác. Chạy được bằng `sh` (bash 3.2 trên macOS) — mảng rỗng dưới
-  `set -u` phải dùng `${a[@]+"${a[@]}"}`.
+- **`scripts/install_tester.sh` — cài ARTEMIS lên một máy bằng một lệnh, và sinh `.env` đầy đủ.** Máy
+  nhận không cần PostgreSQL, không cần khoá embedding, không cần key LLM thật — nhưng phải có **cùng
+  model, cùng chuỗi xoay quota, cùng hạn mức** với máy đang cấu hình, nên gõ tay 4 dòng `.env` vừa dễ
+  sai (thừa/thiếu dấu `/`, quên `ARTEMIS_KB_API`, dán nhầm key thật) vừa thiếu. Script lấy mẫu theo thứ
+  tự `--from <file>` → `.env` của repo → `.env.example`, **ghi đè 5 biến** thuộc máy này
+  (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CONSOLE_ACCESS_KEY`, `ARTEMIS_KB_API`, `ARTEMIS_KB_API_KEY`),
+  **bỏ giá trị** các khoá chỉ thuộc máy chạy console (`GEMINI_API_KEY`, `GOOGLE_API_KEY`, `ARTEMIS_KB_DSN`,
+  `KB_ADMIN_PASSWORD`, `KB_AUTH_SECRET`, `KB_VPS_KEY`) ⇒ file sinh ra **gửi cho người khác được** (đo
+  trên `.env` thật 105 dòng: 36 biến, 0 giá trị bí mật lọt ra). Sau đó **thử gọi console**
+  (`/llm/v1/models` + `/api/knowledge/context`) để URL/khoá sai lộ ra ngay thay vì đợi tới lúc chạy task
+  mới thấy 401; kiểm chứng end-to-end: chỉ với file sinh ra, `retrieve_for_run` trả `source=console`,
+  `found=true`, khối kiến thức 3.6–4.0 KB. Không ghi đè `.env` đang có (cần `--force`, bản cũ được sao
+  lưu `.bak.<thời-gian>`); `--minimal` (chỉ 4 dòng), `--keep-secrets` (giữ khoá bí mật — chỉ khi máy này
+  cũng chạy console), `--dry-run`, `--no-sync`, `--no-verify`, `--env-file`. Chạy được bằng `sh`
+  (bash 3.2 trên macOS) — mảng rỗng dưới `set -u` phải dùng `${a[@]+"${a[@]}"}`.
 
 - **KB có đăng nhập quản trị (tab Knowledge).** Tài khoản mặc định `admin@admin` / `admin`
   (`KB_ADMIN_EMAIL`/`KB_ADMIN_PASSWORD`; token ký bằng `KB_AUTH_SECRET`, hạn `KB_AUTH_TTL_SECONDS` =
