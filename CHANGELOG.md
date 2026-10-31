@@ -18,7 +18,9 @@
   `found=true`, khối kiến thức 3.6–4.0 KB. Không ghi đè `.env` đang có (cần `--force`, bản cũ được sao
   lưu `.bak.<thời-gian>`); `--minimal` (chỉ 4 dòng), `--keep-secrets` (giữ khoá bí mật — chỉ khi máy này
   cũng chạy console), `--dry-run`, `--no-sync`, `--no-verify`, `--env-file`. Chạy được bằng `sh`
-  (bash 3.2 trên macOS) — mảng rỗng dưới `set -u` phải dùng `${a[@]+"${a[@]}"}`.
+  (bash 3.2 trên macOS) — mảng rỗng dưới `set -u` phải dùng `${a[@]+"${a[@]}"}`. Từ chối khi **mẫu trùng
+  đích** (chạy đúng lệnh này trên máy đang cấu hình mà thiếu `--env-file`), vì như vậy là tự ghi bản đã
+  che lên chính `.env` thật — đã kiểm: md5 của `.env` không đổi sau khi bị từ chối.
 
 - **KB có đăng nhập quản trị (tab Knowledge).** Tài khoản mặc định `admin@admin` / `admin`
   (`KB_ADMIN_EMAIL`/`KB_ADMIN_PASSWORD`; token ký bằng `KB_AUTH_SECRET`, hạn `KB_AUTH_TTL_SECONDS` =

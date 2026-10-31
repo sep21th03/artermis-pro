@@ -233,6 +233,11 @@ khi máy này cũng chạy console — **đừng gửi file đó cho ai**); `--d
 ghi đè `.env` đang có (bản cũ được sao lưu `.bak.<thời-gian>`); `--no-sync` / `--no-verify` bỏ hai bước
 tương ứng; `--help` xem đủ tham số.
 
+Muốn sinh `.env` để **mang sang máy khác** thì dùng `--env-file <đường dẫn>` (hoặc `--dry-run` để xem
+trước). Script **từ chối** khi mẫu và đích là cùng một file: chạy lệnh này ngay trên máy đang cấu hình
+mà không có `--env-file` sẽ ghi bản đã che lên chính `.env` thật của máy đó (mất key thật, mất mật khẩu
+DB) — gặp lỗi này thì thêm `--env-file` rồi gửi file sinh ra.
+
 **Vì sao chỉ một máy cần PostgreSQL.** Toàn bộ kiến thức — các Workflow của app — nằm trong
 một PostgreSQL trên máy chạy console (hoặc trên VPS của bạn). Máy tester trước mỗi lần chạy hỏi
 đúng một câu:

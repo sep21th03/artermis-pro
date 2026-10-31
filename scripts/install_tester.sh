@@ -19,7 +19,7 @@
 #   --force          ghi đè `.env` đang có (mặc định dừng lại; bản cũ được sao lưu `.bak.<giờ>`)
 #   --no-sync        bỏ qua `uv sync` (máy đã cài dependency)
 #   --no-verify      bỏ qua bước thử gọi console ở cuối
-#   --env-file F     ghi `.env` vào đường dẫn khác (mặc định `<repo>/.env`)
+#   --env-file F     ghi `.env` vào đường dẫn khác (mặc định `<repo>/.env`; không được trùng mẫu)
 #   -h | --help      in trợ giúp này
 #
 # Sau khi chạy: cắm điện thoại (bật USB debugging + bấm Allow) rồi `sh apps/test_console/run.sh`.
@@ -84,6 +84,21 @@ else
   BASE_FILE="$REPO_ROOT/.env.example"
 fi
 [ -f "$BASE_FILE" ] || die "Không thấy mẫu .env: $BASE_FILE (chỉ định bằng --from <file>)"
+
+# Đường dẫn tuyệt đối để so ENV_FILE với BASE_FILE (macOS không có `realpath`).
+abspath() {
+  local d b
+  d="$(dirname "$1")"; b="$(basename "$1")"
+  if [ -d "$d" ]; then (cd "$d" && printf '%s/%s' "$(pwd)" "$b"); else printf '%s' "$1"; fi
+}
+
+# Mẫu trùng đích ⇒ ghi vào là tự che chính .env thật của máy này (mất key thật, mất mật khẩu DB).
+# Đây là lỗi dễ mắc nhất khi chạy đúng lệnh này ngay trên máy đang cấu hình.
+if [ "$DRY_RUN" != "1" ] && [ "$(abspath "$ENV_FILE")" = "$(abspath "$BASE_FILE")" ]; then
+  die "$ENV_FILE vừa là MẪU vừa là ĐÍCH — ghi như vậy sẽ mất key thật của máy này.
+  Muốn sinh .env để gửi cho máy khác: --env-file <đường dẫn mới> (hoặc --dry-run để xem trước).
+  Muốn cài cho chính máy này: chạy trên máy đó (bản clone mới chưa có .env)."
+fi
 
 if [ "$MINIMAL" = "1" ]; then
   MODE="4 dòng tối thiểu"
