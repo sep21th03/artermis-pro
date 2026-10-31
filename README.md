@@ -62,6 +62,11 @@ sh apps/test_console/run.sh
   `Authorization: Bearer <key>`). Lưu ý: máy phục vụ API vẫn phải có DB, router `/api/kb/*`
   **không có auth riêng** và cho phép sửa/xoá workflow ⇒ phải chặn ở proxy (key/IP/Cloudflare),
   đừng mở trần ra Internet; bản deploy phải có router này (bản cũ trả 404 ⇒ KB im lặng vô dụng).
+- **Quản trị KB cần đăng nhập**: tab Knowledge có form đăng nhập, tài khoản mặc định
+  `admin@admin` / `admin` (đổi bằng `KB_ADMIN_EMAIL` / `KB_ADMIN_PASSWORD`; ký token bằng
+  `KB_AUTH_SECRET`; hạn token `KB_AUTH_TTL_SECONDS`, mặc định 12 giờ). Chỉ tài khoản này được
+  **thêm/sửa/xoá** workflow; **đọc** (`/retrieve`, danh sách) vẫn không cần tài khoản để agent ở máy
+  tester gọi được. `KB_AUTH_DISABLED=1` chỉ dành cho máy dev chạy một mình.
 - **DSN**: `.env` cần `ARTEMIS_KB_DSN=postgresql://artemis:<mật-khẩu>@127.0.0.1:5433/artemis_kb`
   (`.env.example` không có sẵn — xin mật khẩu từ người giữ DB; khoá SSH **không** thay thế dòng này).
   Embedding khi truy vấn KB dùng `GEMINI_API_KEY`/`GOOGLE_API_KEY`.

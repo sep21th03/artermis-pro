@@ -391,6 +391,13 @@
       </div>
       <div class="kb-pane" id="kbPane" style="display:none">
         <div class="kb-status" id="kbStatus"></div>
+        <div class="kb-bar" id="kbAuthBar">
+          <span class="muted" id="kbAuthState">KB: đang kiểm tra đăng nhập…</span>
+          <input type="email" id="kbEmail" placeholder="admin@admin" style="max-width:170px" />
+          <input type="password" id="kbPassword" placeholder="mật khẩu" style="max-width:140px" />
+          <button type="button" id="kbLoginBtn">Đăng nhập</button>
+          <button type="button" id="kbLogoutBtn" style="display:none">Đăng xuất</button>
+        </div>
 
         <div class="kb-bar">
           <select id="kbAppSel"></select>
@@ -558,6 +565,11 @@ function toast(msg, kind=''){
   setTimeout(()=>el.remove(), 5000);
 }
 async function api(path, opts){
+  opts = opts || {};
+  // Quản trị KB cần token admin (đăng nhập ở tab Knowledge). Đọc vẫn không cần token.
+  if(path.indexOf('/api/kb/') === 0 && kbToken()){
+    opts.headers = Object.assign({}, opts.headers, {Authorization: 'Bearer ' + kbToken()});
+  }
   const res = await fetch(path, opts);
   const text = await res.text();
   let data = {};
@@ -575,10 +587,15 @@ async function api(path, opts){
     }else if(typeof detail === 'string'){
       msg = detail;
     }
+    if(res.status === 401 && data.detail && data.detail.auth_required) kbAuthHint();
     throw new Error(msg || data.error || ('HTTP ' + res.status));
   }
   return data;
 }
+
+$('kbLoginBtn').onclick = kbLogin;
+$('kbLogoutBtn').onclick = kbLogout;
+$('kbPassword').addEventListener('keydown', e => { if(e.key === 'Enter') kbLogin(); });
 
 function renderPresets(){
   const box = $('presets');
@@ -1619,7 +1636,52 @@ const KB_STATUS_LABEL = {draft: 'nháp', verified: 'đã kiểm chứng', deprec
 
 const kbState = {apps: [], workflows: [], versions: [], appId: '', editingId: '', loaded: false};
 
+// ── Đăng nhập quản trị KB ────────────────────────────────────────────────────────────
+// Đọc (danh sách/retrieve) không cần token; thêm/sửa/xoá workflow cần tài khoản admin.
+// Token lưu ở localStorage nên F5 vẫn còn đăng nhập; hết hạn thì API trả 401 và UI nhắc lại.
+function kbToken(){ try { return localStorage.getItem('kbToken') || ''; } catch { return ''; } }
+function kbSetToken(t){ try { t ? localStorage.setItem('kbToken', t) : localStorage.removeItem('kbToken'); } catch {} }
+function kbAuthHint(){ const el=$('kbAuthState'); if(el) el.textContent = 'KB: cần đăng nhập để thêm/sửa/xoá'; }
+async function kbAuthRefresh(){
+  const el = $('kbAuthState');
+  if(!el) return;
+  try{
+    const me = await api('/api/kb/auth/me');
+    if(me.can_write){
+      el.textContent = 'KB quản trị: ' + (me.email || 'admin');
+      $('kbLoginBtn').style.display = 'none';
+      $('kbLogoutBtn').style.display = '';
+    }else{
+      el.textContent = 'KB: chỉ đọc — đăng nhập để thêm/sửa/xoá';
+      $('kbLoginBtn').style.display = '';
+      $('kbLogoutBtn').style.display = 'none';
+    }
+  }catch(e){
+    el.textContent = 'KB: không kiểm tra được đăng nhập (' + e.message + ')';
+  }
+}
+async function kbLogin(){
+  const email = ($('kbEmail').value || '').trim() || 'admin@admin';
+  const password = $('kbPassword').value || '';
+  try{
+    const res = await api('/api/kb/auth/login', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email: email, password: password}),
+    });
+    kbSetToken(res.token);
+    $('kbPassword').value = '';
+    toast('Đã đăng nhập KB: ' + res.email, 'ok');
+    await kbAuthRefresh();
+  }catch(e){ toast('Đăng nhập KB thất bại: ' + e.message, 'err'); }
+}
+function kbLogout(){
+  kbSetToken('');
+  toast('Đã đăng xuất KB', 'ok');
+  kbAuthRefresh();
+}
+
 async function loadKb(force){
+  await kbAuthRefresh();
   if(kbState.loaded && !force) return;
   try{
     const status = await api('/api/kb/status');

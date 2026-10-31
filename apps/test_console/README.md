@@ -38,6 +38,11 @@ sh apps/test_console/run.sh
   cần SSH/DB/khoá embedding**. Endpoint `POST {ARTEMIS_KB_API}/api/kb/retrieve` (UA `ARTEMIS/1.0`,
   `Authorization: Bearer <key>`). Máy phục vụ vẫn cần DB; router `/api/kb/*` **không có auth riêng**
   (sửa/xoá được workflow) ⇒ chặn ở proxy, không mở trần ra Internet.
+- **Quản trị KB cần đăng nhập**: tab Knowledge có form đăng nhập, tài khoản mặc định
+  `admin@admin` / `admin` (đổi bằng `KB_ADMIN_EMAIL` / `KB_ADMIN_PASSWORD`; ký token bằng
+  `KB_AUTH_SECRET`; hạn token `KB_AUTH_TTL_SECONDS`, mặc định 12 giờ). Chỉ tài khoản này được
+  **thêm/sửa/xoá** workflow; **đọc** (`/retrieve`, danh sách) vẫn không cần tài khoản để agent ở máy
+  tester gọi được. `KB_AUTH_DISABLED=1` chỉ dành cho máy dev chạy một mình.
 - **DSN**: `.env` cần `ARTEMIS_KB_DSN=postgresql://artemis:<mật-khẩu>@127.0.0.1:5433/artemis_kb`
   (`.env.example` không có sẵn). Khoá SSH không thay thế dòng này. Embedding dùng
   `GEMINI_API_KEY`/`GOOGLE_API_KEY`.

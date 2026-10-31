@@ -176,6 +176,10 @@ class FakeEmbedder:
 
 @pytest.fixture
 def client(monkeypatch):
+    # Auth được kiểm riêng ở `test_knowledge_auth.py`; ở đây chỉ kiểm hợp đồng dữ liệu của KB nên
+    # tắt lớp đăng nhập để các test ghi workflow không phải đăng nhập.
+    monkeypatch.setenv("KB_AUTH_DISABLED", "1")
+
     def _client(store, **service_kwargs):
         service = KnowledgeService(store=store, embedder=FakeEmbedder(), **service_kwargs)
         monkeypatch.setattr(api, "get_service", lambda: service)
