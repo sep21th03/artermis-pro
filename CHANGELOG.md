@@ -1,4 +1,4 @@
-# Changelog — ARTEMIS Pro
+# Changelog — HunonicTest
 
 ## [Unreleased]
 
@@ -68,6 +68,15 @@
   `navigationRef.current.navigate(...)` mất tích vì mất chuỗi member lồng nhau. 28 test.
 
 ### Changed
+
+- **Đổi thương hiệu sang HunonicTest.** Banner mới `docs/assets/hunonic-banner.png`, sinh bằng
+  `docs/assets/generate_banner.py` từ logo trong repo (`docs/assets/logo/hunonic-logo.png`) — nền gần
+  đen, logo kèm quầng xanh, chữ "HUNONIC" mảnh giãn rộng; generator tự dò font hệ thống nên không cần
+  commit file font. Tiêu đề + phần giới thiệu viết lại, và mọi câu văn gọi tên sản phẩm nay là
+  "HunonicTest" (README chính, README console, tiêu đề và thông báo trong console, tiêu đề Admin Console
+  và showcase UI). **Tên kỹ thuật giữ nguyên có chủ ý**: gói `artemis/`, lệnh `artemis`, biến `ARTEMIS_*`,
+  `config/artemis.jsonc`, User-Agent `ARTEMIS/1.0` — đổi chúng là phá `.env`, systemd unit và script
+  đang chạy, nên tài liệu nói rõ "HunonicTest là tên sản phẩm, chuỗi trong dấu huyền là tên thật".
 
 - **README: nêu rõ hai đường dùng KB, và sửa lỗi đánh số mục.** Mục 7 giờ có bảng *máy chạy console
   (SSH tunnel + `ARTEMIS_KB_DSN`)* vs *máy tester (`ARTEMIS_KB_API` + `ARTEMIS_KB_API_KEY`)*, và nói rõ
@@ -235,6 +244,14 @@
   cùng script với `api()`, gắn sự kiện trong `kbAuthInit()` gọi ở khối boot, và khoá lại bằng 3
   regression test (`tests/unit/test_console_kb_ui.py`): helper phải cùng script với `api()`, gắn sự
   kiện phải nằm trong `kbAuthInit` chứ **không** ở top-level, và `kbAuthInit();` phải được gọi lúc boot.
+
+### Removed
+
+- **Tài liệu và ảnh của bản gốc.** Xoá `README_EN.md` và `README_CN.md` (bản dịch cũ, không còn mô tả
+  repo này) cùng các ảnh mang thương hiệu cũ trong `docs/assets/` (banner, UI showcase, sơ đồ kiến trúc,
+  ảnh benchmark, ảnh workflow, generator của bản gốc). Liên kết chuyển ngữ ở đầu README bỏ theo; mục 16
+  đổi thành **Giấy phép** — vẫn giữ `LICENSE` Apache-2.0 vì giấy phép yêu cầu. Ảnh cũ lấy lại được từ
+  git history nếu cần.
 
 ### Added
 

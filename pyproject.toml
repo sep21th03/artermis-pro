@@ -15,7 +15,7 @@
 [project]
 name = "artemis"
 version = "1.0"
-description = "Autonomous AI Assistant for Mobile Automation"
+description = "HunonicTest — autonomous AI testing agent for real Android devices"
 
 authors = [
     { name = "Farley Wang", email="farleyw@google.com" },

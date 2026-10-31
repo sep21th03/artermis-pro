@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Mobile Test Console</title>
+<title>HunonicTest Console</title>
 <style>
   :root{
     --bg:#f4f6fb; --card:#ffffff; --ink:#0f172a; --muted:#64748b; --line:#e2e8f0;
@@ -215,8 +215,8 @@
   <div class="brand">
     <div class="logo">T</div>
     <div>
-      <h1>Mobile Test Console</h1>
-      <p>Kiểm thử tự động trên điện thoại thật · Artemis</p>
+      <h1>HunonicTest Console</h1>
+      <p>Kiểm thử tự động trên điện thoại thật · HunonicTest</p>
     </div>
   </div>
   <div class="top-right">
@@ -225,7 +225,7 @@
     <span class="badge" id="budgetBadge" title="Chi phí task này / giới hạn"><span class="dot" id="budgetDot"></span><b id="budgetText">Ngân sách…</b></span>
     <span class="badge" id="accessBadge" title="Khoá truy cập API cho /llm/v1"><span class="dot" id="accessDot"></span><b id="accessText">API khoá…</b></span>
     <button class="btn small" id="btnLlmTest">Kiểm tra LLM</button>
-    <a class="btn small" href="http://localhost:8000" target="_blank" rel="noreferrer">Artemis UI ↗</a>
+    <a class="btn small" href="http://localhost:8000" target="_blank" rel="noreferrer">HunonicTest UI ↗</a>
   </div>
 </header>
 
@@ -624,7 +624,7 @@ function persistPrompt(){
   try{ localStorage.setItem('testconsole.prompt', $('goal').value); }catch(_){}
 }
 /* Lưu cả Package + chế độ: quên lưu thì F5 là ô Package quay về mặc định và task
-   sẽ chạy nhầm app (ARTEMIS thử 3 lần × 15s rồi bỏ cuộc, app không hề mở). */
+   sẽ chạy nhầm app (HunonicTest thử 3 lần × 15s rồi bỏ cuộc, app không hề mở). */
 function persistSettings(){
   try{
     localStorage.setItem('testconsole.package', $('pkg').value);
@@ -898,7 +898,7 @@ async function loadHealth(){
     $('accessBadge').title = access.required
       ? 'Client phải gửi khoá truy cập (đuôi ' + (access.key_hint || '') + ') mới gọi được /llm/v1'
       : 'Chế độ LLM local: miễn khoá truy cập';
-    if(!h.artemis_ok) toast('Không tìm thấy Artemis tại ' + h.artemis_dir, 'err');
+    if(!h.artemis_ok) toast('Không tìm thấy HunonicTest tại ' + h.artemis_dir, 'err');
     refreshScreen();
     loadPackages();
   }catch(e){
@@ -1711,7 +1711,7 @@ function renderKbStatus(status){
     $('kbStatus').innerHTML =
       '<span class="pill" style="background:#fff4e5;color:#b45309">KB tắt</span>'
       + '<span class="muted">' + esc(status.degraded_reason || 'Chưa cấu hình ARTEMIS_KB_DSN') + '</span>'
-      + '<span class="muted">— ARTEMIS vẫn chạy bình thường, chỉ là không có kiến thức để chèn.</span>';
+      + '<span class="muted">— HunonicTest vẫn chạy bình thường, chỉ là không có kiến thức để chèn.</span>';
     $('kbAppSel').innerHTML = '<option value="">— KB tắt —</option>';
     $('kbAppSel').disabled = true;
     $('btnKbNew').disabled = true;

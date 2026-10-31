@@ -1,21 +1,22 @@
-# Contributing to ARTEMIS
+# Đóng góp cho HunonicTest
 
-Thank you for your interest in contributing to **ARTEMIS**! We welcome and appreciate all forms of contributions—whether it's reporting bugs, proposing new features, improving documentation, or submitting code.
-
----
-
-## 🤝 Ways to Contribute
-
-- **🐛 Report Bugs & Suggest Features**: If you find an issue or have an idea to improve ARTEMIS, please open an [Issue](https://github.com/google/artemis/issues).
-- **💡 Submit Pull Requests**:
-  1. Fork the repository and create your feature/fix branch (`git checkout -b feat/my-feature`).
-  2. Make your changes and verify with `make test`, `make lint`, and `make typecheck`.
-  3. Open a Pull Request with a brief summary of your work.
-- **💬 Community & Discussion**: Join our [Discord Community](https://discord.gg/wF2FN4WHGY) to chat with maintainers, ask questions, or share feedback.
+Cảm ơn anh/chị đã muốn đóng góp cho **HunonicTest**. Mọi hình thức đều được hoan nghênh: báo lỗi, đề
+xuất tính năng, sửa tài liệu hay gửi code.
 
 ---
 
-Every contribution—big or small—helps make ARTEMIS better. Thank you for building with us!
+## 🤝 Cách đóng góp
+
+- **🐛 Báo lỗi & đề xuất tính năng**: mở một **Issue** trong repo này.
+- **💡 Gửi Pull Request**:
+  1. Tạo nhánh cho tính năng/sửa lỗi (`git checkout -b feat/my-feature`).
+  2. Sửa code rồi tự kiểm bằng `make test`, `make lint` và `make typecheck`.
+  3. Mở Pull Request kèm mô tả ngắn về việc đã làm.
+- **📖 Tài liệu**: hướng dẫn cài đặt – cấu hình – chạy nằm ở [README.md](./README.md); tài liệu của
+  Test Console ở [`apps/test_console/README.md`](./apps/test_console/README.md). Sửa code xong thì cập
+  nhật luôn tài liệu liên quan và thêm mục vào [CHANGELOG.md](./CHANGELOG.md).
+
+---
 
 ## Test layers
 

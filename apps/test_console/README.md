@@ -1,7 +1,7 @@
-# Mobile Test Console
+# HunonicTest Console
 
-Web UI tiếng Việt cho tester điều khiển ARTEMIS trên điện thoại Android thật.
-Nằm ngay trong repo ARTEMIS (`apps/test_console/`), dùng song song với UI gốc
+Web UI tiếng Việt cho tester điều khiển HunonicTest trên điện thoại Android thật.
+Nằm ngay trong repo HunonicTest (`apps/test_console/`), dùng song song với UI gốc
 (`artemis ui`, cổng 8000).
 
 Không cần source app Android: console chỉ gọi `artemis run ... --locked-app <package>`,
@@ -64,7 +64,7 @@ sh apps/test_console/run.sh
   thiết bị, bật/tắt công tắc, voicebox/học lệnh, thêm thiết bị QR/BLE, thông báo.
 - Chạy **Flash** (nhanh) hoặc **Pro** (có plan/verify).
 - Xem **màn hình điện thoại trực tiếp** (chụp 2 giây/lần) và **log realtime**.
-- Dừng task **thật sự**: huỷ cả trên Artemis Daemon (nơi thực thi) lẫn tiến
+- Dừng task **thật sự**: huỷ cả trên daemon (nơi thực thi) lẫn tiến
   trình CLI, xem **lịch sử** và log từng lần chạy.
 - Kiểm tra LLM (`/models` + 1 chat 1 token) — phát hiện key hết hạn/hết credit.
 - **Chặn ngân sách**: giới hạn request, `max_tokens`, chi phí task/ngày, thời gian.
@@ -72,7 +72,7 @@ sh apps/test_console/run.sh
   (mặc định `21092003`) — key LLM thật không rời máy chạy console.
 - **Knowledge — Workflow RAG**: tester nhập prompt, console gọi Google Embedding, tìm workflow
   gần nhất trong PostgreSQL rồi trả về **prompt hoàn chỉnh** (prompt gốc + hướng dẫn từng bước).
-  Chỉ máy chạy console cần database và khoá embedding; máy tester chỉ cần ARTEMIS và điện thoại.
+  Chỉ máy chạy console cần database và khoá embedding; máy tester chỉ cần HunonicTest và điện thoại.
 - **Chuẩn bị prompt bằng AI** (`⚡ Chuẩn bị prompt`): RAG cung cấp kiến thức, LLM tổng hợp thành
   **một prompt thực thi ngắn** (không bước, không toạ độ), tester duyệt/sửa rồi mới chạy. Xem
   *Chuẩn bị prompt bằng AI* bên dưới.
@@ -80,7 +80,7 @@ sh apps/test_console/run.sh
 
 ## Chạy
 
-Console nằm trong repo ARTEMIS và mặc định dùng chính `.venv`, `.env`,
+Console nằm trong repo HunonicTest và mặc định dùng chính `.venv`, `.env`,
 `config/artemis.jsonc` của repo đó.
 
 ```bash
@@ -90,7 +90,7 @@ sh apps/test_console/run.sh          # tự mở http://127.0.0.1:8787
 ```
 
 - Clone mới chưa có `.venv`? Chạy `uv sync` một lần, hoặc để `run.sh` tự gọi `uv run`.
-- Muốn drive một checkout ARTEMIS khác: `ARTEMIS_DIR=/path/to/artemis sh apps/test_console/run.sh`.
+- Muốn drive một checkout HunonicTest khác: `ARTEMIS_DIR=/path/to/artemis sh apps/test_console/run.sh`.
 - Đổi app đích: `TEST_APP_PACKAGE=com.example.app sh apps/test_console/run.sh`.
 - Đổi cổng: `ARTEMIS_WEB_PORT=8788 sh apps/test_console/run.sh`.
 
@@ -255,10 +255,10 @@ Nhờ vậy hai máy chạy ra cùng một prompt, mà chỉ một máy cần da
 
 | Máy | Cần cài | Cần có |
 | --- | --- | --- |
-| Chạy console | ARTEMIS + ADB + PostgreSQL | `ARTEMIS_KB_DSN`, `GEMINI_API_KEY`, key LLM thật |
-| Tester | ARTEMIS + ADB | 3 biến ở trên |
+| Chạy console | HunonicTest + ADB + PostgreSQL | `ARTEMIS_KB_DSN`, `GEMINI_API_KEY`, key LLM thật |
+| Tester | HunonicTest + ADB | 3 biến ở trên |
 
-Nếu console tắt hoặc không gọi được, ARTEMIS **chạy tiếp không có kiến thức** (giống hệt
+Nếu console tắt hoặc không gọi được, HunonicTest **chạy tiếp không có kiến thức** (giống hệt
 khi chưa bật KB) — không bao giờ làm hỏng một lần chạy test.
 
 ### C. Đặt cả máy chủ lên VPS (cách đang dùng)
@@ -277,7 +277,7 @@ VPS  sep21th03.com  (103.199.18.222)
 Máy dev (Mac)  ── SSH tunnel ──→ VPS:5432      ← chỉ để quản trị KB (tab Knowledge)
                ── HTTPS ──────→ sep21th03.com/artemis   ← LLM + RAG
 
-Máy tester (ARTEMIS + ADB, không gì khác)
+Máy tester (HunonicTest + ADB, không gì khác)
                ── HTTPS ──────→ sep21th03.com/artemis   ← LLM + RAG
 ```
 
@@ -399,7 +399,7 @@ ra Internet là mời người lạ xoá kiến thức. Tunnel giữ 5432 đóng
 #### Hai cái bẫy đã gặp thật
 
 - **Cloudflare chặn User-Agent của Python.** `sep21th03.com` đi qua Cloudflare; cùng một request,
-  UA mặc định `Python-urllib/3.x` trả **403 (error 1010)** còn `ARTEMIS/1.0` trả 200. ARTEMIS nay
+  UA mặc định `Python-urllib/3.x` trả **403 (error 1010)** còn `ARTEMIS/1.0` trả 200. HunonicTest nay
   tự gửi `User-Agent: ARTEMIS/1.0`. Triệu chứng khi thiếu header rất khó đoán: log chỉ nói
   *"không chèn kiến thức"*, y hệt một lần chạy không có gì để chèn.
 - **Cài pgvector kéo theo nâng cấp gói lõi.** Repo PGDG có bản `postgresql-14` mới hơn bản của
@@ -417,7 +417,7 @@ curl -s http://127.0.0.1:8787/api/packages | head -c 200      # danh sách app �
 
 | Triệu chứng | Cách xử lý |
 | --- | --- |
-| `Không tìm thấy Artemis tại ...` | chưa chạy `uv sync` (thiếu `.venv`) |
+| `Không tìm thấy HunonicTest tại ...` | chưa chạy `uv sync` (thiếu `.venv`) |
 | `Không có thiết bị` | cáp lỏng / chưa bật USB debugging / chưa bấm **Allow** |
 | `401 invalid_api_key` khi chạy task | `OPENAI_API_KEY` phải là **khoá truy cập** (`21092003`), không phải key thật |
 | Không mở được `http://<ip>:8787` từ máy khác | console chưa đặt `ARTEMIS_WEB_HOST=0.0.0.0`, hoặc firewall chặn |
@@ -484,12 +484,12 @@ adb uninstall com.iot.hunonic                                               # g�
 
 Nhập đúng package vừa tìm được vào ô **Package** của console rồi bấm **Chạy test**.
 Console **từ chối chạy** nếu app chưa cài trên máy (kèm gợi ý tên gần đúng), và ô
-Package gợi ý sẵn danh sách app đã cài — chạy nhầm package thì ARTEMIS chỉ thử mở
+Package gợi ý sẵn danh sách app đã cài — chạy nhầm package thì HunonicTest chỉ thử mở
 3 lần × 15s rồi bỏ cuộc, tester thấy như "app không chạy".
 Khi console báo *"App chưa tải được JS bundle — kiểm tra Metro và adb reverse"*
 thì quay lại Cách 3.
 
-Yêu cầu: ARTEMIS đã cài dependency (`.venv`), có `adb`, điện thoại đã bật
+Yêu cầu: HunonicTest đã cài dependency (`.venv`), có `adb`, điện thoại đã bật
 **USB debugging**. Hướng dẫn tổng thể: [README.md](../../README.md) mục 16.
 
 ## LLM: không cần cài key
@@ -507,9 +507,9 @@ chặn ngân sách. Chạy console cùng máy thì không phải cấu hình gì
 của repo đã sẵn.
 
 Model nằm trong `artemis/config/artemis.jsonc` (hiện tại `ts/gemini-3.5-flash-lite`,
-có vision + tool calling). Đổi `.env`/model thì restart Artemis: `artemis restart`.
+có vision + tool calling). Đổi `.env`/model thì restart HunonicTest: `artemis restart`.
 
-> Nếu tắt console 8787, ARTEMIS không gọi được LLM vì base URL trỏ vào proxy.
+> Nếu tắt console 8787, HunonicTest không gọi được LLM vì base URL trỏ vào proxy.
 
 ## Khoá truy cập API (chỉ máy chạy console)
 
@@ -517,7 +517,7 @@ Console là proxy giữ key thật, nên `/llm/v1` **bắt buộc** có khoá tr
 có thì ai biết URL cũng tiêu hết ngân sách. **Máy tester không phải cài key gì
 thêm**, chỉ dùng khoá truy cập ở mục trên.
 
-ARTEMIS gửi `Authorization: Bearer <OPENAI_API_KEY>`; proxy kiểm tra khoá rồi
+HunonicTest gửi `Authorization: Bearer <OPENAI_API_KEY>`; proxy kiểm tra khoá rồi
 **thay** bằng key thật trước khi gọi upstream, nên key thật không bao giờ rời máy
 chạy console.
 
@@ -577,7 +577,7 @@ Máy chủ: hiểu mục tiêu → truy xuất theo TỪNG việc → phân lo�
    ↓  LLM (qua chính AI proxy này) tổng hợp thành Enhanced Prompt 5 mục
    ↓  10 kiểm tra chất lượng bằng máy
 Tester xem/sửa trong ô "prompt agent sẽ nhận"  →  ✔ Dùng bản này  →  Chạy
-   ↓  ARTEMIS nhận đúng bản đã duyệt (prompt_override + ARTEMIS_KB_PRESUPPLIED=1)
+   ↓  HunonicTest nhận đúng bản đã duyệt (prompt_override + ARTEMIS_KB_PRESUPPLIED=1)
 ```
 
 Ví dụ, `mở app và đăng nhập rồi chuyển sang nhà dled` cho ra:
@@ -821,10 +821,10 @@ model mạnh (nhìn màn hình + quyết định). Các node còn lại chỉ đ
 GET  /v1beta/models                     → HTTP 200, 50 model, có gemini-robotics-er-2-preview
 POST .../gemini-robotics-er-2-preview:generateContent (có ảnh chụp màn hình thật)
      → HTTP 200, serviceTier=standard
-     → [{"point": [290, 500], "label": "Cửa cuốn"}]   ← đúng định dạng ARTEMIS cần
+     → [{"point": [290, 500], "label": "Cửa cuốn"}]   ← đúng định dạng HunonicTest cần
 ```
 
-Đo lại bằng **đúng prompt của ARTEMIS** (`object_detector.json`: template + instructions) trên
+Đo lại bằng **đúng prompt của HunonicTest** (`object_detector.json`: template + instructions) trên
 ảnh `720×1600`, toạ độ quy về pixel để đối chiếu:
 
 | Model | Kết quả | Pixel | Thời gian |
@@ -879,11 +879,11 @@ Bốn điều quan trọng:
 
 1. **Hạn mức tính theo project, không theo key.** Tạo thêm key trong cùng project không tăng gì.
    RPD reset lúc **nửa đêm giờ Thái Bình Dương**, không phải giờ Việt Nam.
-2. **20 request/ngày là rất ít.** Một task ARTEMIS tốn 15–25 lượt gọi LLM ⇒ free tier Flash chỉ
+2. **20 request/ngày là rất ít.** Một task HunonicTest tốn 15–25 lượt gọi LLM ⇒ free tier Flash chỉ
    chạy được **1–2 task/ngày**. Vì vậy **không được** trỏ vòng lặp chính sang `google`.
 3. **`object_detector` = 1 request cho mỗi nhãn cần tìm** (chưa tính retry khi parse lỗi). Hết
    20 request thì `classify_failure` xếp 429 vào `RATE_LIMIT` (retryable + should_fallback) nên
-   ARTEMIS tự chờ rồi **rơi về Vilao** `ts/gemini-3.5-flash-lite` — task không gãy nhưng toạ độ
+   HunonicTest tự chờ rồi **rơi về Vilao** `ts/gemini-3.5-flash-lite` — task không gãy nhưng toạ độ
    kém chính xác hơn.
 4. **`_DETECTOR_SEMAPHORE = 6`** cho phép 6 request detector song song, trong khi trần là 5/phút
    ⇒ gọi nhiều nhãn một lúc là chạm 429 ngay. Muốn tránh thì hỏi ít nhãn mỗi lượt.
@@ -923,7 +923,7 @@ LLM Error: 1 validation error for HopperOutput
 
 Agent gọi `manage_app(action="launch")` → khởi động sub-agent **Hopper** để tìm
 package. Model trả JSON **bọc trong ```` ```json ````**, `with_structured_output`
-parse lỗi; lỗi đó bị xếp vào nhóm *retry được* nên ARTEMIS retry rồi **pause chờ
+parse lỗi; lỗi đó bị xếp vào nhóm *retry được* nên HunonicTest retry rồi **pause chờ
 resume** — mặc định `LLM_PAUSE_TIMEOUT_SECONDS=900` (**15 phút**), nên tester thấy
 như treo hẳn.
 
@@ -972,7 +972,7 @@ Console nay tự cảnh báo (toast đỏ + dòng `⚠` trong log task) khi thi�
 
 ### Agent "chạy linh tinh": bấm HOME, mở app khác, chạm lung tung
 
-Đây là chuyện của **model**, nhưng ARTEMIS để lọt một lỗ hổng khiến nó tệ hơn:
+Đây là chuyện của **model**, nhưng HunonicTest để lọt một lỗ hổng khiến nó tệ hơn:
 `--locked-app <package>` **chỉ** đảm bảo app đó ở foreground **lúc bắt đầu** — nó không
 ràng buộc hành động sau đó, và **agent không được thông báo** là mình bị khoá vào app nào.
 Nên khi prompt không nêu tên app, agent có thể tự `manage_app(stop, "App khác")`, bấm HOME,
@@ -1010,7 +1010,7 @@ khối **Diễn biến của agent** — nó liệt kê lượt, thao tác, lỗ
 ### Task chạy nhưng app không mở ("app không chạy")
 
 Nguyên nhân hay gặp nhất: **ô Package đang khoá sai app**. Mở **Log kỹ thuật** và xem
-dòng `$ ... --locked-app <package>`; nếu package đó không có trên máy thì ARTEMIS thử
+dòng `$ ... --locked-app <package>`; nếu package đó không có trên máy thì HunonicTest thử
 3 lần × 15s rồi bỏ cuộc:
 
 ```

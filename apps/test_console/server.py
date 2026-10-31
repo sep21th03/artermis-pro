@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Mobile Test Console - local web UI for ARTEMIS.
+"""HunonicTest Console — local web UI cho HunonicTest.
 
-Vietnamese, app-agnostic wrapper around the Artemis CLI. Binds to loopback
-only; the LLM key stays in the Artemis .env file and is never sent to the
+Vietnamese, app-agnostic wrapper around the `artemis` CLI. Binds to loopback
+only; the LLM key stays in the .env file of the machine running the console and is never sent to the
 browser.
 """
 
@@ -56,8 +56,8 @@ DATA_DIR = BASE_DIR / "data"
 LOG_DIR = DATA_DIR / "logs"
 TASKS_FILE = DATA_DIR / "tasks.json"
 BUDGET_FILE = DATA_DIR / "budget.json"
-#: Nơi ARTEMIS lưu ảnh từng bước (``traces/images``). Đọc thẳng từ đĩa khi tải các bước: ảnh của
-#: mọi session nằm ở đây, nên gói tải được ngay cả khi server ARTEMIS đã tắt — đúng lúc tester xem
+#: Nơi HunonicTest lưu ảnh từng bước (``traces/images``). Đọc thẳng từ đĩa khi tải các bước: ảnh của
+#: mọi session nằm ở đây, nên gói tải được ngay cả khi server HunonicTest đã tắt — đúng lúc tester xem
 #: lại một lần chạy cũ rồi mới bấm tải.
 try:
     from artemis.config import IMAGES_DIR as _ARTEMIS_IMAGES_DIR
@@ -67,7 +67,7 @@ except Exception:  # noqa: BLE001 - thiếu artemis thì chỉ còn đường t�
     IMAGES_DIR = REPO_ROOT / "traces" / "images"
 
 def _default_artemis_dir() -> Path:
-    """Pick the ARTEMIS checkout to drive.
+    """Pick the checkout to drive.
 
     Order: explicit ARTEMIS_DIR -> this repo (if it has a runtime) -> the
     classic ~/Developer/artemis install -> this repo (uv fallback).
@@ -147,7 +147,7 @@ def run_adb(args: list[str], timeout: float = 15.0) -> subprocess.CompletedProce
 
 
 def artemis_launcher() -> list[str] | None:
-    """Command prefix for the Artemis CLI.
+    """Command prefix for the `artemis` CLI.
 
     Prefers the repo's own venv binary; on a fresh clone without `.venv` it
     falls back to `uv run`, so the console works from any checkout path.
@@ -300,7 +300,7 @@ def list_devices() -> list[dict]:
 
 
 # --- Package đã cài trên thiết bị ---------------------------------------------
-# Chạy task với package không tồn tại thì ARTEMIS vẫn "thử" 3 lần × 15s rồi mới
+# Chạy task với package không tồn tại thì HunonicTest vẫn "thử" 3 lần × 15s rồi mới
 # bỏ cuộc, nên tester chỉ thấy task treo mà app không hề mở. Kiểm tra trước khi
 # chạy để báo lỗi rõ ràng ngay.
 
@@ -440,7 +440,7 @@ def forgotten_prepared_prompt(goal: str, override: str) -> str:
     )
 
 
-# `--locked-app` của ARTEMIS chỉ đảm bảo app ở foreground **lúc khởi động**; nó
+# `--locked-app` của HunonicTest chỉ đảm bảo app ở foreground **lúc khởi động**; nó
 # không ràng buộc hành động sau đó và agent cũng không được thông báo. Đo thực tế:
 # agent tự force-stop app khác ("Tuya Smart"), bấm HOME, mở app switcher rồi chạm
 # lung tung khi prompt không nêu tên app. Nhắc thẳng trong prompt để chặn việc đó.
@@ -706,7 +706,7 @@ def _estimate_prompt_tokens(body: dict) -> int:
 
 
 def stop_daemon_task(session_id: str = "", device_id: str = "") -> bool:
-    """Ask the Artemis Daemon (port 8000) to cancel a task.
+    """Ask the daemon (port 8000) to cancel a task.
 
     ``artemis run`` never executes locally while the daemon is up: it submits
     the task to the daemon and then only waits for the result. Killing the CLI
@@ -864,7 +864,7 @@ class Runner:
             launcher = artemis_launcher()
             if launcher is None:
                 raise RuntimeError(
-                    f"Không tìm thấy Artemis tại {ARTEMIS_DIR}. Chạy `uv sync` trong repo "
+                    f"Không tìm thấy HunonicTest tại {ARTEMIS_DIR}. Chạy `uv sync` trong repo "
                     "hoặc đặt biến ARTEMIS_DIR trỏ tới checkout ARTEMIS khác."
                 )
 
@@ -993,7 +993,7 @@ class Runner:
     def _tail_trace(self, task: Task) -> None:
         """Đọc output thật của agent từ ``traces/<session>/stdout.log``.
 
-        ``artemis run`` giao việc cho Artemis Daemon rồi chỉ in mấy dòng lịch
+        ``artemis run`` giao việc cho daemon rồi chỉ in mấy dòng lịch
         trình, nên stdout của tiến trình CLI gần như trống — đo trên một lần chạy
         thật: **12 dòng cho cả task**, không một dòng nào về LLM hay hành động.
         Output thật nằm ở file này. Không đọc nó thì người test chỉ thấy task
@@ -1077,7 +1077,7 @@ class Runner:
             return False
         stopped = stop_daemon_task(session_id=task.session_id, device_id=task.serial)
         if stopped:
-            self._append("⛔ Artemis Daemon đã huỷ task.")
+            self._append("⛔ Daemon đã huỷ task.")
         else:
             self._append(
                 "⚠ Không huỷ được task trên Artemis Daemon; chỉ dừng được tiến "

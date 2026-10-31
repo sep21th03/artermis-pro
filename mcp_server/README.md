@@ -1,6 +1,6 @@
-# 🔌 Universal MCP Server for ARTEMIS
+# 🔌 Universal MCP Server for HunonicTest
 
-This directory contains the **Model Context Protocol (MCP)** server for **ARTEMIS**. It exposes mobile device automation to clients such as **Antigravity**, **Cursor**, **Claude Code**, **OpenClaw**, and **Windsurf**.
+This directory contains the **Model Context Protocol (MCP)** server for **HunonicTest**. It exposes mobile device automation to clients such as **Antigravity**, **Cursor**, **Claude Code**, **OpenClaw**, and **Windsurf**.
 
 ## 🏗️ Architecture
 
@@ -11,7 +11,7 @@ mcp_server/
 ├── server.py             # Server entrypoint (stdio / sse)
 ├── rules.md              # AI Agent Testing Mindset & system prompt rules for IDEs
 ├── background/           # Background process execution
-│   └── task_runner.py    # Subprocess runner for Artemis Agent
+│   └── task_runner.py    # Subprocess runner for HunonicTest Agent
 ├── notifiers/            # Multi-environment notification adapters
 │   ├── base.py           # BaseNotifier abstract class
 │   ├── agentapi.py       # Jetski / Antigravity AgentAPI notifier (with session sorting & caching)
@@ -37,7 +37,7 @@ by the MCP server, the admin console, and spawned worker processes.
 
 ## 🔔 Multi-Platform Notification & Wakeup Support
 
-When you start an asynchronous mobile test via `mobile_run_task`, Artemis MCP runs the job as a detached background process so the AI agent is not blocked. Upon completion or failure, Artemis dispatches alerts across **all available notification channels** so that both human developers and AI agents are notified immediately across different platforms:
+When you start an asynchronous mobile test via `mobile_run_task`, HunonicTest MCP runs the job as a detached background process so the AI agent is not blocked. Upon completion or failure, HunonicTest dispatches alerts across **all available notification channels** so that both human developers and AI agents are notified immediately across different platforms:
 
 | Platform / Environment | Primary Notification Mechanism | How It Works & Configuration |
 | :--- | :--- | :--- |
@@ -49,15 +49,15 @@ When you start an asynchronous mobile test via `mobile_run_task`, Artemis MCP ru
 
 ## 🧠 AI Agent Behavioral Rules (`rules.md`)
 
-When connecting ARTEMIS to AI coding assistants like **Antigravity**, **Claude Code**, **Cursor**, or **Windsurf**, providing the assistant with domain-specific testing discipline is critical for generating reliable test code.
+When connecting HunonicTest to AI coding assistants like **Antigravity**, **Claude Code**, **Cursor**, or **Windsurf**, providing the assistant with domain-specific testing discipline is critical for generating reliable test code.
 
-The included [`rules.md`](./rules.md) file contains the **Mobile Testing Mindset (ARTEMIS Integration)** guideline. It teaches the AI agent how to properly collaborate with ARTEMIS:
+The included [`rules.md`](./rules.md) file contains the **Mobile Testing Mindset (HunonicTest Integration)** guideline. It teaches the AI agent how to properly collaborate with HunonicTest:
 
-1. **The Runnable Code Principle & Active Exploration**: Instructs the AI to never guess or hallucinate UI transitions. Instead, it must first explore the live app via ARTEMIS MCP tools (`mobile_run_task`, etc.) to discover and verify real-world interaction paths before writing test scripts.
+1. **The Runnable Code Principle & Active Exploration**: Instructs the AI to never guess or hallucinate UI transitions. Instead, it must first explore the live app via HunonicTest MCP tools (`mobile_run_task`, etc.) to discover and verify real-world interaction paths before writing test scripts.
 2. **Flash vs. Pro Routing Strategy**: Guides the AI to choose **Flash** for rapid, straightforward UI actions (no step cap by default) and **Pro** for tasks that need a persistent plan, verified checkpoints, polling loops, or ADB / video / log diagnosis.
 3. **Latency & Timing Compensation**: Clarifies the difference between AI exploratory latency (e.g., model decision intervals) and the deterministic timing requirements of final test code.
 4. **"Dynamic-First, Coordinate-Fallback" Locator Pattern**: Teaches the AI to prioritize dynamic UI locators (Resource IDs, OCR text, semantics) for layout resilience, while implementing absolute coordinate fallbacks for maximum execution reliability.
-5. **Environment Self-Diagnosis**: Tells the AI to call `mobile_diagnose` first whenever a tool errors or the user says ARTEMIS is not working, and how to act on the returned fix list (run local commands itself, relay device prompts to the user, never move API keys through the chat, reload the MCP server after config changes).
+5. **Environment Self-Diagnosis**: Tells the AI to call `mobile_diagnose` first whenever a tool errors or the user says HunonicTest is not working, and how to act on the returned fix list (run local commands itself, relay device prompts to the user, never move API keys through the chat, reload the MCP server after config changes).
 
 ### How Global Rules & MCP are Installed
 When you run `uv run artemis mcp --install all` (or target a specific IDE like `--install cursor`, `--install claude`, etc.), the installer **automatically synchronizes both global MCP server configuration and global testing rules** into the corresponding user home directories (without creating project-level rule files in your workspace):
@@ -80,9 +80,9 @@ When you run `uv run artemis mcp --install all` (or target a specific IDE like `
 * **`mobile_diagnose`**: Environment doctor for the IDE. Reuses the readiness probes behind `artemis doctor` and the web console's device wizard (Python runtime, config, LLM credentials, ADB / devices / RSA keys / emulators, video toolchain) plus an MCP-host probe (server interpreter vs project `.venv`, detected MCP client, `.env` location, traces directory, daemon port collisions). Returns a `verdict` (`ready` | `degraded` | `blocked`), an ordered `next_steps` fix list the AI agent can act on (`Run:` one-command lines vs `Guidance:` for the user), scrubbed per-check details, `tasks` holding or waiting for devices, log paths, and the most recent failed task with its `recent_errors`. Optional deep checks: `verify_credentials=true` (live API-key validation, ~12s, result in `credentials`), `probe_device=true` (end-to-end screenshot + UIAutomator hierarchy, ~20s, result in `device_probe`), `launch_avd="<name>"` (boots an installed AVD in the background; re-run after ~60s). `attempt_fix=true` applies the safe self-heals (regenerate corrupted ADB keys, restart the ADB server, clear stale device locks / queue tickets left by crashed runners).
 
 ### 📱 Device Selection & Multi-Device Execution
-ARTEMIS supports parallel execution across multiple connected Android devices and emulators:
+HunonicTest supports parallel execution across multiple connected Android devices and emulators:
 1. **Direct Device Specification**: Provide `device_serial` explicitly (e.g. `device_serial="63191FDKX00062"` or `device_serial="emulator-5554"`). Per-device execution locks allow distinct devices to run in parallel.
-2. **Automatic Device Selection**: Omit `device_serial` to let ARTEMIS auto-select an available ready device from the device pool.
+2. **Automatic Device Selection**: Omit `device_serial` to let HunonicTest auto-select an available ready device from the device pool.
 * **User Choice Priority**: When multiple devices/emulators are connected, AI agents should prioritize asking the user which device to run on.
 * **Device Diagnosis**: Inspect connected hardware, authorization status, and serials anytime via `adb devices` or `adb devices -l`.
 
@@ -93,7 +93,7 @@ ARTEMIS supports parallel execution across multiple connected Android devices an
 # Start server over stdio
 python -m mcp_server
 
-# Or via Artemis CLI
+# Or via HunonicTest CLI
 uv run artemis mcp
 ```
 

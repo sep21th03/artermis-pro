@@ -1,4 +1,4 @@
-# Workflow RAG — knowledge base cho ARTEMIS
+# Workflow RAG — knowledge base cho HunonicTest
 
 Cho agent biết trước **đường dẫn thao tác** của từng chức năng, thay vì tự mò.
 Người dùng nhập `Test đăng xuất`, hệ thống truy xuất workflow `auth.logout` và
@@ -22,7 +22,7 @@ ARTEMIS_KB_EMBEDDING_MODEL=gemini-embedding-2
 
 Schema tự tạo ở lần khởi động đầu tiên (`schema.sql`, idempotent).
 
-**Bỏ trống `ARTEMIS_KB_DSN` = tắt tính năng.** ARTEMIS chạy y như trước, không lỗi.
+**Bỏ trống `ARTEMIS_KB_DSN` = tắt tính năng.** HunonicTest chạy y như trước, không lỗi.
 
 ## Kiến trúc
 
@@ -98,7 +98,7 @@ Bộ dữ liệu mẫu 3 workflow, truy vấn thật:
 Chi phí mỗi lần truy xuất: **~0.5–0.8 s**, gần như toàn bộ là gọi embedding Gemini.
 Hai kênh SQL chỉ ~10 ms.
 
-## Nối vào ARTEMIS (Phase 2)
+## Nối vào HunonicTest (Phase 2)
 
 ```
 run_automation(goal, locked_app_package)          third_party/mobile_use/main.py

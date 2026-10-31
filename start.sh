@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
 echo -e "${BOLD}${CYAN}======================================================${NC}"
-echo -e "${BOLD}${CYAN}      ✨ Artemis Autonomous Mobile Agent UI          ${NC}"
+echo -e "${BOLD}${CYAN}      ✨ HunonicTest — kiểm thử trên điện thoại thật  ${NC}"
 echo -e "${BOLD}${CYAN}======================================================${NC}"
 echo ""
 
@@ -369,7 +369,7 @@ fi
 
 # 7. Optionally configure MCP for detected AI IDEs
 echo ""
-echo -e "   ${CYAN}🔌 Would you like to configure ARTEMIS MCP & testing rules for your AI IDEs?${NC}"
+echo -e "   ${CYAN}🔌 Cấu hình HunonicTest MCP & luật kiểm thử cho IDE (AI) của bạn?${NC}"
 echo -e "      (Supported: Antigravity, Cursor, Claude Code/Desktop, Codex, OpenClaw, Windsurf)"
 if [ -t 0 ]; then
     read -r -p "      Install MCP configuration & rules now? [Y/n]: " INSTALL_MCP
@@ -397,7 +397,7 @@ if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_CLIENT:-}" ] || [ -n "${SSH_TTY:-
     IS_REMOTE=true
 fi
 
-echo -e "   ${GREEN}🚀 Launching Artemis Showcase UI & Admin Console...${NC}"
+echo -e "   ${GREEN}🚀 Đang mở HunonicTest Showcase UI & Admin Console...${NC}"
 
 OPEN_FLAG="--open"
 if [ "${IS_REMOTE}" = true ]; then

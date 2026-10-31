@@ -1,20 +1,19 @@
 <p align="center">
-  <img src="./docs/assets/artemis-banner.png?v=7" alt="ARTEMIS Banner" width="100%" />
+  <img src="./docs/assets/hunonic-banner.png?v=1" alt="HunonicTest" width="100%" />
 </p>
 
-<h1 align="center">ARTEMIS Pro</h1>
+<h1 align="center">HunonicTest</h1>
 
 <p align="center">
   <strong>Điều khiển điện thoại Android thật bằng AI: CLI, Web UI và MCP server cho IDE.</strong>
 </p>
 
 <p align="center">
-  <a href="./README.md"><b>Tiếng Việt</b></a> •
-  <a href="./README_EN.md">English</a> •
-  <a href="./README_CN.md">中文文档</a> •
-  <a href="#8-chạy-task-bằng-cli">Chạy nhanh</a> •
-  <a href="#10-kết-nối-mcp-cho-ide">MCP</a> •
-  <a href="#11-dừnghuỷ-task">Dừng task</a>
+  <a href="#-chạy-nhanh-3-lệnh">Chạy nhanh</a> •
+  <a href="#9-chạy-task-bằng-cli">Chạy task</a> •
+  <a href="#11-kết-nối-mcp-cho-ide">MCP cho IDE</a> •
+  <a href="#17-test-console-tiếng-việt">Test Console</a> •
+  <a href="#12-dừnghuỷ-task">Dừng task</a>
 </p>
 
 <p align="center">
@@ -23,10 +22,12 @@
   <img src="https://img.shields.io/badge/MCP-Native%20Server-8A2BE2.svg" alt="MCP Native">
 </p>
 
-> **ARTEMIS Pro** là bản build cá nhân của ARTEMIS (dự án gốc Apache-2.0: [google/artemis](https://github.com/google/artemis)),
-> được tinh chỉnh trong quá trình làm việc trên workspace `Developer`: sửa lỗi **bấm dừng nhưng agent vẫn tiếp tục chạy**,
-> và chuyển toàn bộ model routing sang một gateway OpenAI-compatible.
-> Toàn bộ hướng dẫn cài đặt – cấu hình – chạy nằm trong tài liệu này; bản dịch tiếng Anh ở [README_EN.md](./README_EN.md).
+> **HunonicTest** là bộ công cụ kiểm thử tự động cho app Hunonic trên **điện thoại Android thật**: CLI,
+> Web UI tiếng Việt (Test Console) và MCP server cho IDE.
+>
+> **Tên kỹ thuật giữ nguyên để không phá cấu hình đang chạy:** gói Python vẫn là `artemis/`, lệnh CLI vẫn
+> là `artemis`, biến môi trường vẫn là `ARTEMIS_*`, cấu hình vẫn là `config/artemis.jsonc`. Trong tài
+> liệu này "HunonicTest" là tên sản phẩm; các chuỗi trong dấu huyền là tên thật, gõ nguyên như vậy.
 
 ## ⚡ Chạy nhanh (3 lệnh)
 
@@ -87,13 +88,13 @@ sh apps/test_console/run.sh
   ngay. `--minimal` (chỉ 4 dòng), `--from <file>`, `--keep-secrets`, `--dry-run`, `--force`, `--help`.
 - Cần có: `adb` trong PATH và điện thoại Android đã bật **USB debugging** (đã bấm *Allow*).
 - Chưa có `uv`: `brew install uv` (macOS) hoặc `curl -LsSf https://astral.sh/uv/install.sh | sh`.
-- Muốn chạy UI gốc của ARTEMIS (cổng 8000) thay vì Test Console: `./start.sh`.
+- Muốn chạy UI gốc của HunonicTest (cổng 8000) thay vì Test Console: `./start.sh`.
 
 Phần còn lại của tài liệu này là chi tiết đầy đủ (cấu hình model, Knowledge base, thiết bị, CLI, MCP, xử lý lỗi).
 
 ## Mục lục
 
-1. [ARTEMIS Pro làm được gì](#1-artemis-pro-làm-được-gì)
+1. [HunonicTest làm được gì](#1-hunonictest-làm-được-gì)
 2. [Thay đổi so với upstream](#2-thay-đổi-so-với-upstream)
 3. [Yêu cầu hệ thống](#3-yêu-cầu-hệ-thống)
 4. [Cài đặt](#4-cài-đặt)
@@ -108,12 +109,12 @@ Phần còn lại của tài liệu này là chi tiết đầy đủ (cấu hìn
 13. [Kiểm tra sức khoẻ & xử lý lỗi](#13-kiểm-tra-sức-khoẻ--xử-lý-lỗi)
 14. [Chạy test & phát triển](#14-chạy-test--phát-triển)
 15. [Cấu trúc thư mục](#15-cấu-trúc-thư-mục)
-16. [Giấy phép & ghi công](#16-giấy-phép--ghi-công)
+16. [Giấy phép](#16-giấy-phép)
 17. [Test Console tiếng Việt](#17-test-console-tiếng-việt)
 18. [ADB server từ xa (máy DEV + máy tester)](#18-adb-server-từ-xa-máy-dev--máy-tester)
 
 
-## 1. ARTEMIS Pro làm được gì
+## 1. HunonicTest làm được gì
 
 - **Tự động hoá điện thoại Android bằng ngôn ngữ tự nhiên**: mở app, đăng nhập, điền form, chụp màn hình, đọc logcat.
 - **Hai chế độ chạy**:
@@ -127,7 +128,7 @@ Phần còn lại của tài liệu này là chi tiết đầy đủ (cấu hìn
 
 | File | Thay đổi | Lý do |
 | --- | --- | --- |
-| `artemis/interfaces/cli/commands/run.py` | Cầu nối `SIGTERM → KeyboardInterrupt` được cài **trước** khi route task sang Artemis Daemon | Trước đây `artemis run` chỉ đẩy task vào daemon rồi chờ; nếu bấm Stop/Ctrl+C thì tiến trình CLI chết nhưng **daemon vẫn lái điện thoại** tới khi hết turn. Nay mọi tín hiệu dừng đều đi vào nhánh `except KeyboardInterrupt` → gọi `stop_task_on_daemon()` và thoát với mã `130`. |
+| `artemis/interfaces/cli/commands/run.py` | Cầu nối `SIGTERM → KeyboardInterrupt` được cài **trước** khi route task sang daemon | Trước đây `artemis run` chỉ đẩy task vào daemon rồi chờ; nếu bấm Stop/Ctrl+C thì tiến trình CLI chết nhưng **daemon vẫn lái điện thoại** tới khi hết turn. Nay mọi tín hiệu dừng đều đi vào nhánh `except KeyboardInterrupt` → gọi `stop_task_on_daemon()` và thoát với mã `130`. |
 | `config/artemis.jsonc` | `default` + hầu hết node dùng `provider: openai`, `model: ts/gemini-3.5-flash-lite` (gateway OpenAI-compatible) | Chạy qua gateway/proxy nội bộ thay vì gọi trực tiếp Google. |
 | `config/artemis.jsonc` | `profiles.flash.max_turns = 25`, `explorer_mode = "pro"` | Giới hạn số turn của Flash và tăng độ sâu quan sát màn hình. |
 | `config/artemis.jsonc` | Tắt `flash.step_summarizer` và `pro.*.context` (chunk compression) | Hai tính năng này phụ thuộc Gemini key native; tắt để tránh lỗi khi chỉ có gateway OpenAI. |
@@ -187,8 +188,8 @@ uv run artemis doctor
 ### 4.3. Chạy bằng Docker (tuỳ chọn)
 
 ```bash
-docker build -t artemis-pro .
-docker run --rm -it --env-file .env -p 8080:8080 artemis-pro
+docker build -t hunonictest .
+docker run --rm -it --env-file .env -p 8080:8080 hunonictest
 ```
 
 Container expose **cổng 8080** (Admin Console + API). Lưu ý: ADB nằm ngoài container, nên muốn điều khiển
@@ -266,8 +267,8 @@ của máy:
 Không có tunnel thì console báo *"Không kết nối được PostgreSQL: port 5433 → Connection refused"* và
 tab Knowledge bị khoá (prompt vẫn chạy được, chỉ là không ghép kiến thức).
 
-**Máy tester: không SSH, không DB, không khoá embedding** — trước mỗi lần chạy ARTEMIS hỏi console
-(`POST /api/knowledge/context`) và nhận về prompt hoàn chỉnh; console tắt thì ARTEMIS chạy tiếp **không
+**Máy tester: không SSH, không DB, không khoá embedding** — trước mỗi lần chạy HunonicTest hỏi console
+(`POST /api/knowledge/context`) và nhận về prompt hoàn chỉnh; console tắt thì HunonicTest chạy tiếp **không
 có kiến thức**, không bao giờ làm hỏng một lần test:
 
 ```bash
@@ -335,7 +336,7 @@ adb devices -l
 # 2) Nếu có nhiều máy, chọn serial và ghim vào .env
 export ADB_DEVICE_SERIAL=<serial-cua-ban>
 
-# 3) Kiểm tra ARTEMIS nhìn thấy thiết bị
+# 3) Kiểm tra HunonicTest nhìn thấy thiết bị
 uv run artemis doctor
 ```
 
@@ -388,7 +389,7 @@ Các flag chính của `artemis run`:
 | `--explorer-version`, `--explorer-flash-mode`, `--explorer-pro-mode` | Độ sâu quan sát màn hình (`flash` / `pro` / `ultra`) |
 | `--enable-checker/--disable-checker`, `--enable-outputter/--disable-outputter`… | Bật/tắt từng node của graph |
 | `--with-video-recording-tools/--without-video-recording-tools` | Phân tích video màn hình (cần `ffmpeg`) |
-| `--standalone` | Chạy local, không đẩy task vào Artemis Daemon |
+| `--standalone` | Chạy local, không đẩy task vào daemon |
 
 Chạy hàng loạt task từ file và xem lại trace:
 
@@ -454,7 +455,7 @@ Nên mount thêm `mcp_server/rules.md` vào rules của IDE để agent tuân th
 
 Đây là nội dung được sửa trong session này — **bấm Stop/Ctrl+C phải làm agent dừng thật**.
 
-**Nguyên nhân lỗi cũ:** `artemis run` chỉ *submit* task vào Artemis Daemon rồi ngồi chờ kết quả.
+**Nguyên nhân lỗi cũ:** `artemis run` chỉ *submit* task vào daemon rồi ngồi chờ kết quả.
 Khi bạn Ctrl+C (SIGINT) hoặc IDE gửi Stop (SIGTERM), chỉ tiến trình CLI chết; daemon vẫn tiếp tục
 lái điện thoại cho tới khi task tự hết turn hoặc hết `timeout`.
 
@@ -522,28 +523,27 @@ artermis-pro/
 │   ├── interfaces/cli/      # Lệnh `artemis` (run, ui, mcp, doctor, helper, batch, trace…)
 │   ├── agents/              # Planner, Operator, Checker, Explorer, Outputter
 │   ├── llm/                 # Router đa provider + cấu hình model
-│   └── runtime/             # Artemis Daemon, queue thiết bị, IPC
+│   └── runtime/             # daemon, queue thiết bị, IPC
 ├── apps/
 │   ├── admin_console/       # FastAPI: session, replay, stream màn hình
 │   └── showcase_ui/         # Angular frontend
 ├── mcp_server/              # MCP server (mobile_* tools) + rules.md
 ├── third_party/mobile_use/  # Vòng lặp automation gốc + helper CLI
-├── packages/artemis-client/ # SDK Python để gọi Artemis từ ngoài
+├── packages/artemis-client/ # SDK Python để gọi HunonicTest từ ngoài
 ├── config/artemis.jsonc     # Cấu hình model & profile
 ├── scripts/                 # installer, quality ratchet…
 ├── tests/                   # unit / integration / e2e
 ├── traces/                  # (runtime) trace & replay — không commit
 ├── start.sh | start.bat     # One-click launcher
 ├── Dockerfile · Makefile · pyproject.toml · uv.lock
-└── README.md · README_EN.md · README_CN.md
+└── README.md · CONTRIBUTING.md · CHANGELOG.md · LICENSE
 ```
 
-## 16. Giấy phép & ghi công
+## 16. Giấy phép
 
 - Phát hành theo **Apache License 2.0** — xem [LICENSE](./LICENSE).
-- Dựa trên dự án ARTEMIS của Google ([google/artemis](https://github.com/google/artemis)); toàn bộ bản quyền
-  và ghi công thuộc về các tác giả gốc. Repo này giữ nguyên license và bổ sung các thay đổi ở [mục 2](#2-thay-đổi-so-với-upstream).
-- Tài liệu gốc: [README_EN.md](./README_EN.md) (English) · [README_CN.md](./README_CN.md) (中文).
+- Banner ở đầu tài liệu do `docs/assets/generate_banner.py` sinh ra từ logo trong
+  `docs/assets/logo/hunonic-logo.png`: `python3 docs/assets/generate_banner.py`.
 
 ## 17. Test Console tiếng Việt
 
@@ -571,16 +571,16 @@ LOCAL_LLM=1 sh apps/test_console/run.sh                     # Ollama, 0đ
   `./gradlew installDebug`), app React Native bản debug thì phải chạy Metro + `adb reverse tcp:8081`.
   Hướng dẫn đầy đủ: [`apps/test_console/README.md`](./apps/test_console/README.md#cài-app-lên-điện-thoại).
 - **Không kèm dữ liệu riêng**: không có package/app cụ thể, tài khoản, serial hay key nào trong repo.
-- **Proxy LLM**: console mở `/llm/v1` tại cổng 8787. Nếu `.env` của Artemis đặt
+- **Proxy LLM**: console mở `/llm/v1` tại cổng 8787. Nếu `.env` của HunonicTest đặt
   `OPENAI_BASE_URL=http://127.0.0.1:8787/llm/v1` thì console phải chạy, nếu không task sẽ không gọi
   được model (ngược lại, đặt thẳng `OPENAI_BASE_URL=https://api.openai.com/v1` nếu không cần chặn ngân sách).
 - **Khoá truy cập API**: `/llm/v1` yêu cầu `Authorization: Bearer <CONSOLE_ACCESS_KEY>` (mặc định
-  `21092003`). Máy chỉ chạy ARTEMIS (không chạy proxy) đặt `OPENAI_API_KEY=<khoá>` +
+  `21092003`). Máy chỉ chạy HunonicTest (không chạy proxy) đặt `OPENAI_API_KEY=<khoá>` +
   `OPENAI_BASE_URL=http://<ip-máy-chạy-console>:8787/llm/v1` — key LLM thật chỉ nằm trên máy chạy console.
   Chế độ `LOCAL_LLM=1` (Ollama) miễn khoá.
 - **Knowledge — Workflow RAG**: tester nhập prompt gốc, console gọi Google Embedding, tìm workflow
   gần nhất trong PostgreSQL rồi trả về **prompt hoàn chỉnh** (prompt gốc + hướng dẫn từng bước).
-  Chỉ máy chạy console cần database và khoá embedding; máy tester chỉ cần ARTEMIS và điện thoại.
+  Chỉ máy chạy console cần database và khoá embedding; máy tester chỉ cần HunonicTest và điện thoại.
   Xem `apps/test_console/README.md`.
 - **Cài trên máy khác (máy tester)**: một lệnh —
   `sh scripts/install_tester.sh --console <url-console> --key <khoá>`; script **dựng cả `.env`** (mẫu là
@@ -595,13 +595,13 @@ LOCAL_LLM=1 sh apps/test_console/run.sh                     # Ollama, 0đ
 
 ## 18. ADB server từ xa (máy DEV + máy tester)
 
-Mô hình: **máy DEV** chạy ARTEMIS backend + Web UI, **máy tester** cắm điện thoại qua USB và chạy
+Mô hình: **máy DEV** chạy HunonicTest backend + Web UI, **máy tester** cắm điện thoại qua USB và chạy
 ADB server mở ra LAN. Mọi thao tác thiết bị (screenshot, tap, swipe, input, đọc UI, UIAutomator2)
 đều đi qua ADB server đó; không có đường nào tự rơi về `localhost`.
 
 ### 18.1. Máy tester (nơi cắm điện thoại)
 
-> Máy tester **chạy ARTEMIS tại chỗ** (không dùng ADB remote) thì bỏ qua mục 18 — cài bằng
+> Máy tester **chạy HunonicTest tại chỗ** (không dùng ADB remote) thì bỏ qua mục 18 — cài bằng
 > `sh scripts/install_tester.sh --console <url-console> --key <khoá>` (xem mục 17).
 
 ```bash
@@ -618,7 +618,7 @@ sudo ufw allow from <DEV_IP> to any port 5037 proto tcp
 
 Tuyệt đối **không** mở cổng 5037 ra Internet — ADB không có xác thực kênh truyền, chỉ dùng LAN/VPN.
 
-### 18.2. Máy DEV (chạy ARTEMIS)
+### 18.2. Máy DEV (chạy HunonicTest)
 
 ```bash
 cd ~/Developer/artermis-pro
@@ -659,9 +659,9 @@ ADB_HOST=10.0.0.25 uv run artemis run "Mở Settings, cho biết mức pin" -p f
 | `adb devices`, screenshot (`exec-out screencap`), tap/swipe/input, `dumpsys`, `run_adb_command` | ✅ đi qua `adb -H <host> -P <port>` |
 | UIAutomator2 (đọc UI) | ✅ adbutils/uiautomator2 được rebind sang endpoint (`ANDROID_ADB_SERVER_HOST/PORT`) |
 | Device list trong Web UI, live screen, replay | ✅ dùng endpoint đã cấu hình |
-| Accessibility Helper | ⚠️ **tự động tắt** ở chế độ remote: `adb forward` chỉ bind trên loopback của máy chạy ADB server, nên máy DEV không gọi được. ARTEMIS tự chuyển sang UIAutomator2. Muốn dùng helper phải có SSH tunnel (`ssh -L <port>:127.0.0.1:<port>`) rồi đặt `ARTEMIS_ALLOW_REMOTE_HELPER=1` |
+| Accessibility Helper | ⚠️ **tự động tắt** ở chế độ remote: `adb forward` chỉ bind trên loopback của máy chạy ADB server, nên máy DEV không gọi được. HunonicTest tự chuyển sang UIAutomator2. Muốn dùng helper phải có SSH tunnel (`ssh -L <port>:127.0.0.1:<port>`) rồi đặt `ARTEMIS_ALLOW_REMOTE_HELPER=1` |
 | Ghi video bằng scrcpy | ⚠️ scrcpy tự gọi `adb` của máy DEV → cần wrapper (xem 18.4) |
-| `adb start-server` / `kill-server` | ⚠️ chỉ chạy khi endpoint là local; với remote thì ARTEMIS chỉ kiểm tra kết nối (không tạo server mới trên máy DEV) |
+| `adb start-server` / `kill-server` | ⚠️ chỉ chạy khi endpoint là local; với remote thì HunonicTest chỉ kiểm tra kết nối (không tạo server mới trên máy DEV) |
 | Đổi endpoint từ Admin Console | Mặc định chỉ cho client local; muốn đổi từ xa đặt `ARTEMIS_ALLOW_REMOTE_ADB_CONFIGURATION=true` |
 
 ### 18.4. scrcpy với ADB remote (tuỳ chọn)
@@ -692,7 +692,7 @@ adb -H $ADB_HOST -P $ADB_PORT -s $SERIAL shell input swipe 540 1600 540 600 300
 adb -H $ADB_HOST -P $ADB_PORT -s $SERIAL shell input text "artemis"
 adb -H $ADB_HOST -P $ADB_PORT -s $SERIAL shell uiautomator dump /sdcard/ui.xml
 
-# 4) Rút cáp USB khi đang chạy task → ARTEMIS báo device offline/unauthorized rõ ràng,
+# 4) Rút cáp USB khi đang chạy task → HunonicTest báo device offline/unauthorized rõ ràng,
 #    task dừng và nhả device lock; cắm lại rồi chạy lại.
 ```
 
